@@ -1098,13 +1098,59 @@ a {
 }
 
 .gpu-fit.fit-wont_fit,
-.gpu-fit.fit-cpu_slow {
+.gpu-fit.fit-cpu_slow,
+.gpu-fit.fit-preview_only {
   border-color: rgba(255, 80, 120, 0.55);
+}
+
+.gpu-fit.loud-coach header strong {
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
 }
 
 .fit-warn {
   color: #ffb4c0;
   font-size: 0.85rem;
+}
+
+.amd-coach {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(57, 255, 199, 0.28);
+  background: linear-gradient(120deg, rgba(6, 28, 32, 0.9), rgba(12, 18, 28, 0.75));
+  margin: 8px 0 18px;
+}
+
+.amd-coach.preview {
+  border-color: rgba(255, 196, 61, 0.4);
+}
+
+.amd-coach.ready {
+  border-color: rgba(57, 255, 199, 0.45);
+}
+
+.privacy-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: baseline;
+  margin: 0 0 22px;
+  padding: 10px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.privacy-strip strong {
+  font-family: var(--font-display);
+  color: var(--neon-3);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.78rem;
 }
 
 .provider-grid {

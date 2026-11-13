@@ -105,6 +105,7 @@ export interface CharacterProfile {
   voice_notes: string
   character_lock?: string
   reference_path?: string | null
+  identity_fingerprint?: number[] | null
   tags: string[]
 }
 
@@ -149,6 +150,8 @@ export interface Take {
   is_placeholder: boolean
   continuity_score?: number | null
   continuity_flags?: string[]
+  vision_score?: number | null
+  identity_score?: number | null
   prompt_used?: string
   is_rehearsal?: boolean
   rejected?: boolean
@@ -228,6 +231,10 @@ export interface Project {
   image_format: 'png' | 'jpg' | 'webp'
   video_format: 'mp4' | 'webm' | 'gif'
   audio_format: 'wav' | 'mp3'
+  frame_size_id?: string
+  aspect_ratio?: string
+  width?: number
+  height?: number
   world_bible?: string
   continuity_rules?: string[]
   auto_reject_below?: number
@@ -240,6 +247,7 @@ export interface Project {
 export interface GpuEstimate {
   ok: boolean
   fit: 'comfortable' | 'tight' | 'wont_fit' | 'cpu_slow' | 'preview_only' | 'unknown'
+  coach_headline?: string
   mode: string
   model_id?: string
   model_label?: string
@@ -368,6 +376,22 @@ export interface Health {
   agent_label?: string
   agent_reachable?: boolean
   agent_detail?: string
+  rocm?: boolean
+  vram_gb?: number | null
+  backend?: string
+  ready_for_inference?: boolean
+  will_preview?: boolean
+  suggested_preset?: string
+  first_run_headline?: string
+  first_run_detail?: string
+  notes?: string[]
+}
+
+export interface RecipeInfo {
+  id: string
+  title: string
+  blurb: string
+  tags: string[]
 }
 
 export interface Preset {

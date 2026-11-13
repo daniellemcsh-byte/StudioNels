@@ -552,6 +552,84 @@ export default function DirectorStudio({
           .srt
         </button>
         <button
+          className="btn secondary"
+          type="button"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            try {
+              const res = await api.stitch(project.id)
+              notify(res.message || 'Stitch ready')
+              if (res.preview_url) window.open(res.preview_url, '_blank')
+            } catch (err) {
+              notify(String((err as Error).message || err))
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          Stitch cut
+        </button>
+        <button
+          className="btn ghost"
+          type="button"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            try {
+              const res = await api.filmNight(project.id, 'full')
+              if (res.project) setProject(res.project)
+              notify(res.message || 'Film night')
+              if (res.stitch?.preview_url) window.open(res.stitch.preview_url, '_blank')
+            } catch (err) {
+              notify(String((err as Error).message || err))
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          Film night
+        </button>
+        <button
+          className="btn ghost"
+          type="button"
+          disabled={busy || !project.shots.length}
+          title="Continue-chain generate from the cut"
+          onClick={async () => {
+            setBusy(true)
+            try {
+              const res = await api.filmNight(project.id, 'finals')
+              if (res.project) setProject(res.project)
+              notify(res.message || 'Finals queued')
+            } catch (err) {
+              notify(String((err as Error).message || err))
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          Continue all shots
+        </button>
+        <button
+          className="btn ghost"
+          type="button"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            try {
+              const pack = await api.exportPack(project.id)
+              notify(pack.message || 'Look-bible pack ready')
+              window.open(pack.download_url, '_blank')
+            } catch (err) {
+              notify(String((err as Error).message || err))
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          Pack
+        </button>
+        <button
           className="btn ghost"
           type="button"
           disabled={busy}
@@ -568,7 +646,7 @@ export default function DirectorStudio({
             }
           }}
         >
-          Export
+          Export NLE
         </button>
         <label className="muted tiny" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <input type="checkbox" checked={snap} onChange={(e) => setSnap(e.target.checked)} />

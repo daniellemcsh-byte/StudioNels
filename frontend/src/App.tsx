@@ -9,6 +9,8 @@ import {
   VISUAL_STYLES,
   formatDuration,
 } from './stylesCatalog'
+import { FRAME_SIZES, frameById, framesByOrientation } from './frameSizes'
+import type { RecipeInfo } from './types'
 import {
   AUDIO_KINDS,
   MUSIC_MOODS,
@@ -194,7 +196,14 @@ export default function App() {
     try {
       const p = await api.getProject(id)
       setProject(p)
-      goTab('agent')
+      // Director becomes home once there is anything to cut
+      if ((p.takes && p.takes.length > 0) || (p.timeline && p.timeline.length > 0)) {
+        goTab('director')
+      } else if (p.shots.length > 0) {
+        goTab('shots')
+      } else {
+        goTab('agent')
+      }
     } finally {
       setBusy(false)
     }
@@ -402,6 +411,52 @@ export default function App() {
               My GitHub / HF
             </button>
           </div>
+        </section>
+
+        {health && (
+          <section className={`amd-coach ${health.will_preview ? 'preview' : 'ready'}`}>
+            <div>
+              <strong>{health.first_run_headline || health.device_name}</strong>
+              <p className="muted tiny" style={{ margin: '4px 0 0' }}>
+                {health.first_run_detail ||
+                  (health.will_preview
+                    ? 'Preview mode until ROCm PyTorch + Diffusers are ready.'
+                    : 'Engine ready for real frames.')}
+                {health.vram_gb != null ? ` · ${health.vram_gb} GB` : ''}
+                {health.rocm ? ' · ROCm' : ''}
+              </p>
+            </div>
+            {health.suggested_preset && health.suggested_preset !== settings?.preset_id && (
+              <button
+                className="btn secondary"
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  if (!settings) return
+                  setBusy(true)
+                  try {
+                    const s = await api.putSettings({
+                      ...settings,
+                      preset_id: health.suggested_preset!,
+                    })
+                    setSettings(s)
+                    notify(`Preset → ${health.suggested_preset}`)
+                  } finally {
+                    setBusy(false)
+                  }
+                }}
+              >
+                Use {health.suggested_preset}
+              </button>
+            )}
+          </section>
+        )}
+
+        <section className="privacy-strip">
+          <strong>Stays on this machine</strong>
+          <span className="muted tiny">
+            Faces, refs, projects, and tokens live in your StudioNels folder — no StudioNels cloud.
+          </span>
         </section>
 
         <section className="home-projects" id="projects">
@@ -1025,7 +1080,36 @@ function ProfileChar({
               >
                 Clear ref
               </button>
+              <button
+                className="btn secondary tiny"
+                type="button"
+                disabled={!draft.reference_path || saving}
+                onClick={async () => {
+                  setSaving(true)
+                  try {
+                    await save(draft)
+                    const p = await api.refreshIdentityLock(project.id, c.id)
+                    setProject(p)
+                    const updated = p.characters.find((x) => x.id === c.id)
+                    if (updated) setDraft(updated)
+                    notify(
+                      updated?.identity_fingerprint?.length
+                        ? 'Identity lock fingerprint saved from ref still.'
+                        : 'Could not fingerprint — check the ref image.',
+                    )
+                  } catch (err) {
+                    notify(String((err as Error).message || err))
+                  } finally {
+                    setSaving(false)
+                  }
+                }}
+              >
+                Lock identity from ref
+              </button>
             </div>
+            {draft.identity_fingerprint?.length ? (
+              <div className="muted tiny">Identity fingerprint on — takes scored against this look.</div>
+            ) : null}
           </div>
           <button className="btn acid" type="button" disabled={saving} onClick={() => save()}>
             Save character
@@ -1619,8 +1703,8 @@ function GenerateTab({
   const [refPath, setRefPath] = useState<string | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [refUrl, setRefUrl] = useState<string | null>(null)
-  const [width, setWidth] = useState(768)
-  const [height, setHeight] = useState(432)
+  const [width, setWidth] = useState(project.width || 768)
+  const [height, setHeight] = useState(project.height || 432)
   const [quality, setQuality] = useState('balanced')
   const [durationSec, setDurationSec] = useState(3)
   const [loraPath, setLoraPath] = useState('')
@@ -1639,6 +1723,11 @@ function GenerateTab({
     setPrompt(seed.prompt)
     onSeedConsumed?.()
   }, [seed])
+
+  useEffect(() => {
+    if (project.width) setWidth(project.width)
+    if (project.height) setHeight(project.height)
+  }, [project.width, project.height, project.frame_size_id])
 
   const refresh = async () => {
     const [e, j] = await Promise.all([api.engine(), api.engineJobs()])
@@ -1984,9 +2073,9 @@ function GenerateTab({
             </span>
           </label>
 
-          <div className={`gpu-fit fit-${estimate?.fit || 'unknown'}`}>
+          <div className={`gpu-fit fit-${estimate?.fit || 'unknown'} loud-coach`}>
             <header>
-              <strong>Can my GPU do this?</strong>
+              <strong>{estimate?.coach_headline || 'Can my GPU do this?'}</strong>
               <span>{estimating ? '…' : estimate?.eta_label || '—'}</span>
             </header>
             {estimate ? (
@@ -1998,6 +2087,7 @@ function GenerateTab({
                     : ''}{' '}
                   · needs ~{estimate.vram_estimate_gb} GB · {estimate.width}×{estimate.height} ·{' '}
                   {estimate.frames} frames
+                  {project.aspect_ratio ? ` · ${project.aspect_ratio}` : ''}
                 </div>
                 {estimate.warnings.map((w) => (
                   <div className="fit-warn" key={w}>
@@ -2010,12 +2100,40 @@ function GenerateTab({
                   </div>
                 ))}
                 {estimate.will_preview && (
-                  <div className="muted tiny">Will run as preview until engine weights are ready.</div>
+                  <div className="fit-warn">PREVIEW — placeholders until ROCm + Diffusers are ready.</div>
                 )}
               </>
             ) : (
               <div className="muted tiny">Checking VRAM fit…</div>
             )}
+          </div>
+
+          <div className="field" style={{ marginTop: 12 }}>
+            <label>Frame size (landscape / portrait / 1:1)</label>
+            <select
+              value={FRAME_SIZES.find((f) => f.width === width && f.height === height)?.id || ''}
+              onChange={async (e) => {
+                const f = frameById(e.target.value)
+                setWidth(f.width)
+                setHeight(f.height)
+                try {
+                  const p = await api.setFrameSize(project.id, f.id)
+                  setProject(p)
+                } catch {
+                  /* local only if save fails */
+                }
+              }}
+            >
+              {(['landscape', 'square', 'portrait'] as const).map((ori) => (
+                <optgroup key={ori} label={ori}>
+                  {framesByOrientation(ori).map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.label} · {f.width}×{f.height}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
           </div>
 
           <button
@@ -2552,9 +2670,53 @@ function RehearsalTab({
             />
           </div>
         </div>
-        <button className="btn acid" type="button" disabled={busy} onClick={run}>
-          Run rehearsal pass ({project.shots.length} shots)
-        </button>
+        <div className="inline-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <button className="btn acid" type="button" disabled={busy} onClick={run}>
+            Run rehearsal pass ({project.shots.length} shots)
+          </button>
+          <button
+            className="btn secondary"
+            type="button"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true)
+              try {
+                const res = await api.filmNight(project.id, 'full')
+                if (res.project) setProject(res.project as Project)
+                else {
+                  const p = await api.getProject(project.id)
+                  setProject(p)
+                }
+                notify(res.message || 'Film night running.')
+              } catch (err) {
+                notify(String((err as Error).message || err))
+              } finally {
+                setBusy(false)
+              }
+            }}
+          >
+            Film night (rehearse → finals → stitch)
+          </button>
+          <button
+            className="btn ghost"
+            type="button"
+            disabled={busy || rehearsals.length === 0}
+            onClick={async () => {
+              setBusy(true)
+              try {
+                const res = await api.filmNight(project.id, 'promote')
+                if (res.project) setProject(res.project as Project)
+                notify(res.message || 'Promoted winners.')
+              } catch (err) {
+                notify(String((err as Error).message || err))
+              } finally {
+                setBusy(false)
+              }
+            }}
+          >
+            Promote winners → queue finals
+          </button>
+        </div>
       </div>
       <div className="takes-grid" style={{ marginTop: 20 }}>
         {rehearsals.length === 0 && <div className="empty">No rehearsal takes yet.</div>}
@@ -2638,28 +2800,40 @@ function TimeStyleTab({
   const [duration, setDuration] = useState(project.target_duration_sec || 60)
   const [customMin, setCustomMin] = useState(Math.floor((project.target_duration_sec || 60) / 60))
   const [styleId, setStyleId] = useState(project.visual_style || 'cinematic')
+  const [frameId, setFrameId] = useState(project.frame_size_id || '16:9-draft')
   const [imageFormat, setImageFormat] = useState(project.image_format || 'png')
   const [videoFormat, setVideoFormat] = useState(project.video_format || 'mp4')
   const [audioFormat, setAudioFormat] = useState(project.audio_format || 'wav')
+  const [recipes, setRecipes] = useState<RecipeInfo[]>([])
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     setDuration(project.target_duration_sec || 60)
     setStyleId(project.visual_style || 'cinematic')
+    setFrameId(project.frame_size_id || '16:9-draft')
     setImageFormat(project.image_format || 'png')
     setVideoFormat(project.video_format || 'mp4')
     setAudioFormat(project.audio_format || 'wav')
   }, [project])
+
+  useEffect(() => {
+    api.recipes().then((r) => setRecipes(r.recipes || [])).catch(() => undefined)
+  }, [])
 
   const shotTotal = project.shots.reduce((sum, s) => sum + (s.duration_sec || 0), 0)
 
   const save = async (extra?: Partial<Project>) => {
     setBusy(true)
     try {
+      const frame = frameById(frameId)
       const next = {
         ...project,
         target_duration_sec: duration,
         visual_style: styleId,
+        frame_size_id: frame.id,
+        aspect_ratio: frame.ratio,
+        width: frame.width,
+        height: frame.height,
         image_format: imageFormat,
         video_format: videoFormat,
         audio_format: audioFormat,
@@ -2709,9 +2883,79 @@ function TimeStyleTab({
   return (
     <div>
       <p className="hint">
-        Set the <strong>whole</strong> length of your piece (clip → feature), pick a look (cinematic,
-        clay, cartoon…), and choose save formats. The Agent uses these when planning shots.
+        Set the <strong>whole</strong> length, frame size (landscape / portrait / 1:1…), look, and
+        save formats. Generate + Film night use these dimensions.
       </p>
+
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <h3>Video size</h3>
+        <div className="muted tiny" style={{ marginBottom: 10 }}>
+          Current: {frameById(frameId).label} · {frameById(frameId).width}×{frameById(frameId).height}
+        </div>
+        {(['landscape', 'square', 'portrait'] as const).map((ori) => (
+          <div key={ori} style={{ marginBottom: 12 }}>
+            <div className="section-label" style={{ textTransform: 'capitalize' }}>
+              {ori}
+            </div>
+            <div className="mode-grid">
+              {framesByOrientation(ori).map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  className={`mode-chip ${frameId === f.id ? 'active' : ''}`}
+                  onClick={() => setFrameId(f.id)}
+                >
+                  <strong>{f.ratio}</strong>
+                  <span>
+                    {f.width}×{f.height} — {f.blurb}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+        <button
+          className="btn acid"
+          type="button"
+          disabled={busy}
+          onClick={() => save()}
+          style={{ marginTop: 4 }}
+        >
+          Save frame size
+        </button>
+      </div>
+
+      {recipes.length > 0 && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>Recipes</h3>
+          <div className="mode-grid">
+            {recipes.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                className="mode-chip"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true)
+                  try {
+                    const p = await api.applyRecipe(project.id, r.id)
+                    setProject(p)
+                    setFrameId(p.frame_size_id || frameId)
+                    notify(`Recipe · ${r.title}`)
+                  } catch (err) {
+                    notify(String((err as Error).message || err))
+                  } finally {
+                    setBusy(false)
+                  }
+                }}
+              >
+                <strong>{r.title}</strong>
+                <span>{r.blurb}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="two-col">
         <div className="panel">

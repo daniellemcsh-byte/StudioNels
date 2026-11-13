@@ -63,8 +63,13 @@ export const api = {
   personalImports: () => req<PersonalImportJob[]>('/api/personal/imports'),
   personalImportJob: (id: string) => req<PersonalImportJob>(`/api/personal/imports/${id}`),
   listProjects: () => req<ProjectSummary[]>('/api/projects'),
-  createProject: (body: { title: string; mode: string; logline?: string; preset_id?: string }) =>
-    req<Project>('/api/projects', { method: 'POST', body: JSON.stringify(body) }),
+  createProject: (body: {
+    title: string
+    mode: string
+    logline?: string
+    preset_id?: string
+    frame_size_id?: string
+  }) => req<Project>('/api/projects', { method: 'POST', body: JSON.stringify(body) }),
   getProject: (id: string) => req<Project>(`/api/projects/${id}`),
   saveProject: (id: string) =>
     req<Project>(`/api/projects/${id}/save`, { method: 'POST', body: '{}' }),
@@ -251,6 +256,61 @@ export const api = {
       message: string
     }>
   },
+  frameSizes: () =>
+    req<{ sizes: import('./frameSizes').FrameSize[] }>('/api/frame-sizes'),
+  setFrameSize: (id: string, frame_size_id: string) =>
+    req<Project>(`/api/projects/${id}/frame-size`, {
+      method: 'POST',
+      body: JSON.stringify({ frame_size_id }),
+    }),
+  recipes: () => req<{ recipes: import('./types').RecipeInfo[] }>('/api/recipes'),
+  applyRecipe: (id: string, recipe_id: string) =>
+    req<Project>(`/api/projects/${id}/recipes/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ recipe_id }),
+    }),
+  stitch: (id: string) =>
+    req<{
+      playlist: unknown
+      preview_url?: string | null
+      preview_path?: string | null
+      method: string
+      message: string
+    }>(`/api/projects/${id}/stitch`, { method: 'POST', body: '{}' }),
+  filmNight: (id: string, stage: 'full' | 'rehearse' | 'promote' | 'finals' | 'stitch' = 'full') =>
+    req<{
+      ok: boolean
+      project?: Project
+      message: string
+      steps?: string[]
+      next?: string | null
+      stitch?: { preview_url?: string; message?: string }
+    }>(`/api/projects/${id}/film-night`, {
+      method: 'POST',
+      body: JSON.stringify({ stage }),
+    }),
+  exportPack: (id: string) =>
+    req<{
+      zip_path: string
+      download_url: string
+      media_count: number
+      title: string
+      message: string
+    }>(`/api/projects/${id}/export/pack`, { method: 'POST', body: '{}' }),
+  listPacks: () =>
+    req<{ packs: Array<{ path: string; name: string; size_mb: number; download_url: string }> }>(
+      '/api/packs',
+    ),
+  importPack: (path: string) =>
+    req<Project>(`/api/packs/import?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  refreshIdentityLock: (id: string, characterId: string) =>
+    req<Project>(`/api/projects/${id}/characters/${characterId}/identity-lock`, {
+      method: 'POST',
+      body: '{}',
+    }),
 }
 
 export function mediaUrl(path?: string | null): string | undefined {
