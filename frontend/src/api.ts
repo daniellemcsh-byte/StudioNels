@@ -1,5 +1,6 @@
 import type {
   AgentProviderInfo,
+  AgentStatus,
   AudioClip,
   CharacterProfile,
   ContinuityData,
@@ -38,16 +39,10 @@ export const api = {
   agentProviders: () =>
     req<{
       providers: AgentProviderInfo[]
-      status: {
-        provider: string
-        label: string
-        model: string
-        needs_key: boolean
-        key_set: boolean
-        reachable: boolean
-        detail: string
-      }
+      status: AgentStatus
     }>('/api/agent/providers'),
+  agentTest: () =>
+    req<AgentStatus>('/api/agent/test', { method: 'POST', body: '{}' }),
   getPersonal: () => req<PersonalProfile>('/api/personal'),
   putPersonal: (body: {
     github_url?: string
@@ -84,6 +79,17 @@ export const api = {
     req<Project>(`/api/projects/${id}/agent`, {
       method: 'POST',
       body: JSON.stringify({ message, replace_shots }),
+    }),
+  agentChat: (id: string, message: string) =>
+    req<{
+      project: Project
+      message: string
+      ui_actions: Array<{ type: string; tab?: string; text?: string; stage?: string }>
+      used_builtin?: boolean
+      provider?: string
+    }>(`/api/projects/${id}/agent/chat`, {
+      method: 'POST',
+      body: JSON.stringify({ message, replace_shots: true }),
     }),
   addCharacter: (id: string, body: Partial<CharacterProfile>) =>
     req<Project>(`/api/projects/${id}/characters`, {

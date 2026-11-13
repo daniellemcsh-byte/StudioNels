@@ -388,6 +388,21 @@ export interface Health {
   notes?: string[]
 }
 
+export interface AgentStatus {
+  provider: string
+  label: string
+  model: string
+  needs_key: boolean
+  key_set: boolean
+  reachable: boolean
+  detail: string
+  models?: string[]
+  model_ready?: boolean
+  ok?: boolean
+  ping_ok?: boolean
+  ping_detail?: string
+}
+
 export interface RecipeInfo {
   id: string
   title: string

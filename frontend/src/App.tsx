@@ -27,6 +27,7 @@ import {
 import type {
   AgentProvider,
   AgentProviderInfo,
+  AgentStatus,
   CharacterProfile,
   ContinuityData,
   EngineJob,
@@ -249,17 +250,58 @@ export default function App() {
     }
   }
 
+  const applyAgentUiActions = async (
+    actions: Array<{ type: string; tab?: string; text?: string; stage?: string }>,
+    projectId: string,
+  ) => {
+    for (const a of actions || []) {
+      if (a.type === 'navigate' && a.tab) {
+        goTab(a.tab as TabId)
+      } else if (a.type === 'notify' && a.text) {
+        notify(a.text)
+      } else if (a.type === 'run_film_night') {
+        goTab('filmnight')
+        try {
+          const stage = (a.stage || 'full') as
+            | 'full'
+            | 'rehearse'
+            | 'promote'
+            | 'finals'
+            | 'stitch'
+          const res = await api.filmNight(projectId, stage)
+          if (res.project) setProject(res.project)
+          notify(res.message || 'Film night started.')
+        } catch (err) {
+          notify(String((err as Error).message || err))
+        }
+      }
+    }
+  }
+
   const runAgent = async () => {
     if (!project || !agentText.trim()) return
     setBusy(true)
     try {
-      const p = await api.agent(project.id, agentText.trim(), replaceShots)
-      setProject(p)
+      const res = await api.agentChat(project.id, agentText.trim())
+      setProject(res.project)
       setAgentText('')
-      goTab('shots')
-      notify('Shot list ready — edit anything before generating.')
+      await applyAgentUiActions(res.ui_actions || [], res.project.id)
+      if (!(res.ui_actions || []).some((a) => a.type === 'navigate' || a.type === 'notify')) {
+        if ((res.project.shots || []).length > 0) {
+          notify(res.message?.slice(0, 120) || 'Director replied.')
+        }
+      }
     } catch (err) {
-      notify(String((err as Error).message || err))
+      // Fallback to classic shot planner if chat endpoint missing on old server
+      try {
+        const p = await api.agent(project.id, agentText.trim(), replaceShots)
+        setProject(p)
+        setAgentText('')
+        goTab('shots')
+        notify('Shot list ready — edit anything before generating.')
+      } catch {
+        notify(String((err as Error).message || err))
+      }
     } finally {
       setBusy(false)
     }
@@ -383,9 +425,13 @@ export default function App() {
         <div className="home-top">
           <Brand />
           <div className="status-pills">
-            <span className={`pill ${health?.agent_reachable ? 'on' : 'off'}`}>
-              Agent{' '}
-              {health?.agent_label || health?.agent_provider || (health?.ollama ? 'Ollama' : 'built-in')}
+            <span
+              className={`pill ${health?.agent_reachable ? 'on' : 'off'}`}
+              title={health?.agent_detail || ''}
+            >
+              {health?.agent_reachable
+                ? `${health?.agent_label || 'Agent'} · connected`
+                : `${health?.agent_label || health?.agent_provider || 'Ollama'} · offline`}
             </span>
             <span className={`pill ${health?.gpu ? 'on' : 'off'}`}>
               Engine {health?.gpu ? health.device_name : 'preview (no GPU torch)'}
@@ -763,6 +809,9 @@ export default function App() {
             presets={presets}
             health={health}
             notify={notify}
+            onHealthRefresh={() => {
+              void api.health().then(setHealth).catch(() => undefined)
+            }}
           />
         )}
       </main>
@@ -792,10 +841,17 @@ function AgentTab({
   return (
     <div className="chat">
       <p className="hint">
-        Talk like you would to a director. Example: “A quiet sci-fi short about a courier who
-        delivers memories in glass jars.” The agent turns it into editable shots.
+        Chat with your director — it talks back and can plan shots, set TikTok/YouTube framing,
+        add characters, open Film night or Director. Example: “A rainy neon chase for TikTok.”
       </p>
       <div className="chat-log">
+        {project.agent_messages.length === 0 ? (
+          <div className="bubble assistant">
+            Hey — I’m your StudioNels director. Describe a film idea, ask for vertical framing, or
+            say “help”. If Ollama is connected (Settings → Test connection), I’ll use it; otherwise
+            I still work offline.
+          </div>
+        ) : null}
         {project.agent_messages.map((m) => (
           <div key={m.id} className={`bubble ${m.role}`}>
             {m.content}
@@ -806,7 +862,7 @@ function AgentTab({
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Describe your idea…"
+          placeholder="Talk to the director…"
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onSend()
           }}
@@ -818,10 +874,10 @@ function AgentTab({
               checked={replaceShots}
               onChange={(e) => setReplaceShots(e.target.checked)}
             />{' '}
-            Replace current shot list
+            Prefer replacing shot list on big ideas
           </label>
           <button className="btn acid" type="button" disabled={busy || !text.trim()} onClick={onSend}>
-            Plan shots
+            {busy ? 'Thinking…' : 'Send'}
           </button>
         </div>
       </div>
@@ -2128,12 +2184,12 @@ function GenerateTab({
                   {estimate.frames} frames
                   {project.aspect_ratio ? ` · ${project.aspect_ratio}` : ''}
                 </div>
-                {estimate.warnings.map((w) => (
+                {estimate.warnings.map((w: string) => (
                   <div className="fit-warn" key={w}>
                     {w}
                   </div>
                 ))}
-                {estimate.advice.map((a) => (
+                {estimate.advice.map((a: string) => (
                   <div className="muted tiny" key={a}>
                     {a}
                   </div>
@@ -2331,6 +2387,7 @@ function SettingsTab({
   presets,
   health,
   notify,
+  onHealthRefresh,
 }: {
   project: Project
   setProject: (p: Project) => void
@@ -2339,17 +2396,36 @@ function SettingsTab({
   presets: Preset[]
   health: Health | null
   notify: (m: string) => void
+  onHealthRefresh?: () => void
 }) {
   const [draft, setDraft] = useState(settings)
   const [providers, setProviders] = useState<AgentProviderInfo[]>([])
   const [keyDraft, setKeyDraft] = useState('')
+  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
+  const [testing, setTesting] = useState(false)
 
   useEffect(() => setDraft(settings), [settings])
   useEffect(() => {
-    api.agentProviders().then((r) => setProviders(r.providers)).catch(() => undefined)
-  }, [])
+    api
+      .agentProviders()
+      .then((r) => {
+        setProviders(r.providers)
+        setAgentStatus(r.status)
+      })
+      .catch(() => undefined)
+  }, [settings.agent_provider, settings.ollama_url, settings.agent_model, settings.ollama_model])
 
   const selected = providers.find((p) => p.id === draft.agent_provider)
+
+  const refreshStatus = async () => {
+    try {
+      const r = await api.agentProviders()
+      setProviders(r.providers)
+      setAgentStatus(r.status)
+    } catch {
+      /* ignore */
+    }
+  }
 
   const save = async () => {
     const body = {
@@ -2363,6 +2439,29 @@ function SettingsTab({
     const p = await api.putProject(updated)
     setProject(p)
     notify('Settings saved.')
+    await refreshStatus()
+  }
+
+  const testConnection = async () => {
+    setTesting(true)
+    try {
+      // Save draft first so the test uses the URL/model you typed
+      const body = {
+        ...draft,
+        agent_api_key: keyDraft.trim() || (draft.agent_api_key_set ? '(unchanged)' : ''),
+      }
+      const s = await api.putSettings(body)
+      setSettings(s)
+      setKeyDraft('')
+      const status = await api.agentTest()
+      setAgentStatus(status)
+      onHealthRefresh?.()
+      notify(status.detail || (status.ok ? 'Connected.' : 'Not connected.'))
+    } catch (e) {
+      notify(e instanceof Error ? e.message : 'Test failed')
+    } finally {
+      setTesting(false)
+    }
   }
 
   const onProviderChange = (id: AgentProvider) => {
@@ -2378,6 +2477,14 @@ function SettingsTab({
       ollama_model: id === 'ollama' ? draft.agent_model || draft.ollama_model : draft.ollama_model,
     })
   }
+
+  const statusTone = agentStatus?.ok
+    ? 'ok'
+    : agentStatus?.reachable
+      ? 'warn'
+      : agentStatus
+        ? 'bad'
+        : ''
 
   return (
     <div>
@@ -2401,6 +2508,46 @@ function SettingsTab({
         </div>
 
         <h3 style={{ gridColumn: '1 / -1', margin: '8px 0 0' }}>Agent LLM</h3>
+
+        <div
+          className={`agent-status-banner ${statusTone}`}
+          style={{ gridColumn: '1 / -1' }}
+        >
+          <div className="agent-status-row">
+            <span className={`agent-dot ${statusTone || 'bad'}`} aria-hidden />
+            <div>
+              <strong>
+                {agentStatus?.ok
+                  ? 'Connected'
+                  : agentStatus?.reachable
+                    ? 'Partly connected'
+                    : agentStatus
+                      ? 'Not connected'
+                      : 'Checking…'}
+              </strong>
+              <p className="muted tiny" style={{ margin: '4px 0 0' }}>
+                {agentStatus?.ping_detail ||
+                  agentStatus?.detail ||
+                  health?.agent_detail ||
+                  'Open Settings → Agent LLM, pick Ollama, then Test connection.'}
+              </p>
+              {agentStatus?.models && agentStatus.models.length > 0 ? (
+                <p className="muted tiny" style={{ margin: '6px 0 0' }}>
+                  Installed models: {agentStatus.models.join(', ')}
+                </p>
+              ) : null}
+            </div>
+          </div>
+          <button
+            className="btn ghost"
+            type="button"
+            disabled={testing}
+            onClick={() => void testConnection()}
+          >
+            {testing ? 'Testing…' : 'Test connection'}
+          </button>
+        </div>
+
         <div className="field" style={{ gridColumn: '1 / -1' }}>
           <label>Provider</label>
           <div className="provider-grid">
@@ -2442,18 +2589,41 @@ function SettingsTab({
             </div>
             <div className="field">
               <label>Ollama / agent model</label>
-              <input
-                value={draft.agent_model || draft.ollama_model}
-                onChange={(e) =>
-                  setDraft({
-                    ...draft,
-                    agent_model: e.target.value,
-                    ollama_model: e.target.value,
-                  })
-                }
-                disabled={draft.agent_provider === 'builtin'}
-                placeholder="llama3.2:3b"
-              />
+              {agentStatus?.models && agentStatus.models.length > 0 && draft.agent_provider === 'ollama' ? (
+                <select
+                  value={
+                    agentStatus.models.includes(draft.agent_model || draft.ollama_model)
+                      ? draft.agent_model || draft.ollama_model
+                      : agentStatus.models[0]
+                  }
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      agent_model: e.target.value,
+                      ollama_model: e.target.value,
+                    })
+                  }
+                >
+                  {agentStatus.models.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={draft.agent_model || draft.ollama_model}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      agent_model: e.target.value,
+                      ollama_model: e.target.value,
+                    })
+                  }
+                  disabled={draft.agent_provider === 'builtin'}
+                  placeholder="llama3.2:3b"
+                />
+              )}
             </div>
           </>
         )}
@@ -2520,11 +2690,22 @@ function SettingsTab({
         <div className="muted" style={{ gridColumn: '1 / -1' }}>
           Engine: built-in · Torch: {health?.torch ? 'yes' : 'no'} · GPU:{' '}
           {health?.gpu ? health.device_name : 'not ready'} · Agent:{' '}
-          {health?.agent_detail || health?.agent_label || '—'} · Data: {health?.data_dir}
+          {agentStatus?.detail || health?.agent_detail || health?.agent_label || '—'} · Data:{' '}
+          {health?.data_dir}
         </div>
-        <button className="btn acid" type="button" onClick={save}>
-          Save settings
-        </button>
+        <div className="cta-row" style={{ gridColumn: '1 / -1' }}>
+          <button className="btn acid" type="button" onClick={() => void save()}>
+            Save settings
+          </button>
+          <button
+            className="btn ghost"
+            type="button"
+            disabled={testing}
+            onClick={() => void testConnection()}
+          >
+            {testing ? 'Testing…' : 'Test connection'}
+          </button>
+        </div>
       </div>
     </div>
   )

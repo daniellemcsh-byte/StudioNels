@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent import plan_project
+from .agent_director import director_chat
 from .captions import captions_srt, generate_captions, timeline_progress
 from .continuity import build_bible, rescore_project
 from .engine.device import detect_device
@@ -218,6 +219,15 @@ async def agent_providers():
     return {"providers": list_providers(), "status": probe}
 
 
+@app.post("/api/agent/test")
+async def agent_test():
+    """Test current agent provider (Ollama reachability + tiny chat ping)."""
+    from .llm_providers import test_agent_ping
+
+    settings = load_settings()
+    return await test_agent_ping(settings)
+
+
 @app.get("/api/personal")
 async def get_personal():
     return personal_profile()
@@ -325,6 +335,28 @@ async def agent_plan(project_id: str, body: AgentPlanRequest):
         raise HTTPException(400, "Message required")
     project = await plan_project(project, body.message.strip(), body.replace_shots)
     return save_project(project)
+
+
+@app.post("/api/projects/{project_id}/agent/chat")
+async def agent_chat(project_id: str, body: AgentPlanRequest):
+    """Conversational director: reply + apply actions, return ui_actions for the app."""
+    try:
+        project = load_project(project_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Project not found")
+    if not body.message.strip():
+        raise HTTPException(400, "Message required")
+    result = await director_chat(project, body.message.strip())
+    # If caller still wants legacy replace-only behaviour when LLM only returned shots,
+    # director_chat already handles replace/append via actions.
+    proj = result["project"]
+    return {
+        "project": proj.model_dump() if hasattr(proj, "model_dump") else proj,
+        "message": result.get("message") or "",
+        "ui_actions": result.get("ui_actions") or [],
+        "used_builtin": bool(result.get("used_builtin")),
+        "provider": result.get("provider") or "",
+    }
 
 
 @app.post("/api/projects/{project_id}/characters", response_model=Project)

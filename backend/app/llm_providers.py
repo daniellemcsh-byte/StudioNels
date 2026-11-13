@@ -227,35 +227,131 @@ async def probe_agent(settings: Settings) -> dict[str, Any]:
     """Lightweight status for health / settings UI."""
     provider = (settings.agent_provider or "ollama").lower()
     meta = provider_meta(provider)
+    model = (
+        settings.agent_model
+        or settings.ollama_model
+        or meta.get("default_model")
+        or ""
+    )
     status: dict[str, Any] = {
         "provider": provider,
         "label": meta["label"],
-        "model": settings.agent_model
-        or settings.ollama_model
-        or meta.get("default_model")
-        or "",
+        "model": model,
         "needs_key": bool(meta.get("needs_key")),
         "key_set": bool((settings.agent_api_key or "").strip()),
         "reachable": False,
         "detail": "",
+        "models": [],
+        "model_ready": False,
+        "ok": False,
     }
     if provider == "builtin":
         status["reachable"] = True
-        status["detail"] = "Offline planner ready"
+        status["ok"] = True
+        status["model_ready"] = True
+        status["detail"] = "Built-in offline planner ready (no Ollama needed)"
         return status
     if provider == "ollama":
         base = settings.agent_api_base or settings.ollama_url or "http://127.0.0.1:11434"
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with httpx.AsyncClient(timeout=3.0) as client:
                 r = await client.get(f"{base.rstrip('/')}/api/tags")
-                status["reachable"] = r.status_code == 200
-                status["detail"] = "Ollama connected" if status["reachable"] else "Ollama offline"
-        except Exception:
-            status["detail"] = "Ollama offline"
+                if r.status_code != 200:
+                    status["detail"] = f"Ollama answered HTTP {r.status_code} — is it running?"
+                    return status
+                status["reachable"] = True
+                names = []
+                for m in (r.json().get("models") or []):
+                    name = m.get("name") or m.get("model") or ""
+                    if name:
+                        names.append(name)
+                status["models"] = names
+                # Match model with or without :tag
+                want = (model or "").strip()
+                ready = False
+                if want:
+                    ready = any(
+                        n == want or n.startswith(want + ":") or want.startswith(n.split(":")[0])
+                        for n in names
+                    )
+                    # also exact family match llama3.2 vs llama3.2:3b
+                    if not ready and ":" not in want:
+                        ready = any(n.split(":")[0] == want for n in names)
+                    if not ready:
+                        ready = any(want in n or n in want for n in names)
+                status["model_ready"] = bool(ready) if want else bool(names)
+                if not names:
+                    status["detail"] = (
+                        "Ollama is running, but no models are installed. "
+                        "In a terminal run: ollama pull llama3.2:3b"
+                    )
+                elif want and not status["model_ready"]:
+                    status["detail"] = (
+                        f"Ollama connected · model “{want}” not found. "
+                        f"Installed: {', '.join(names[:8]) or '(none)'}. "
+                        f"Run: ollama pull {want}"
+                    )
+                else:
+                    status["ok"] = True
+                    status["detail"] = (
+                        f"Ollama connected · using {want or names[0]} "
+                        f"({len(names)} model{'s' if len(names) != 1 else ''} installed)"
+                    )
+        except Exception as exc:
+            status["detail"] = (
+                "Cannot reach Ollama at "
+                f"{base}. Start the Ollama app, then click Test again. "
+                f"({exc.__class__.__name__})"
+            )
         return status
     if not status["key_set"]:
-        status["detail"] = "API key missing"
+        status["detail"] = "API key missing — paste a key and Save"
         return status
     status["reachable"] = True
-    status["detail"] = f"{meta['label']} key saved — will call on plan"
+    status["ok"] = True
+    status["model_ready"] = True
+    status["detail"] = f"{meta['label']} key saved — will call on chat/plan"
+    return status
+
+
+async def test_agent_ping(settings: Settings) -> dict[str, Any]:
+    """Probe + optional tiny generation to prove the agent path works."""
+    status = await probe_agent(settings)
+    status["ping_ok"] = False
+    status["ping_detail"] = ""
+    if not status.get("reachable"):
+        return status
+    provider = (settings.agent_provider or "ollama").lower()
+    if provider == "builtin":
+        status["ping_ok"] = True
+        status["ping_detail"] = "Built-in planner OK"
+        status["ok"] = True
+        return status
+    if provider == "ollama" and status.get("model_ready"):
+        # Tiny JSON ping so we know chat works
+        try:
+            result = await chat_json(
+                settings,
+                'Reply with ONLY JSON: {"ok": true, "hi": "short hello"}',
+                "ping",
+                max_tokens=64,
+            )
+            if result and (result.get("ok") is True or "hi" in result):
+                status["ping_ok"] = True
+                status["ping_detail"] = f"Chat works — model answered: {result.get('hi') or 'ok'}"
+                status["ok"] = True
+                status["detail"] = status["ping_detail"]
+            else:
+                status["ping_detail"] = (
+                    "Ollama is up and the model is installed, but chat returned nothing useful. "
+                    "Try another model or restart Ollama."
+                )
+        except Exception as exc:
+            status["ping_detail"] = f"Chat ping failed: {exc.__class__.__name__}"
+    elif provider == "ollama":
+        status["ping_detail"] = status.get("detail") or "Pull a model first"
+    else:
+        status["ping_ok"] = bool(status.get("key_set"))
+        status["ping_detail"] = "Key saved — will be used on the next Agent message"
+        status["ok"] = status["ping_ok"]
     return status
