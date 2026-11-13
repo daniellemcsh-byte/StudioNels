@@ -1,0 +1,28 @@
+{
+  "id": "proj_6479f422cb",
+  "title": "My first local film",
+  "mode": "short",
+  "logline": "",
+  "created_at": "2026-11-13T13:53:40.158102+00:00",
+  "updated_at": "2026-11-13T13:53:40.158229+00:00",
+  "characters": [],
+  "scenes": [],
+  "shots": [],
+  "takes": [],
+  "timeline": [],
+  "agent_messages": [
+    {
+      "id": "msg_d8e861dc06",
+      "role": "assistant",
+      "content": "Welcome to Framewright. Tell me your idea for this short and I'll break it into editable shots. Add characters and scenes in Profiles first if you already know them — or we can invent as we go.",
+      "created_at": "2026-11-13T13:53:40.158178+00:00"
+    }
+  ],
+  "preset_id": "amd-low-vram",
+  "target_duration_sec": 60.0,
+  "visual_style": "cinematic",
+  "image_format": "png",
+  "video_format": "mp4",
+  "audio_format": "wav",
+  "meta": {}
+}

@@ -89,6 +89,7 @@ export interface CharacterProfile {
   look: string
   personality: string
   voice_notes: string
+  character_lock?: string
   reference_path?: string | null
   tags: string[]
 }

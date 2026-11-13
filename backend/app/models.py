@@ -35,6 +35,7 @@ class CharacterProfile(BaseModel):
     look: str = ""
     personality: str = ""
     voice_notes: str = ""
+    character_lock: str = ""
     reference_path: str | None = None
     tags: list[str] = Field(default_factory=list)
 

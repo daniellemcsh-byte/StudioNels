@@ -127,6 +127,7 @@ export function buildCharacterPrompt(
   traits: Record<string, string>,
   extra: string,
   styleSuffix?: string,
+  characterLock?: string,
 ): { look: string; prompt: string } {
   const bits: string[] = []
   for (const group of CHARACTER_TRAITS) {
@@ -136,10 +137,13 @@ export function buildCharacterPrompt(
   if (extra.trim()) bits.push(extra.trim())
   const look = bits.join(', ')
   const who = name.trim() || 'unnamed character'
+  const lock = characterLock?.trim()
   const prompt = [
     `character portrait of ${who}`,
+    lock ? `character lock (keep identical every time): ${lock}` : '',
     look,
     'coherent face, clear features, studio character sheet, front three-quarter view',
+    'same identity, consistent facial structure',
     styleSuffix || 'cinematic lighting',
   ]
     .filter(Boolean)

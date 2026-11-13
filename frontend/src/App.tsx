@@ -36,25 +36,59 @@ import type {
 } from './types'
 import './styles.css'
 
-const TABS: { id: TabId; label: string }[] = [
-  { id: 'inspiration', label: 'Inspiration' },
-  { id: 'agent', label: 'Agent' },
-  { id: 'profiles', label: 'Profiles' },
-  { id: 'time', label: 'Time & Style' },
-  { id: 'shots', label: 'Shots' },
-  { id: 'storyboard', label: 'Storyboard' },
-  { id: 'characters', label: 'Characters' },
-  { id: 'creator', label: 'Creator' },
-  { id: 'generate', label: 'Generate' },
-  { id: 'audio', label: 'Audio' },
-  { id: 'upsample', label: 'Upsample' },
-  { id: 'models', label: 'Models' },
-  { id: 'addons', label: 'Add-ons' },
-  { id: 'sampling', label: 'Sampling' },
-  { id: 'director', label: 'Director' },
-  { id: 'info', label: 'Info' },
-  { id: 'settings', label: 'Settings' },
+const NAV_GROUPS: { id: string; label: string; items: { id: TabId; label: string }[] }[] = [
+  {
+    id: 'start',
+    label: 'Start',
+    items: [
+      { id: 'inspiration', label: 'Inspiration' },
+      { id: 'agent', label: 'Agent' },
+      { id: 'profiles', label: 'Profiles' },
+      { id: 'time', label: 'Time & Style' },
+      { id: 'creator', label: 'Creator' },
+    ],
+  },
+  {
+    id: 'story',
+    label: 'Story',
+    items: [
+      { id: 'shots', label: 'Shots' },
+      { id: 'storyboard', label: 'Storyboard' },
+      { id: 'characters', label: 'Characters' },
+    ],
+  },
+  {
+    id: 'make',
+    label: 'Make',
+    items: [
+      { id: 'generate', label: 'Generate' },
+      { id: 'audio', label: 'Audio' },
+      { id: 'upsample', label: 'Upsample' },
+      { id: 'models', label: 'Models' },
+    ],
+  },
+  {
+    id: 'edit',
+    label: 'Edit',
+    items: [
+      { id: 'sampling', label: 'Sampling' },
+      { id: 'director', label: 'Director' },
+    ],
+  },
+  {
+    id: 'system',
+    label: 'System',
+    items: [
+      { id: 'addons', label: 'Add-ons' },
+      { id: 'info', label: 'Info' },
+      { id: 'settings', label: 'Settings' },
+    ],
+  },
 ]
+
+function groupForTab(tabId: TabId): string {
+  return NAV_GROUPS.find((g) => g.items.some((i) => i.id === tabId))?.id || 'start'
+}
 
 export type InspirationSeed = {
   mode: GenMode
@@ -98,9 +132,23 @@ export default function App() {
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [project, setProject] = useState<Project | null>(null)
   const [tab, setTab] = useState<TabId>('inspiration')
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
+    start: true,
+    story: false,
+    make: false,
+    edit: false,
+    system: false,
+  })
+  const [navOpen, setNavOpen] = useState(true)
   const [inspirationSeed, setInspirationSeed] = useState<InspirationSeed | null>(null)
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+
+  const goTab = (id: TabId) => {
+    setTab(id)
+    const gid = groupForTab(id)
+    setOpenGroups((prev) => ({ ...prev, [gid]: true }))
+  }
   const [showNew, setShowNew] = useState(false)
   const [title, setTitle] = useState('My first local film')
   const [mode, setMode] = useState<Mode>('short')
@@ -134,7 +182,7 @@ export default function App() {
     try {
       const p = await api.getProject(id)
       setProject(p)
-      setTab('agent')
+      goTab('agent')
     } finally {
       setBusy(false)
     }
@@ -151,7 +199,7 @@ export default function App() {
       })
       setShowNew(false)
       setProject(p)
-      setTab('profiles')
+      goTab('profiles')
       await refreshHome()
       notify('Project created — add a character or jump to Agent.')
     } catch (err) {
@@ -183,7 +231,7 @@ export default function App() {
       const p = await api.agent(project.id, agentText.trim(), replaceShots)
       setProject(p)
       setAgentText('')
-      setTab('shots')
+      goTab('shots')
       notify('Shot list ready — edit anything before generating.')
     } catch (err) {
       notify(String((err as Error).message || err))
@@ -198,7 +246,7 @@ export default function App() {
     try {
       const p = await api.generate(project.id, shotIds, 'video')
       setProject(p)
-      setTab('sampling')
+      goTab('sampling')
       notify(
         health?.gpu
           ? 'Queued on the built-in engine — check Generate for progress.'
@@ -325,15 +373,25 @@ export default function App() {
     )
   }
 
+  const activeLabel =
+    NAV_GROUPS.flatMap((g) => g.items).find((i) => i.id === tab)?.label || tab
+
   return (
-    <div className="app-shell studio">
+    <div className={`app-shell studio ${navOpen ? 'nav-open' : 'nav-collapsed'}`}>
       <header className="studio-top">
         <div className="studio-title">
+          <button
+            className="btn ghost nav-toggle"
+            type="button"
+            aria-label={navOpen ? 'Hide menu' : 'Show menu'}
+            onClick={() => setNavOpen((v) => !v)}
+          >
+            {navOpen ? '☰ Hide' : '☰ Menu'}
+          </button>
           <Brand />
           <strong>{project.title}</strong>
           <span>
-            {project.mode.replace('_', ' ')} · {project.shots.length} shots · preset{' '}
-            {project.preset_id}
+            {activeLabel} · {project.mode.replace('_', ' ')} · {project.shots.length} shots
           </span>
         </div>
         <div className="studio-actions">
@@ -354,20 +412,46 @@ export default function App() {
         </div>
       </header>
 
-      <nav className="tabs" aria-label="Studio sections">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className={`tab ${tab === t.id ? 'active' : ''}`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
+      <div className="studio-layout">
+        <aside className={`side-nav ${navOpen ? 'open' : 'closed'}`} aria-label="Studio sections">
+          <div className="side-nav-inner">
+            <div className="side-nav-head">Studio</div>
+            {NAV_GROUPS.map((group) => {
+              const open = !!openGroups[group.id]
+              return (
+                <div className="nav-group" key={group.id}>
+                  <button
+                    type="button"
+                    className={`nav-group-btn ${open ? 'open' : ''}`}
+                    onClick={() =>
+                      setOpenGroups((prev) => ({ ...prev, [group.id]: !prev[group.id] }))
+                    }
+                    aria-expanded={open}
+                  >
+                    <span>{group.label}</span>
+                    <span className="chev">{open ? '▾' : '▸'}</span>
+                  </button>
+                  {open && (
+                    <div className="nav-sublist">
+                      {group.items.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={`nav-item ${tab === item.id ? 'active' : ''}`}
+                          onClick={() => goTab(item.id)}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </aside>
 
-      <main className="studio-body">
+        <main className="studio-body">
         {tab === 'inspiration' && (
           <InspirationTab
             onTry={(clip) => {
@@ -376,7 +460,7 @@ export default function App() {
                 prompt: clip.prompt,
                 title: clip.title,
               })
-              setTab('generate')
+              goTab('generate')
               notify(`Loaded “${clip.title}” into Generate.`)
             }}
           />
@@ -482,6 +566,7 @@ export default function App() {
           />
         )}
       </main>
+      </div>
       {toast && <div className="toast">{toast}</div>}
     </div>
   )
@@ -795,6 +880,15 @@ function ProfileChar({
             <input
               value={draft.voice_notes}
               onChange={(e) => setDraft({ ...draft, voice_notes: e.target.value })}
+            />
+          </div>
+          <div className="lock-box">
+            <label>Character lock</label>
+            <textarea
+              rows={3}
+              value={draft.character_lock || ''}
+              onChange={(e) => setDraft({ ...draft, character_lock: e.target.value })}
+              placeholder="Identity details to keep the same every generation…"
             />
           </div>
           <div className="field">
@@ -2186,13 +2280,16 @@ function CreatorTab({
   const [name, setName] = useState('Mira')
   const [role, setRole] = useState('lead')
   const [extra, setExtra] = useState('silver jacket, memorable silhouette')
+  const [characterLock, setCharacterLock] = useState(
+    'oval face, soft jaw, small beauty mark under left eye, steady gaze',
+  )
   const [traits, setTraits] = useState<Record<string, string>>({ ...DEFAULT_TRAITS })
   const [busy, setBusy] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [lastLook, setLastLook] = useState('')
   const style = VISUAL_STYLES.find((s) => s.id === project.visual_style)
 
-  const built = buildCharacterPrompt(name, traits, extra, style?.prompt_suffix)
+  const built = buildCharacterPrompt(name, traits, extra, style?.prompt_suffix, characterLock)
 
   const setTrait = (groupId: string, optionId: string) => {
     setTraits((prev) => ({ ...prev, [groupId]: optionId }))
@@ -2201,7 +2298,13 @@ function CreatorTab({
   const generateCharacter = async () => {
     setBusy(true)
     try {
-      const { look, prompt } = buildCharacterPrompt(name, traits, extra, style?.prompt_suffix)
+      const { look, prompt } = buildCharacterPrompt(
+        name,
+        traits,
+        extra,
+        style?.prompt_suffix,
+        characterLock,
+      )
       setLastLook(look)
 
       // Create or update a matching character profile
@@ -2214,6 +2317,7 @@ function CreatorTab({
           ...character,
           role,
           look,
+          character_lock: characterLock,
           personality: character.personality || traits.vibe || '',
         }
         p = await api.updateCharacter(project.id, character)
@@ -2224,6 +2328,7 @@ function CreatorTab({
           look,
           personality: traits.vibe || '',
           voice_notes: '',
+          character_lock: characterLock,
           tags: ['creator'],
         })
         character = p.characters.find(
@@ -2265,11 +2370,12 @@ function CreatorTab({
           ...fresh,
           look,
           role,
+          character_lock: characterLock,
           reference_path: media,
         })
         setProject(p)
         setPreviewUrl(mediaUrl(media) || null)
-        notify(`Created ${name} — ref saved. Edit anytime in Characters.`)
+        notify(`Created ${name} — lock + ref saved. Edit anytime in Characters.`)
       } else {
         notify('Generated — open Characters if the ref needs a refresh.')
         const latest = await api.getProject(project.id)
@@ -2285,8 +2391,8 @@ function CreatorTab({
   return (
     <div>
       <p className="hint">
-        Sims-style character creator — pick skin, eyes, hair, build, then generate a portrait ref.
-        Uses your Time tab style ({style?.label || 'cinematic'}).
+        Sims-style character creator — pick skin, eyes, hair, build, write a character lock, then
+        generate. Uses your Time tab style ({style?.label || 'cinematic'}).
         {health?.gpu ? '' : ' Preview mode until an image model is installed.'}
       </p>
 
@@ -2301,6 +2407,20 @@ function CreatorTab({
               <label>Role</label>
               <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="lead / rival / guide" />
             </div>
+          </div>
+
+          <div className="lock-box">
+            <label>Character lock</label>
+            <p className="muted tiny">
+              Short identity notes that stay the same every generation (face marks, bone structure,
+              signature details).
+            </p>
+            <textarea
+              rows={3}
+              value={characterLock}
+              onChange={(e) => setCharacterLock(e.target.value)}
+              placeholder="e.g. oval face, soft jaw, beauty mark under left eye, steady gaze…"
+            />
           </div>
 
           {CHARACTER_TRAITS.map((group) => (

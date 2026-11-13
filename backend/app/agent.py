@@ -54,7 +54,8 @@ STYLE_HINTS = {
 
 def _profiles_context(project: Project) -> str:
     chars = [
-        f"- {c.name}: role={c.role}; look={c.look}; personality={c.personality}"
+        f"- {c.name}: role={c.role}; look={c.look}; "
+        f"lock={getattr(c, 'character_lock', '') or '(none)'}; personality={c.personality}"
         for c in project.characters
     ]
     scenes = [
