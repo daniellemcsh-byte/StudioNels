@@ -29,22 +29,28 @@ def load_settings() -> Settings:
 
 def save_settings(settings: Settings) -> Settings:
     ensure_dirs()
-    # Keep existing API key when client sends blank / masked placeholder
+    # Keep existing secrets when client sends blank / masked placeholder
     existing = load_settings()
     key = (settings.agent_api_key or "").strip()
     if not key or key in ("••••••••", "***", "(unchanged)"):
         settings.agent_api_key = existing.agent_api_key or ""
+    hf = (settings.huggingface_token or "").strip()
+    if not hf or hf in ("••••••••", "***", "(unchanged)"):
+        settings.huggingface_token = existing.huggingface_token or ""
     _write_json(SETTINGS_PATH, settings.model_dump())
     return settings
 
 
 def settings_public(settings: Settings | None = None) -> dict:
-    """Settings for the UI — never send the raw API key back."""
+    """Settings for the UI — never send raw API / HF tokens back."""
     s = settings or load_settings()
     data = s.model_dump()
     key = (data.get("agent_api_key") or "").strip()
     data["agent_api_key"] = ""
     data["agent_api_key_set"] = bool(key)
+    hf = (data.get("huggingface_token") or "").strip()
+    data["huggingface_token"] = ""
+    data["huggingface_token_set"] = bool(hf)
     return data
 
 

@@ -18,6 +18,8 @@ export type TabId =
   | 'rehearsal'
   | 'sampling'
   | 'director'
+  | 'learning'
+  | 'sources'
   | 'info'
   | 'settings'
 
@@ -158,8 +160,16 @@ export interface TimelineClip {
   take_id?: string | null
   start_sec: number
   end_sec?: number | null
+  trim_in?: number
+  trim_out?: number | null
+  speed?: number
   pinned: boolean
   order: number
+  caption?: string
+  caption_style?: string
+  filter_id?: string
+  filter_intensity?: number
+  director_note?: string
 }
 
 export interface AgentMessage {
@@ -192,6 +202,8 @@ export interface Project {
   continuity_rules?: string[]
   auto_reject_below?: number
   continue_from_previous?: boolean
+  default_filter_id?: string
+  captions_enabled?: boolean
   meta: Record<string, unknown>
 }
 
@@ -270,10 +282,38 @@ export interface Settings {
   agent_api_base: string
   agent_api_key: string
   agent_api_key_set?: boolean
+  github_url: string
+  huggingface_url: string
+  huggingface_token: string
+  huggingface_token_set?: boolean
+  creator_display_name: string
   auto_save: boolean
   friendly_mode: boolean
   default_gen_mode: string
   cpu_offload: boolean
+}
+
+export interface PersonalProfile {
+  github_url: string
+  huggingface_url: string
+  huggingface_token_set: boolean
+  display_name: string
+  imports: PersonalImportJob[]
+  hints: Record<string, string>
+}
+
+export interface PersonalImportJob {
+  id: string
+  kind: 'model' | 'lora' | 'addon'
+  source: string
+  name: string
+  status: string
+  progress: number
+  message: string
+  local_path?: string | null
+  error?: string | null
+  created_at: string
+  updated_at: string
 }
 
 export interface AgentProviderInfo {

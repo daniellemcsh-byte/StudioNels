@@ -92,10 +92,21 @@ class TimelineClip(BaseModel):
     id: str = Field(default_factory=lambda: new_id("clip"))
     shot_id: str
     take_id: str | None = None
+    # Source trim window inside the take
     start_sec: float = 0.0
     end_sec: float | None = None
+    trim_in: float = 0.0
+    trim_out: float | None = None
+    speed: float = 1.0
     pinned: bool = False
     order: int = 0
+    # Captions (editable in Director)
+    caption: str = ""
+    caption_style: str = "bottom"
+    # Look filter over this clip
+    filter_id: str = "none"
+    filter_intensity: float = 1.0
+    director_note: str = ""
 
 
 class AgentMessage(BaseModel):
@@ -130,6 +141,9 @@ class Project(BaseModel):
     auto_reject_below: float = 0.55
     # When true, multi-shot generate chains i2v from each prior take's last frame
     continue_from_previous: bool = True
+    # Director defaults
+    default_filter_id: str = "none"
+    captions_enabled: bool = True
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -153,10 +167,28 @@ class Settings(BaseModel):
     agent_model: str = ""
     agent_api_base: str = ""
     agent_api_key: str = ""
+    # Personal hubs — where the user keeps / shares their own packs
+    github_url: str = ""
+    huggingface_url: str = ""
+    huggingface_token: str = ""
+    creator_display_name: str = ""
     auto_save: bool = True
     friendly_mode: bool = True
     default_gen_mode: str = "t2v"
     cpu_offload: bool = True
+
+
+class PersonalLinksRequest(BaseModel):
+    github_url: str | None = None
+    huggingface_url: str | None = None
+    huggingface_token: str | None = None
+    creator_display_name: str | None = None
+
+
+class PersonalImportRequest(BaseModel):
+    kind: Literal["model", "lora", "addon"] = "model"
+    source: str
+    name: str | None = None
 
 
 class EngineGenerateRequest(BaseModel):

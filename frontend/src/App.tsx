@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { api, mediaUrl } from './api'
+import { LEARN_TOPICS, type LearnSectionId } from './learning'
+import {
+  CAPTION_STYLES,
+  DIRECTOR_FILTERS,
+  filterCss,
+  formatTimecode,
+} from './directorCatalog'
 import { INSPIRATION_CLIPS, type InspirationClip } from './inspiration'
 import {
   DURATION_PRESETS,
@@ -38,6 +45,7 @@ import type {
   Shot,
   TabId,
   Take,
+  TimelineClip,
 } from './types'
 import './styles.css'
 
@@ -86,6 +94,8 @@ const NAV_GROUPS: { id: string; label: string; items: { id: TabId; label: string
     id: 'system',
     label: 'System',
     items: [
+      { id: 'learning', label: 'Learning' },
+      { id: 'sources', label: 'My links' },
       { id: 'addons', label: 'Add-ons' },
       { id: 'info', label: 'Info' },
       { id: 'settings', label: 'Settings' },
@@ -157,6 +167,7 @@ export default function App() {
     setOpenGroups((prev) => ({ ...prev, [gid]: true }))
   }
   const [showNew, setShowNew] = useState(false)
+  const [homeView, setHomeView] = useState<'home' | 'learning' | 'sources'>('home')
   const [title, setTitle] = useState('My first local film')
   const [mode, setMode] = useState<Mode>('short')
   const [agentText, setAgentText] = useState('')
@@ -287,6 +298,79 @@ export default function App() {
   }
 
   if (!project) {
+    if (homeView === 'learning') {
+      return (
+        <div className="app-shell">
+          <header className="studio-top">
+            <div className="studio-title">
+              <Brand />
+              <span>Learning</span>
+            </div>
+            <div className="studio-actions">
+              <button className="btn ghost" type="button" onClick={() => setHomeView('home')}>
+                Back
+              </button>
+              <button className="btn acid" type="button" onClick={() => setShowNew(true)}>
+                Start a project
+              </button>
+            </div>
+          </header>
+          <main className="studio-main">
+            <LearningTab
+              onGo={(id) => {
+                if (id === 'sources') setHomeView('sources')
+                else notify('Open a project to jump to that studio tab.')
+              }}
+            />
+          </main>
+          {toast && <div className="toast">{toast}</div>}
+          {showNew && (
+            <div className="modal-backdrop" onClick={() => setShowNew(false)}>
+              <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={createProject}>
+                <h2>New project</h2>
+                <div className="field">
+                  <label htmlFor="title-learn">Title</label>
+                  <input id="title-learn" value={title} onChange={(e) => setTitle(e.target.value)} required />
+                </div>
+                <div className="cta-row">
+                  <button className="btn ghost" type="button" onClick={() => setShowNew(false)}>
+                    Cancel
+                  </button>
+                  <button className="btn acid" type="submit" disabled={busy}>
+                    Create
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+        </div>
+      )
+    }
+    if (homeView === 'sources') {
+      return (
+        <div className="app-shell">
+          <header className="studio-top">
+            <div className="studio-title">
+              <Brand />
+              <span>My links</span>
+            </div>
+            <div className="studio-actions">
+              <button className="btn ghost" type="button" onClick={() => setHomeView('home')}>
+                Back
+              </button>
+              <button className="btn secondary" type="button" onClick={() => setHomeView('learning')}>
+                Learning
+              </button>
+            </div>
+          </header>
+          <main className="studio-main">
+            <SourcesTab notify={notify} />
+          </main>
+          {toast && <div className="toast">{toast}</div>}
+        </div>
+      )
+    }
+
     return (
       <div className="app-shell home">
         <div className="home-top">
@@ -317,12 +401,11 @@ export default function App() {
             <button className="btn acid" type="button" onClick={() => setShowNew(true)}>
               Start a project
             </button>
-            <button
-              className="btn secondary"
-              type="button"
-              onClick={() => document.getElementById('projects')?.scrollIntoView({ behavior: 'smooth' })}
-            >
-              Open saved work
+            <button className="btn secondary" type="button" onClick={() => setHomeView('learning')}>
+              Learning guide
+            </button>
+            <button className="btn ghost" type="button" onClick={() => setHomeView('sources')}>
+              My GitHub / HF
             </button>
           </div>
         </section>
@@ -555,6 +638,8 @@ export default function App() {
           <UpsampleTab project={project} notify={notify} />
         )}
         {tab === 'models' && <ModelsTab notify={notify} />}
+        {tab === 'learning' && <LearningTab onGo={goTab} />}
+        {tab === 'sources' && <SourcesTab notify={notify} />}
         {tab === 'addons' && <AddonsTab notify={notify} />}
         {tab === 'info' && <InfoTab />}
         {tab === 'continuity' && (
@@ -2087,6 +2172,40 @@ function SamplingTab({
   )
 }
 
+function clipDuration(clip: TimelineClip, shotDur: number): number {
+  const tin = clip.trim_in ?? clip.start_sec ?? 0
+  const tout =
+    clip.trim_out ??
+    clip.end_sec ??
+    shotDur ??
+    3
+  const raw = Math.max(0.2, Number(tout) - Number(tin))
+  const speed = clip.speed && clip.speed > 0 ? clip.speed : 1
+  return raw / speed
+}
+
+function normalizeClip(c: TimelineClip, order: number, shotDur = 3): TimelineClip {
+  const id = c.id.startsWith('temp_') ? `clip_${c.shot_id}` : c.id
+  const trimOut = c.trim_out ?? c.end_sec ?? shotDur
+  return {
+    id,
+    shot_id: c.shot_id,
+    take_id: c.take_id ?? null,
+    start_sec: c.start_sec ?? 0,
+    end_sec: c.end_sec ?? trimOut,
+    trim_in: c.trim_in ?? c.start_sec ?? 0,
+    trim_out: trimOut,
+    speed: c.speed ?? 1,
+    pinned: c.pinned ?? true,
+    order,
+    caption: c.caption ?? '',
+    caption_style: c.caption_style || 'bottom',
+    filter_id: c.filter_id || 'none',
+    filter_intensity: c.filter_intensity ?? 1,
+    director_note: c.director_note ?? '',
+  }
+}
+
 function DirectorTab({
   project,
   setProject,
@@ -2100,77 +2219,230 @@ function DirectorTab({
   setBusy: (v: boolean) => void
   notify: (m: string) => void
 }) {
-  const clips =
-    project.timeline.length > 0
-      ? [...project.timeline].sort((a, b) => a.order - b.order)
-      : project.shots
-          .filter((s) => s.pinned_take_id)
-          .map((s, i) => ({
-            id: `temp_${s.id}`,
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [playhead, setPlayhead] = useState(0)
+
+  const clips: TimelineClip[] = useMemo(() => {
+    if (project.timeline.length > 0) {
+      return [...project.timeline].sort((a, b) => a.order - b.order)
+    }
+    return project.shots
+      .filter((s) => s.pinned_take_id)
+      .map((s, i) => ({
+        id: `temp_${s.id}`,
+        shot_id: s.id,
+        take_id: s.pinned_take_id,
+        start_sec: 0,
+        end_sec: s.duration_sec,
+        trim_in: 0,
+        trim_out: s.duration_sec,
+        speed: 1,
+        pinned: true,
+        order: i,
+        caption: '',
+        caption_style: 'bottom',
+        filter_id: project.default_filter_id || 'none',
+        filter_intensity: 1,
+        director_note: '',
+      }))
+  }, [project])
+
+  const layout = useMemo(() => {
+    let cursor = 0
+    return clips.map((clip) => {
+      const shot = project.shots.find((s) => s.id === clip.shot_id)
+      const dur = clipDuration(clip, shot?.duration_sec || 3)
+      const seg = { clip, shot, start: cursor, end: cursor + dur, dur }
+      cursor += dur
+      return seg
+    })
+  }, [clips, project.shots])
+
+  const totalSec = layout.length ? layout[layout.length - 1].end : 0
+  const selected = clips.find((c) => c.id === selectedId) || clips[0] || null
+  const selectedSeg = layout.find((s) => s.clip.id === selected?.id)
+  const selectedTake = selected
+    ? project.takes.find((t) => t.id === selected.take_id)
+    : undefined
+  const readyCount = clips.filter((c) => c.take_id).length
+  const pct = clips.length ? Math.round((readyCount / clips.length) * 100) : 0
+
+  const persist = async (nextClips: TimelineClip[], msg?: string) => {
+    setBusy(true)
+    try {
+      const payload = nextClips.map((c, order) => {
+        const shot = project.shots.find((s) => s.id === c.shot_id)
+        return normalizeClip(c, order, shot?.duration_sec || 3)
+      })
+      const p = await api.setTimeline(project.id, payload)
+      setProject(p)
+      if (msg) notify(msg)
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const patchSelected = async (patch: Partial<TimelineClip>) => {
+    if (!selected) return
+    const next = clips.map((c) => (c.id === selected.id ? { ...c, ...patch } : c))
+    await persist(next)
+  }
+
+  const buildFromPins = async () => {
+    const built = project.shots
+      .filter((s) => s.pinned_take_id)
+      .map((s, order) =>
+        normalizeClip(
+          {
+            id: `clip_${s.id}`,
             shot_id: s.id,
             take_id: s.pinned_take_id,
             start_sec: 0,
             end_sec: s.duration_sec,
+            trim_in: 0,
+            trim_out: s.duration_sec,
+            speed: 1,
             pinned: true,
-            order: i,
-          }))
+            order,
+            caption: '',
+            caption_style: 'bottom',
+            filter_id: project.default_filter_id || 'none',
+            filter_intensity: 1,
+            director_note: '',
+          },
+          order,
+          s.duration_sec,
+        ),
+      )
+    await persist(built, 'Timeline built from pinned takes.')
+  }
 
   const move = async (index: number, dir: -1 | 1) => {
     const next = clips.map((c) => ({ ...c }))
     const j = index + dir
     if (j < 0 || j >= next.length) return
     ;[next[index], next[j]] = [next[j], next[index]]
-    setBusy(true)
-    try {
-      const p = await api.setTimeline(
-        project.id,
-        next.map((c, order) => ({
-          id: c.id.startsWith('temp_') ? `clip_${c.shot_id}` : c.id,
-          shot_id: c.shot_id,
-          take_id: c.take_id,
-          start_sec: c.start_sec,
-          end_sec: c.end_sec ?? null,
-          pinned: c.pinned,
-          order,
-        })),
-      )
-      setProject(p)
-    } finally {
-      setBusy(false)
-    }
+    await persist(next)
   }
 
-  const buildFromPins = async () => {
-    setBusy(true)
-    try {
-      const built = project.shots
-        .filter((s) => s.pinned_take_id)
-        .map((s, order) => ({
-          id: `clip_${s.id}`,
-          shot_id: s.id,
-          take_id: s.pinned_take_id,
-          start_sec: 0,
-          end_sec: s.duration_sec,
-          pinned: true,
-          order,
-        }))
-      const p = await api.setTimeline(project.id, built)
-      setProject(p)
-      notify('Director timeline built from pinned takes.')
-    } finally {
-      setBusy(false)
+  const cutClip = async () => {
+    if (!selected) return
+    const shot = project.shots.find((s) => s.id === selected.shot_id)
+    const dur = clipDuration(selected, shot?.duration_sec || 3)
+    if (dur < 0.6) {
+      notify('Clip too short to cut — trim instead.')
+      return
     }
+    const tin = selected.trim_in ?? 0
+    const tout = selected.trim_out ?? selected.end_sec ?? dur
+    const mid = tin + (Number(tout) - tin) / 2
+    const a: TimelineClip = {
+      ...selected,
+      id: selected.id.startsWith('temp_') ? `clip_${selected.shot_id}_a` : `${selected.id}_a`,
+      trim_out: mid,
+      end_sec: mid,
+    }
+    const b: TimelineClip = {
+      ...selected,
+      id: `clip_${selected.shot_id}_${Date.now().toString(36)}`,
+      trim_in: mid,
+      start_sec: mid,
+      caption: selected.caption || '',
+    }
+    const idx = clips.findIndex((c) => c.id === selected.id)
+    const next = [...clips.slice(0, idx), a, b, ...clips.slice(idx + 1)]
+    setSelectedId(a.id)
+    await persist(next, 'Cut into two clips.')
   }
+
+  const removeClip = async () => {
+    if (!selected) return
+    const next = clips.filter((c) => c.id !== selected.id)
+    setSelectedId(next[0]?.id || null)
+    await persist(next, 'Clip removed from timeline.')
+  }
+
+  const applyFilterAll = async (filterId: string) => {
+    const next = clips.map((c) => ({ ...c, filter_id: filterId }))
+    const p = await api.putProject({ ...project, default_filter_id: filterId })
+    setProject(p)
+    await persist(next, `Filter “${filterId}” on all clips.`)
+  }
+
+  useEffect(() => {
+    if (!selectedId && clips[0]) setSelectedId(clips[0].id)
+  }, [clips, selectedId])
 
   return (
-    <div className="timeline">
+    <div className="director">
       <p className="hint">
-        Director mode: pin takes in Sampling, arrange them here, add notes, and keep editing as you
-        go. Export is your ordered cut list for an NLE or local stitcher.
+        Cut, trim, caption, and grade on a real timeline. The playhead shows where you are in the
+        cut — click a block to edit that scene.
       </p>
-      <div className="inline-actions">
+
+      <div className="director-progress panel">
+        <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
+          <strong>
+            Progress · {readyCount}/{clips.length} clips with media · {pct}%
+          </strong>
+          <span className="muted tiny">
+            Total {formatTimecode(totalSec)} / target {formatTimecode(project.target_duration_sec || 0)}
+          </span>
+        </div>
+        <div className="progress" style={{ marginTop: 8 }}>
+          <div style={{ width: `${pct}%` }} />
+        </div>
+        <div className="muted tiny" style={{ marginTop: 6 }}>
+          Playhead {formatTimecode(playhead)}
+          {selectedSeg
+            ? ` · editing “${selectedSeg.shot?.title || 'clip'}” (${formatTimecode(selectedSeg.start)}–${formatTimecode(selectedSeg.end)})`
+            : ''}
+        </div>
+      </div>
+
+      <div className="inline-actions" style={{ flexWrap: 'wrap' }}>
         <button className="btn acid" type="button" disabled={busy} onClick={buildFromPins}>
-          Build timeline from pins
+          Build from pins
+        </button>
+        <button
+          className="btn secondary"
+          type="button"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            try {
+              const p = await api.generateCaptions(project.id, false)
+              setProject(p)
+              notify('Captions generated from dialogue / action — edit any line below.')
+            } catch (err) {
+              notify(String((err as Error).message || err))
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          Generate captions
+        </button>
+        <button
+          className="btn ghost"
+          type="button"
+          disabled={busy || !selected}
+          onClick={cutClip}
+        >
+          Cut clip in half
+        </button>
+        <button className="btn ghost" type="button" disabled={busy || !selected} onClick={removeClip}>
+          Remove from timeline
+        </button>
+        <button
+          className="btn ghost"
+          type="button"
+          disabled={busy}
+          onClick={() => window.open(api.captionsSrtUrl(project.id), '_blank')}
+        >
+          Download .srt
         </button>
         <button
           className="btn ghost"
@@ -2180,9 +2452,7 @@ function DirectorTab({
             setBusy(true)
             try {
               const pack = await api.exportNle(project.id)
-              notify(
-                `NLE package ready · ${pack.clip_count} clips · ${pack.media_copied} media files`,
-              )
+              notify(`NLE package · ${pack.clip_count} clips`)
               window.open(pack.download_url, '_blank')
             } catch (err) {
               notify(String((err as Error).message || err))
@@ -2191,55 +2461,239 @@ function DirectorTab({
             }
           }}
         >
-          Export EDL / FCPXML zip
+          Export EDL / FCPXML
         </button>
       </div>
+
       {clips.length === 0 ? (
-        <div className="empty">Pin takes in Sampling to start directing.</div>
+        <div className="empty">Pin takes in Sampling, then Build from pins.</div>
       ) : (
-        <div className="timeline-track">
-          {clips.map((clip, i) => {
-            const shot = project.shots.find((s) => s.id === clip.shot_id)
-            const take = project.takes.find((t) => t.id === clip.take_id)
-            return (
-              <div className={`clip ${clip.pinned ? 'pinned' : ''}`} key={clip.id}>
-                <strong>
-                  {i + 1}. {shot?.title || 'Shot'}
-                </strong>
-                <div className="muted tiny">{take?.label || 'No take'}</div>
-                {mediaUrl(take?.thumb_path || take?.media_path) && (
-                  <img
-                    src={mediaUrl(take?.thumb_path || take?.media_path)}
-                    alt=""
-                    style={{ width: '100%', borderRadius: 8, aspectRatio: '16/9', objectFit: 'cover' }}
-                  />
-                )}
-                <div className="inline-actions">
-                  <button className="btn ghost tiny" type="button" disabled={busy} onClick={() => move(i, -1)}>
-                    ←
+        <>
+          <div className="panel director-ruler">
+            <h3>Timeline</h3>
+            <div className="tl-ruler" aria-label="Timeline">
+              {layout.map((seg, i) => {
+                const widthPct = totalSec > 0 ? (seg.dur / totalSec) * 100 : 100 / layout.length
+                const active = selected?.id === seg.clip.id
+                return (
+                  <button
+                    key={seg.clip.id}
+                    type="button"
+                    className={`tl-block ${active ? 'active' : ''} ${seg.clip.take_id ? 'has-media' : 'missing'}`}
+                    style={{ flexGrow: seg.dur, flexBasis: `${widthPct}%` }}
+                    onClick={() => {
+                      setSelectedId(seg.clip.id)
+                      setPlayhead(seg.start)
+                    }}
+                    title={`${seg.shot?.title} · ${formatTimecode(seg.dur)}`}
+                  >
+                    <span className="tl-idx">{i + 1}</span>
+                    <span className="tl-name">{seg.shot?.title || 'Clip'}</span>
+                    <span className="tl-dur">{formatTimecode(seg.dur)}</span>
+                    {seg.clip.caption ? <span className="tl-cap">CC</span> : null}
                   </button>
-                  <button className="btn ghost tiny" type="button" disabled={busy} onClick={() => move(i, 1)}>
-                    →
+                )
+              })}
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(totalSec, 0.1)}
+              step={0.1}
+              value={Math.min(playhead, totalSec)}
+              onChange={(e) => {
+                const v = Number(e.target.value)
+                setPlayhead(v)
+                const hit = layout.find((s) => v >= s.start && v < s.end) || layout[layout.length - 1]
+                if (hit) setSelectedId(hit.clip.id)
+              }}
+              aria-label="Playhead"
+            />
+          </div>
+
+          <div className="gen-layout">
+            <div className="panel">
+              <h3>Viewer</h3>
+              {selected ? (
+                <div
+                  className="director-viewer"
+                  style={{
+                    filter: filterCss(selected.filter_id, selected.filter_intensity ?? 1),
+                  }}
+                >
+                  {mediaUrl(selectedTake?.thumb_path || selectedTake?.media_path) ? (
+                    <img
+                      src={mediaUrl(selectedTake?.thumb_path || selectedTake?.media_path)}
+                      alt=""
+                    />
+                  ) : (
+                    <div className="empty">No media on this clip yet.</div>
+                  )}
+                  {(project.captions_enabled !== false && selected.caption) && (
+                    <div className={`caption-overlay style-${selected.caption_style || 'bottom'}`}>
+                      {selected.caption}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="empty">Select a clip on the timeline.</div>
+              )}
+              {selected && (
+                <div className="inline-actions" style={{ marginTop: 10 }}>
+                  <button
+                    className="btn ghost tiny"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => move(clips.findIndex((c) => c.id === selected.id), -1)}
+                  >
+                    ← Earlier
+                  </button>
+                  <button
+                    className="btn ghost tiny"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => move(clips.findIndex((c) => c.id === selected.id), 1)}
+                  >
+                    Later →
                   </button>
                 </div>
-              </div>
-            )
-          })}
-        </div>
+              )}
+            </div>
+
+            <div className="panel">
+              <h3>Edit scene</h3>
+              {!selected ? (
+                <div className="empty">Pick a timeline block.</div>
+              ) : (
+                <>
+                  <div className="muted tiny" style={{ marginBottom: 10 }}>
+                    {selectedSeg?.shot?.title} · trim & speed adjust the cut without regenerating
+                  </div>
+                  <div className="controls-grid">
+                    <div className="field">
+                      <label>Trim in (sec)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={selected.trim_in ?? 0}
+                        onChange={(e) =>
+                          patchSelected({ trim_in: Number(e.target.value), start_sec: Number(e.target.value) })
+                        }
+                      />
+                    </div>
+                    <div className="field">
+                      <label>Trim out (sec)</label>
+                      <input
+                        type="number"
+                        min={0.2}
+                        step={0.1}
+                        value={selected.trim_out ?? selected.end_sec ?? 3}
+                        onChange={(e) =>
+                          patchSelected({
+                            trim_out: Number(e.target.value),
+                            end_sec: Number(e.target.value),
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="field">
+                      <label>Speed</label>
+                      <select
+                        value={String(selected.speed ?? 1)}
+                        onChange={(e) => patchSelected({ speed: Number(e.target.value) })}
+                      >
+                        {[0.5, 0.75, 1, 1.25, 1.5, 2].map((s) => (
+                          <option key={s} value={s}>
+                            {s}×
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="field">
+                    <label>Caption (editable)</label>
+                    <textarea
+                      rows={3}
+                      value={selected.caption || ''}
+                      onChange={(e) => patchSelected({ caption: e.target.value })}
+                      placeholder="Spoken line or on-screen text…"
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Caption style</label>
+                    <select
+                      value={selected.caption_style || 'bottom'}
+                      onChange={(e) => patchSelected({ caption_style: e.target.value })}
+                    >
+                      {CAPTION_STYLES.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.label} — {s.blurb}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="field">
+                    <label>Filter on this clip</label>
+                    <select
+                      value={selected.filter_id || 'none'}
+                      onChange={(e) => patchSelected({ filter_id: e.target.value })}
+                    >
+                      {DIRECTOR_FILTERS.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.label} — {f.blurb}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {(selected.filter_id || 'none') !== 'none' && (
+                    <div className="field">
+                      <label>Filter strength {(selected.filter_intensity ?? 1).toFixed(2)}</label>
+                      <input
+                        type="range"
+                        min={0.1}
+                        max={1}
+                        step={0.05}
+                        value={selected.filter_intensity ?? 1}
+                        onChange={(e) => patchSelected({ filter_intensity: Number(e.target.value) })}
+                      />
+                    </div>
+                  )}
+                  <div className="field">
+                    <label>Director note</label>
+                    <input
+                      value={selected.director_note || ''}
+                      onChange={(e) => patchSelected({ director_note: e.target.value })}
+                      placeholder="e.g. tighten pause before turn"
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="panel">
+            <h3>Look across the cut</h3>
+            <p className="muted tiny">Apply one filter to every clip, or keep grades per scene above.</p>
+            <div className="provider-grid">
+              {DIRECTOR_FILTERS.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  className={`mode-chip ${project.default_filter_id === f.id ? 'active' : ''}`}
+                  disabled={busy}
+                  onClick={() => applyFilterAll(f.id)}
+                >
+                  <strong>{f.label}</strong>
+                  <span>{f.blurb}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
       )}
-      <div className="panel">
-        <h3>Cut list</h3>
-        <ol>
-          {clips.map((clip, i) => {
-            const shot = project.shots.find((s) => s.id === clip.shot_id)
-            return (
-              <li key={clip.id}>
-                {i + 1}. {shot?.title} — {shot?.action} ({shot?.duration_sec}s)
-              </li>
-            )
-          })}
-        </ol>
-      </div>
     </div>
   )
 }
@@ -3472,9 +3926,279 @@ function AddonsTab({ notify }: { notify: (m: string) => void }) {
   )
 }
 
+function LearningTab({ onGo }: { onGo: (id: TabId) => void }) {
+  const [active, setActive] = useState<LearnSectionId>('start-here')
+  const topic = LEARN_TOPICS.find((t) => t.id === active) || LEARN_TOPICS[0]
+
+  return (
+    <div className="learn-layout">
+      <aside className="learn-nav panel">
+        <h3>Learning</h3>
+        <p className="muted tiny">
+          Explained like it’s your first day with AI video — how-tos, where to click, and examples.
+        </p>
+        <div className="learn-toc">
+          {LEARN_TOPICS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`learn-toc-item ${active === t.id ? 'active' : ''}`}
+              onClick={() => setActive(t.id)}
+            >
+              {t.title}
+            </button>
+          ))}
+        </div>
+      </aside>
+      <article className="learn-article panel">
+        <header className="learn-hero">
+          <h2>{topic.title}</h2>
+          <p>{topic.blurb}</p>
+        </header>
+
+        <section>
+          <h3>Where to find it</h3>
+          <ul className="learn-where">
+            {topic.where.map((w) => (
+              <li key={w.label + w.detail}>
+                <strong>{w.label}</strong>
+                <span className="muted"> — {w.detail}</span>
+                {w.tab && (
+                  <button className="btn ghost tiny" type="button" onClick={() => onGo(w.tab!)}>
+                    Open
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        {topic.howto.map((h) => (
+          <section key={h.title}>
+            <h3>{h.title}</h3>
+            <ol className="learn-steps">
+              {h.steps.map((s) => (
+                <li key={s}>{s}</li>
+              ))}
+            </ol>
+            {h.example && (
+              <div className="learn-example">
+                <span className="muted tiny">Example</span>
+                <p>{h.example}</p>
+              </div>
+            )}
+          </section>
+        ))}
+
+        <section>
+          <h3>Examples & tips</h3>
+          <ul className="learn-examples">
+            {topic.examples.map((e) => (
+              <li key={e}>{e}</li>
+            ))}
+          </ul>
+          {topic.tip && <p className="learn-tip">{topic.tip}</p>}
+        </section>
+      </article>
+    </div>
+  )
+}
+
+function SourcesTab({ notify }: { notify: (m: string) => void }) {
+  const [github, setGithub] = useState('')
+  const [hf, setHf] = useState('')
+  const [displayName, setDisplayName] = useState('')
+  const [token, setToken] = useState('')
+  const [tokenSet, setTokenSet] = useState(false)
+  const [kind, setKind] = useState<'model' | 'lora' | 'addon'>('lora')
+  const [source, setSource] = useState('')
+  const [imports, setImports] = useState<
+    Awaited<ReturnType<typeof api.personalImports>>
+  >([])
+  const [hints, setHints] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(false)
+
+  const load = async () => {
+    const p = await api.getPersonal()
+    setGithub(p.github_url || '')
+    setHf(p.huggingface_url || '')
+    setDisplayName(p.display_name || '')
+    setTokenSet(p.huggingface_token_set)
+    setImports(p.imports || [])
+    setHints(p.hints || {})
+  }
+
+  useEffect(() => {
+    load().catch((e) => notify(String(e.message || e)))
+    const t = window.setInterval(() => {
+      api.personalImports().then(setImports).catch(() => undefined)
+    }, 2500)
+    return () => window.clearInterval(t)
+  }, [])
+
+  const saveLinks = async () => {
+    setBusy(true)
+    try {
+      const p = await api.putPersonal({
+        github_url: github,
+        huggingface_url: hf,
+        creator_display_name: displayName,
+        huggingface_token: token.trim() || (tokenSet ? '(unchanged)' : ''),
+      })
+      setToken('')
+      setTokenSet(p.huggingface_token_set)
+      setImports(p.imports || [])
+      notify('Your GitHub & Hugging Face links are saved on this machine.')
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const runImport = async () => {
+    if (!source.trim()) {
+      notify('Paste a Hugging Face or GitHub URL first.')
+      return
+    }
+    setBusy(true)
+    try {
+      const job = await api.importPersonal({ kind, source: source.trim() })
+      setImports((prev) => [job, ...prev])
+      notify(`Import started · ${kind}`)
+      setSource('')
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div>
+      <p className="hint">
+        Personalise Framewright with <strong>your</strong> GitHub and Hugging Face pages. Import
+        models, LoRAs, or add-ons from those links into the local folders — no path pasting.
+      </p>
+      <div className="gen-layout">
+        <div className="panel">
+          <h3>My links</h3>
+          <div className="field">
+            <label>Display name (optional)</label>
+            <input
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="Studio name on this machine"
+            />
+          </div>
+          <div className="field">
+            <label>GitHub URL</label>
+            <input
+              value={github}
+              onChange={(e) => setGithub(e.target.value)}
+              placeholder={hints.github || 'https://github.com/you'}
+            />
+            <div className="muted tiny">Profile or a repo where you keep packs / skills.</div>
+          </div>
+          <div className="field">
+            <label>Hugging Face URL</label>
+            <input
+              value={hf}
+              onChange={(e) => setHf(e.target.value)}
+              placeholder={hints.huggingface || 'https://huggingface.co/you'}
+            />
+            <div className="muted tiny">Your HF profile or collection of models / LoRAs.</div>
+          </div>
+          <div className="field">
+            <label>
+              Hugging Face token {tokenSet ? '(saved — leave blank to keep)' : '(optional, for gated models)'}
+            </label>
+            <input
+              type="password"
+              autoComplete="off"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder={tokenSet ? '••••••••' : 'hf_…'}
+            />
+            <div className="muted tiny">Stored only in local settings — never sent to Framewright cloud.</div>
+          </div>
+          <div className="inline-actions">
+            <button className="btn acid" type="button" disabled={busy} onClick={saveLinks}>
+              Save my links
+            </button>
+            {github && (
+              <a className="btn ghost" href={github.startsWith('http') ? github : `https://${github}`} target="_blank" rel="noreferrer">
+                Open GitHub
+              </a>
+            )}
+            {hf && (
+              <a className="btn ghost" href={hf.startsWith('http') ? hf : `https://${hf}`} target="_blank" rel="noreferrer">
+                Open Hugging Face
+              </a>
+            )}
+          </div>
+        </div>
+
+        <div className="panel">
+          <h3>Import into local folders</h3>
+          <p className="muted tiny">
+            Pull your own (or public) stuff into <code>models/</code>, <code>loras/</code>, or{' '}
+            <code>addons/</code>.
+          </p>
+          <div className="field">
+            <label>What is it?</label>
+            <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+              <option value="model">Model (HF repo → models/)</option>
+              <option value="lora">LoRA file → loras/</option>
+              <option value="addon">Add-on (JSON/MD) → addons/</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>URL or repo</label>
+            <input
+              value={source}
+              onChange={(e) => setSource(e.target.value)}
+              placeholder={
+                kind === 'model'
+                  ? hints.import_model
+                  : kind === 'lora'
+                    ? hints.import_lora
+                    : hints.import_addon
+              }
+            />
+          </div>
+          <button className="btn acid" type="button" disabled={busy} onClick={runImport}>
+            Import to Framewright
+          </button>
+
+          <h3 style={{ marginTop: 20 }}>Recent imports</h3>
+          <div className="job-list">
+            {imports.length === 0 && <div className="empty">No imports yet.</div>}
+            {imports.map((job) => (
+              <div className="job-item" key={job.id}>
+                <header>
+                  <strong>
+                    {job.kind.toUpperCase()} · {job.name || job.source}
+                  </strong>
+                  <span className={`badge ${job.status}`}>{job.status}</span>
+                </header>
+                <div className="muted tiny">{job.message}</div>
+                <div className="progress">
+                  <div style={{ width: `${Math.round((job.progress || 0) * 100)}%` }} />
+                </div>
+                {job.local_path && <div className="muted tiny">{job.local_path}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function InfoTab() {
   const folders = [
-    { path: 'models/', put: 'AI models (or download in-app)' },
+    { path: 'models/', put: 'AI models (or download in-app / My links import)' },
     { path: 'loras/', put: 'Optional LoRA .safetensors files' },
     { path: 'outputs/', put: 'Generated images, video, audio' },
     { path: 'uploads/', put: 'Your reference images & clips' },
@@ -3487,7 +4211,7 @@ function InfoTab() {
     <div>
       <p className="hint">
         Pinokio-style layout — everything sits in the Framewright folder you downloaded. No hidden
-        mystery directories required.
+        mystery directories required. New here? Open <strong>Learning</strong> for first-time how-tos.
       </p>
       <div className="panel">
         <h3>Where to put downloads</h3>

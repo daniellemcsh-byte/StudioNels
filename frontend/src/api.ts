@@ -6,6 +6,8 @@ import type {
   EngineStatus,
   GpuEstimate,
   Health,
+  PersonalImportJob,
+  PersonalProfile,
   Preset,
   Project,
   ProjectSummary,
@@ -45,6 +47,20 @@ export const api = {
         detail: string
       }
     }>('/api/agent/providers'),
+  getPersonal: () => req<PersonalProfile>('/api/personal'),
+  putPersonal: (body: {
+    github_url?: string
+    huggingface_url?: string
+    huggingface_token?: string
+    creator_display_name?: string
+  }) => req<PersonalProfile>('/api/personal', { method: 'PUT', body: JSON.stringify(body) }),
+  importPersonal: (body: { kind: 'model' | 'lora' | 'addon'; source: string; name?: string }) =>
+    req<PersonalImportJob>('/api/personal/import', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  personalImports: () => req<PersonalImportJob[]>('/api/personal/imports'),
+  personalImportJob: (id: string) => req<PersonalImportJob>(`/api/personal/imports/${id}`),
   listProjects: () => req<ProjectSummary[]>('/api/projects'),
   createProject: (body: { title: string; mode: string; logline?: string; preset_id?: string }) =>
     req<Project>('/api/projects', { method: 'POST', body: JSON.stringify(body) }),
@@ -133,6 +149,30 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(clips),
     }),
+  generateCaptions: (id: string, overwrite = false) =>
+    req<Project>(`/api/projects/${id}/captions/generate?overwrite=${overwrite}`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  timelineProgress: (id: string) =>
+    req<{
+      total_sec: number
+      clip_count: number
+      with_media: number
+      pct_ready: number
+      segments: Array<{
+        clip_id: string
+        shot_id: string
+        title: string
+        start: number
+        end: number
+        duration: number
+        caption: string
+        filter_id: string
+        has_take: boolean
+      }>
+    }>(`/api/projects/${id}/timeline/progress`),
+  captionsSrtUrl: (id: string) => `/api/projects/${id}/captions.srt`,
   engine: () => req<EngineStatus>('/api/engine'),
   engineLoras: () =>
     req<{ path: string; loras: import('./types').LoraFile[]; count: number }>('/api/engine/loras'),

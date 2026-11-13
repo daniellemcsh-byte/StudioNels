@@ -179,6 +179,13 @@ def build_markers_json(project: Project) -> dict[str, Any]:
                 ],
                 "dialogue": shot.dialogue,
                 "audio_notes": shot.director_notes,
+                "caption": getattr(clip, "caption", "") or "",
+                "caption_style": getattr(clip, "caption_style", "bottom") or "bottom",
+                "filter_id": getattr(clip, "filter_id", "none") or "none",
+                "filter_intensity": getattr(clip, "filter_intensity", 1.0),
+                "trim_in": getattr(clip, "trim_in", 0.0),
+                "trim_out": getattr(clip, "trim_out", None),
+                "speed": getattr(clip, "speed", 1.0),
             }
         )
         cursor += dur
@@ -187,6 +194,8 @@ def build_markers_json(project: Project) -> dict[str, Any]:
         "exported_at": utc_now(),
         "visual_style": project.visual_style,
         "target_duration_sec": project.target_duration_sec,
+        "default_filter_id": getattr(project, "default_filter_id", "none"),
+        "captions_enabled": getattr(project, "captions_enabled", True),
         "markers": markers,
     }
 

@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent import plan_project
+from .captions import captions_srt, generate_captions, timeline_progress
 from .continuity import build_bible, rescore_project
 from .engine.device import detect_device
 from .engine.runner import engine_status_public, enqueue_job, get_job, list_jobs
@@ -25,6 +26,8 @@ from .models import (
     GenerateRequest,
     GpuEstimateRequest,
     HealthResponse,
+    PersonalImportRequest,
+    PersonalLinksRequest,
     Project,
     RehearsalRequest,
     SceneProfile,
@@ -34,6 +37,13 @@ from .models import (
     new_id,
 )
 from .nle_export import export_nle_package
+from .personal_sources import (
+    get_import,
+    list_imports,
+    personal_profile,
+    save_personal_links,
+    start_import,
+)
 from .rehearsal import promote_rehearsal_take, run_rehearsal
 from .paths import DATA_DIR, MEDIA_DIR, UPLOADS_DIR, ensure_dirs
 from .storage import (
@@ -169,6 +179,42 @@ async def agent_providers():
     settings = load_settings()
     probe = await probe_agent(settings)
     return {"providers": list_providers(), "status": probe}
+
+
+@app.get("/api/personal")
+async def get_personal():
+    return personal_profile()
+
+
+@app.put("/api/personal")
+async def put_personal(body: PersonalLinksRequest):
+    return save_personal_links(
+        github_url=body.github_url,
+        huggingface_url=body.huggingface_url,
+        huggingface_token=body.huggingface_token,
+        creator_display_name=body.creator_display_name,
+    )
+
+
+@app.post("/api/personal/import")
+async def personal_import(body: PersonalImportRequest):
+    try:
+        return start_import(body.kind, body.source, body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/personal/imports")
+async def personal_imports(limit: int = 20):
+    return list_imports(limit)
+
+
+@app.get("/api/personal/imports/{job_id}")
+async def personal_import_job(job_id: str):
+    job = get_import(job_id)
+    if not job:
+        raise HTTPException(404, "Import not found")
+    return job
 
 
 @app.get("/api/projects")
@@ -455,6 +501,32 @@ async def set_timeline(project_id: str, clips: list[TimelineClip]):
         clip.order = i
     project.timeline = clips
     return save_project(project)
+
+
+@app.post("/api/projects/{project_id}/captions/generate", response_model=Project)
+async def captions_generate(project_id: str, overwrite: bool = False):
+    project = load_project(project_id)
+    return generate_captions(project, overwrite=overwrite)
+
+
+@app.get("/api/projects/{project_id}/captions.srt")
+async def captions_export_srt(project_id: str):
+    from fastapi.responses import PlainTextResponse
+
+    project = load_project(project_id)
+    body = captions_srt(project)
+    filename = f"{project.title or 'captions'}.srt".replace(" ", "_")
+    return PlainTextResponse(
+        body or "1\n00:00:00,000 --> 00:00:01,000\n\n",
+        media_type="application/x-subrip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/projects/{project_id}/timeline/progress")
+async def get_timeline_progress(project_id: str):
+    project = load_project(project_id)
+    return timeline_progress(project)
 
 
 @app.get("/api/projects/{project_id}/preset")
