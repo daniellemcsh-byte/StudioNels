@@ -255,9 +255,19 @@ export default function App() {
   const applyAgentUiActions = async (
     actions: Array<{ type: string; tab?: string; text?: string; stage?: string }>,
     projectId: string,
+    userMessage: string,
   ) => {
+    const low = userMessage.toLowerCase()
+    const userAskedNav = /(?:open|go to|show|switch to)\s/.test(low) || /film night|director/.test(low)
     for (const a of actions || []) {
       if (a.type === 'navigate' && a.tab) {
+        // Stay on Agent unless the user asked to leave, or Film night is starting
+        const leavingChat = a.tab !== 'agent'
+        const filmNight = a.tab === 'filmnight'
+        if (leavingChat && !userAskedNav && !filmNight) continue
+        if (leavingChat && filmNight && !actions.some((x) => x.type === 'run_film_night') && !/film night/.test(low)) {
+          continue
+        }
         goTab(a.tab as TabId)
       } else if (a.type === 'notify' && a.text) {
         notify(a.text)
@@ -283,26 +293,35 @@ export default function App() {
   const runAgent = async () => {
     if (!project) return
     if (!agentText.trim() && agentAttachments.length === 0) return
+    const message = agentText.trim()
     setBusy(true)
     try {
       const pending = [...agentAttachments]
-      const res = await api.agentChat(project.id, agentText.trim(), pending)
+      const res = await api.agentChat(project.id, message, pending)
       setProject(res.project)
       setAgentText('')
       setAgentAttachments([])
-      await applyAgentUiActions(res.ui_actions || [], res.project.id)
-      if (!(res.ui_actions || []).some((a) => a.type === 'navigate' || a.type === 'notify')) {
-        notify(res.message?.slice(0, 140) || 'Director replied.')
-      }
+      const actions = res.ui_actions || []
+      await applyAgentUiActions(actions, res.project.id, message)
+      const leftChat = actions.some(
+        (a) =>
+          (a.type === 'navigate' && a.tab && a.tab !== 'agent') ||
+          a.type === 'run_film_night',
+      )
+      const askedToLeave =
+        /(?:open|go to|show|switch to)\s/.test(message.toLowerCase()) ||
+        /film night|open director/.test(message.toLowerCase())
+      // Stay on Agent for normal chat; only leave when user asked (or Film night runs)
+      if (!leftChat || !askedToLeave) goTab('agent')
     } catch (err) {
       // Fallback to classic shot planner if chat endpoint missing on old server
       try {
-        const p = await api.agent(project.id, agentText.trim() || 'Plan with attached refs', replaceShots)
+        const p = await api.agent(project.id, message || 'Plan with attached refs', replaceShots)
         setProject(p)
         setAgentText('')
         setAgentAttachments([])
-        goTab('shots')
-        notify('Shot list ready — edit anything before generating.')
+        goTab('agent')
+        notify('Shot list updated — stay in chat, or open Shots when you want.')
       } catch {
         notify(String((err as Error).message || err))
       }
@@ -1019,7 +1038,11 @@ function AgentTab({
           onChange={(e) => setText(e.target.value)}
           placeholder="Talk to the director… attach refs below"
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && canSend) onSend()
+            // Enter sends; Shift+Enter = new line (stay on Agent tab)
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              if (canSend && !busy) onSend()
+            }
           }}
         />
         <div className="compose-attach-bar">
@@ -1055,6 +1078,7 @@ function AgentTab({
             />{' '}
             Prefer replacing shot list on big ideas
           </label>
+          <span className="muted tiny">Enter to send · Shift+Enter for line break</span>
           <button
             className="btn acid"
             type="button"

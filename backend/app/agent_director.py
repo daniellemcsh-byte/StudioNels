@@ -49,10 +49,11 @@ Allowed actions (only use these types):
 
 Rules:
 - Be conversational. Ask one clarifying question when the idea is vague.
-- When they describe a film idea, replace_shots with 4–8 concrete shots AND navigate to shots or filmnight.
+- When they describe a film idea, replace_shots with 4–8 concrete shots. Stay in the agent chat — do NOT navigate away.
+- Only use navigate when the user clearly asks to open another tab (“open director”, “go to shots”, “film night”, “open settings”).
 - When they say TikTok / Reels / Shorts / vertical → set_frame 9:16 (or 9:16-draft) and say so.
 - When they say YouTube / landscape / film → 16:9-hd or 16:9-draft.
-- When they name a character, add_character with a useful character_lock.
+- When they name a character, add_character with a useful character_lock (no navigate).
 - When the user attaches character/image references, put those character_names on EVERY shot and mention face/ref lock in prompts.
 - When they say "let's shoot", "film night", "make it", "do it" → run_film_night full (only if shots exist) and navigate filmnight.
 - When they want to edit/cut → navigate director.
@@ -388,7 +389,7 @@ def _builtin_chat(project: Project, message: str) -> dict[str, Any]:
                 + (f", {look}" if look else ""),
             }
         )
-        actions.append({"type": "navigate", "tab": "profiles"})
+        actions.append({"type": "notify", "text": f"Added character {name}"})
 
     # Film night / shoot
     if any(
@@ -424,8 +425,17 @@ def _builtin_chat(project: Project, message: str) -> dict[str, Any]:
             "used_builtin": True,
         }
 
-    # Director / edit
-    if any(k in low for k in ("director", "edit the cut", "timeline", "upload clip", "open edit")):
+    # Director / edit — only leave chat when they ask to open it
+    if any(
+        k in low
+        for k in (
+            "open director",
+            "go to director",
+            "edit the cut",
+            "open timeline",
+            "open edit",
+        )
+    ):
         actions.append({"type": "navigate", "tab": "director"})
         return {
             "message": "Opening Director — upload clips, captions, stitch & play there.",
@@ -454,11 +464,10 @@ def _builtin_chat(project: Project, message: str) -> dict[str, Any]:
         actions.append({"type": "set_logline", "logline": re.sub(r"\s+", " ", text)[:180]})
         actions.append({"type": "replace_shots", "shots": shots})
         actions.append({"type": "set_continue", "value": True})
-        actions.append({"type": "navigate", "tab": "shots"})
         actions.append({"type": "notify", "text": f"Planned {len(shots)} shots"})
         msg = (
-            f"I planned {len(shots)} shots from your idea. They’re on the Shots tab — "
-            "edit anything, then say “film night” and I’ll run the pipeline, or “open director” to cut."
+            f"I planned {len(shots)} shots from your idea — they stay on the Shots tab when you want them. "
+            "Say “film night” to shoot, or “open shots” / “open director” if you want me to switch tabs."
         )
         if any(a.get("type") == "set_frame" for a in actions):
             msg += " I also set the frame size to match what you asked for."
@@ -551,10 +560,39 @@ async def director_chat(
 
     actions = list(plan.get("actions") or [])
 
-    # Legacy LLM shot-only replies
+    # Legacy LLM shot-only replies — stay in chat
     if not actions and plan.get("shots"):
         actions.append({"type": "replace_shots", "shots": plan["shots"]})
-        actions.append({"type": "navigate", "tab": "shots"})
+
+    # Drop casual navigates so chat doesn't yank the tab away every send
+    allow_nav = {
+        "filmnight",
+        "director",
+    }
+    explicit_nav = any(
+        k in text.lower()
+        for k in (
+            "open ",
+            "go to ",
+            "show ",
+            "switch to ",
+            "film night",
+            "director",
+        )
+    )
+    filtered: list[dict[str, Any]] = []
+    for a in actions:
+        if a.get("type") != "navigate":
+            filtered.append(a)
+            continue
+        tab = str(a.get("tab") or "")
+        if tab == "filmnight" and any(
+            x.get("type") == "run_film_night" for x in actions
+        ):
+            filtered.append(a)
+        elif explicit_nav and (tab in allow_nav or tab in {"shots", "agent", "settings", "characters", "profiles"}):
+            filtered.append(a)
+    actions = filtered
 
     project, ui_actions = apply_actions(project, actions)
     _inject_refs_into_shots(project, char_ids, scene_ids)
