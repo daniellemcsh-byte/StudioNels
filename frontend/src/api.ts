@@ -109,11 +109,15 @@ export const api = {
 
 export function mediaUrl(path?: string | null): string | undefined {
   if (!path) return undefined
-  const marker = '/.framewright/media/'
-  const idx = path.replace(/\\/g, '/').indexOf(marker)
-  if (idx >= 0) {
-    const rel = path.replace(/\\/g, '/').slice(idx + marker.length)
-    return `/media/${rel}`
+  const normalized = path.replace(/\\/g, '/')
+  for (const marker of ['/outputs/', '/uploads/', '/.framewright/media/']) {
+    const idx = normalized.indexOf(marker)
+    if (idx >= 0) {
+      const rel = normalized.slice(idx + marker.length)
+      // uploads live at /media/uploads when mirrored, else file API
+      if (marker === '/uploads/') return `/api/file?path=${encodeURIComponent(path)}`
+      return `/media/${rel}`
+    }
   }
   return `/api/file?path=${encodeURIComponent(path)}`
 }

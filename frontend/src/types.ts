@@ -1,17 +1,33 @@
 export type Mode = 'film' | 'short' | 'music_video' | 'ad' | 'experiment'
 
 export type TabId =
+  | 'inspiration'
   | 'agent'
   | 'profiles'
+  | 'time'
   | 'shots'
   | 'storyboard'
   | 'characters'
+  | 'creator'
   | 'generate'
+  | 'audio'
+  | 'upsample'
+  | 'models'
+  | 'addons'
   | 'sampling'
   | 'director'
+  | 'info'
   | 'settings'
 
-export type GenMode = 't2i' | 't2v' | 'i2v' | 'ref2i' | 'ref2v'
+export type GenMode =
+  | 't2i'
+  | 't2v'
+  | 'i2v'
+  | 'ref2i'
+  | 'ref2v'
+  | 't2a'
+  | 'upsample_image'
+  | 'upsample_video'
 
 export interface EngineMode {
   id: GenMode
@@ -149,6 +165,11 @@ export interface Project {
   timeline: TimelineClip[]
   agent_messages: AgentMessage[]
   preset_id: string
+  target_duration_sec: number
+  visual_style: string
+  image_format: 'png' | 'jpg' | 'webp'
+  video_format: 'mp4' | 'webm' | 'gif'
+  audio_format: 'wav' | 'mp3'
   meta: Record<string, unknown>
 }
 

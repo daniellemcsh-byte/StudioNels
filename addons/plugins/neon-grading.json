@@ -1,0 +1,10 @@
+{
+  "id": "neon-grading",
+  "name": "Neon Color Grading",
+  "version": "0.1.0",
+  "description": "Adds cinematic neon look hints to prompts for night / cyber scenes.",
+  "hooks": ["prompt_enhance"],
+  "provides": ["look:neon-night"],
+  "modes_added": [],
+  "prompt_suffix": "neon rim light, wet asphalt reflections, cyan and magenta accents, filmic contrast"
+}

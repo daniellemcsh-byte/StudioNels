@@ -1,0 +1,8 @@
+{
+  "id": "shot-list-director",
+  "name": "Shot List Director",
+  "version": "0.1.0",
+  "description": "Keeps shot lists concrete: camera, action, duration, and continuity.",
+  "trigger": ["plan", "shots", "storyboard"],
+  "content": "When planning shots: use 4–8 beats, name the camera clearly (wide/medium/close-up/tracking/pov), keep each action visual and shootable, reuse character and scene profile names, and never invent gear jargon the user did not ask for."
+}

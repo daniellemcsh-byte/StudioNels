@@ -36,8 +36,20 @@ Reply with ONLY valid JSON (no markdown) using this shape:
     }
   ]
 }
-Keep 4–8 shots unless the user asks for more. Be concrete and visual. Use existing character/scene names when provided.
+Keep 4–8 shots unless the user asks for more. Fit shot duration_sec values so they roughly add up to the project's target total runtime. Bake the visual style into every prompt. Be concrete and visual. Use existing character/scene names when provided.
 """
+
+
+STYLE_HINTS = {
+    "cinematic": "cinematic lighting, film grain, naturalistic color",
+    "animation": "stylized 3D animation",
+    "clay": "claymation stop-motion, plasticine textures",
+    "cartoon": "2D cartoon, bold outlines, flat colors",
+    "anime": "anime style, cel shading",
+    "pixel": "pixel art, retro game aesthetic",
+    "documentary": "documentary, natural light, handheld feel",
+    "noir": "film noir, high contrast shadows",
+}
 
 
 def _profiles_context(project: Project) -> str:
@@ -49,8 +61,14 @@ def _profiles_context(project: Project) -> str:
         f"- {s.name}: {s.location}, {s.time_of_day}, mood={s.mood}; {s.visual_notes}"
         for s in project.scenes
     ]
+    total = float(getattr(project, "target_duration_sec", 60) or 60)
+    style = getattr(project, "visual_style", "cinematic") or "cinematic"
+    style_hint = STYLE_HINTS.get(style, style)
     return (
         f"Mode: {project.mode}\nLogline: {project.logline or '(none)'}\n"
+        f"Target total runtime: {total:.0f} seconds "
+        f"(divide across shots so they roughly add up).\n"
+        f"Visual style: {style} — bake into every shot prompt ({style_hint}).\n"
         f"Characters:\n{chr(10).join(chars) or '- (none yet)'}\n"
         f"Scenes:\n{chr(10).join(scenes) or '- (none yet)'}"
     )

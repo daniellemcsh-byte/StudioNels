@@ -9,7 +9,14 @@ from typing import Any
 from ..models import new_id, utc_now
 from ..paths import MEDIA_DIR, ensure_dirs
 from ..storage import get_preset, load_settings
-from .catalog import GENERATION_MODES, default_model_for_mode, get_model, list_models_for_mode
+from .catalog import (
+    GENERATION_MODES,
+    QUALITY_PRESETS,
+    SIZE_PRESETS,
+    default_model_for_mode,
+    get_model,
+    list_models_for_mode,
+)
 from .device import detect_device
 from .pipelines import run_diffusers_job, run_preview_job
 from .queue_store import get_job as store_get
@@ -71,6 +78,9 @@ def engine_status_public() -> dict[str, Any]:
         "preset_id": st.preset_id,
         "models_path": st.models_path,
         "backend": "builtin",  # never ComfyUI
+        "size_presets": SIZE_PRESETS,
+        "quality_presets": QUALITY_PRESETS,
+        "loras_path": str(models_dir() / "loras"),
     }
 
 
@@ -110,10 +120,29 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     mode_meta = next((m for m in GENERATION_MODES if m["id"] == mode), None)
     if not mode_meta:
         raise ValueError(f"Unknown mode {mode}")
-    if mode_meta["needs_image"] and not payload.get("image_path"):
-        raise ValueError("This mode needs an input image (i2v).")
-    if mode_meta["needs_reference"] and not payload.get("reference_path"):
+    if mode_meta.get("needs_image") and not payload.get("image_path"):
+        raise ValueError("This mode needs an input image.")
+    if mode_meta.get("needs_reference") and not payload.get("reference_path"):
         raise ValueError("This mode needs a reference image.")
+    if mode_meta.get("needs_video") and not payload.get("video_path"):
+        raise ValueError("Upsample video needs a video/clip path.")
+
+    quality = payload.get("quality") or "balanced"
+    qmeta = next((q for q in QUALITY_PRESETS if q["id"] == quality), QUALITY_PRESETS[1])
+    base_steps = int(payload.get("steps") or model.get("default_steps") or 20)
+    base_guidance = float(payload.get("guidance") or model.get("default_guidance") or 5)
+    steps = max(1, int(base_steps * float(qmeta["steps_scale"])))
+    guidance = float(base_guidance * float(qmeta["guidance_scale"]))
+
+    duration_sec = payload.get("duration_sec")
+    frames = payload.get("frames")
+    fps = int(payload.get("fps") or gen.get("fps") or model.get("fps") or 16)
+    if duration_sec and not frames and mode in ("t2v", "i2v", "ref2v", "upsample_video"):
+        frames = max(8, int(float(duration_sec) * fps))
+    if not frames:
+        frames = int(gen.get("default_frames") or model.get("default_frames") or 49)
+    if mode == "t2a" and not duration_sec:
+        duration_sec = float(model.get("default_duration_sec") or 8)
 
     job = {
         "id": new_id("job"),
@@ -129,15 +158,20 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         "negative_prompt": payload.get("negative_prompt") or "",
         "width": int(payload.get("width") or gen.get("default_width") or 768),
         "height": int(payload.get("height") or gen.get("default_height") or 432),
-        "steps": int(payload.get("steps") or model.get("default_steps") or 20),
-        "guidance": float(payload.get("guidance") or model.get("default_guidance") or 5),
-        "frames": int(payload.get("frames") or gen.get("default_frames") or model.get("default_frames") or 49),
-        "fps": int(payload.get("fps") or gen.get("fps") or model.get("fps") or 16),
+        "steps": steps,
+        "guidance": guidance,
+        "quality": quality,
+        "frames": int(frames),
+        "fps": fps,
+        "duration_sec": float(duration_sec) if duration_sec is not None else None,
         "seed": payload.get("seed"),
         "strength": payload.get("strength"),
         "cpu_offload": payload.get("cpu_offload", gen.get("cpu_offload", True)),
         "image_path": payload.get("image_path"),
         "reference_path": payload.get("reference_path"),
+        "video_path": payload.get("video_path"),
+        "lora_path": payload.get("lora_path"),
+        "lora_scale": float(payload.get("lora_scale") if payload.get("lora_scale") is not None else 0.8),
         "project_id": payload.get("project_id"),
         "shot_id": payload.get("shot_id"),
         "media_path": None,

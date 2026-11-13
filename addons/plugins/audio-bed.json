@@ -1,0 +1,9 @@
+{
+  "id": "audio-bed",
+  "name": "Auto Audio Bed",
+  "version": "0.1.0",
+  "description": "Suggests a matching t2a audio bed after each video shot.",
+  "hooks": ["after_video"],
+  "provides": ["workflow:audio-bed"],
+  "modes_added": ["t2a"]
+}

@@ -27,7 +27,7 @@ from .models import (
     UpdateShotRequest,
     new_id,
 )
-from .paths import DATA_DIR, MEDIA_DIR, ensure_dirs
+from .paths import DATA_DIR, MEDIA_DIR, UPLOADS_DIR, ensure_dirs
 from .storage import (
     delete_project,
     get_preset,
@@ -108,11 +108,11 @@ async def engine_generate(body: EngineGenerateRequest):
 async def engine_upload(file: UploadFile = File(...), kind: str = "image"):
     ensure_dirs()
     suffix = Path(file.filename or "upload.png").suffix or ".png"
-    dest = MEDIA_DIR / "uploads" / f"{new_id(kind)}{suffix}"
+    dest = UPLOADS_DIR / f"{new_id(kind)}{suffix}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     data = await file.read()
     dest.write_bytes(data)
-    return {"path": str(dest), "url": f"/media/uploads/{dest.name}"}
+    return {"path": str(dest), "url": f"/api/file?path={dest}"}
 
 
 @app.get("/api/presets")
@@ -326,10 +326,19 @@ async def project_preset(project_id: str):
 
 @app.get("/api/file")
 async def get_file(path: str):
+    from .paths import LORAS_DIR, MODELS_DIR, OUTPUTS_DIR, ROOT, UPLOADS_DIR
+
     p = Path(path).expanduser().resolve()
-    media_root = MEDIA_DIR.resolve()
-    if media_root not in p.parents and p != media_root:
-        raise HTTPException(403, "Outside media dir")
+    allowed = [
+        MEDIA_DIR.resolve(),
+        OUTPUTS_DIR.resolve(),
+        UPLOADS_DIR.resolve(),
+        MODELS_DIR.resolve(),
+        LORAS_DIR.resolve(),
+        ROOT.resolve(),
+    ]
+    if not any(root == p or root in p.parents for root in allowed):
+        raise HTTPException(403, "Outside app folders")
     if not p.exists():
         raise HTTPException(404, "Missing file")
     return FileResponse(p)

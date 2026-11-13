@@ -111,6 +111,12 @@ class Project(BaseModel):
     timeline: list[TimelineClip] = Field(default_factory=list)
     agent_messages: list[AgentMessage] = Field(default_factory=list)
     preset_id: str = "amd-low-vram"
+    # Whole-piece timing + look (Time tab)
+    target_duration_sec: float = 60.0
+    visual_style: str = "cinematic"
+    image_format: Literal["png", "jpg", "webp"] = "png"
+    video_format: Literal["mp4", "webm", "gif"] = "mp4"
+    audio_format: Literal["wav", "mp3"] = "wav"
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -134,7 +140,16 @@ class Settings(BaseModel):
 
 
 class EngineGenerateRequest(BaseModel):
-    mode: Literal["t2i", "t2v", "i2v", "ref2i", "ref2v"]
+    mode: Literal[
+        "t2i",
+        "t2v",
+        "i2v",
+        "ref2i",
+        "ref2v",
+        "t2a",
+        "upsample_image",
+        "upsample_video",
+    ]
     prompt: str = ""
     negative_prompt: str = ""
     model_id: str | None = None
@@ -144,14 +159,27 @@ class EngineGenerateRequest(BaseModel):
     guidance: float | None = None
     frames: int | None = None
     fps: int | None = None
+    duration_sec: float | None = None
+    quality: Literal["draft", "balanced", "high", "max"] | None = "balanced"
     seed: int | None = None
     strength: float | None = None
     cpu_offload: bool | None = None
     image_path: str | None = None
     reference_path: str | None = None
+    video_path: str | None = None
+    lora_path: str | None = None
+    lora_scale: float | None = 0.8
     project_id: str | None = None
     shot_id: str | None = None
     force_preview: bool = False
+    image_format: Literal["png", "jpg", "webp"] | None = None
+    video_format: Literal["mp4", "webm", "gif"] | None = None
+    audio_format: Literal["wav", "mp3"] | None = None
+    visual_style: str | None = None
+
+
+class AgentInstallRequest(BaseModel):
+    model: str = "llama3.2:3b"
 
 
 class CreateProjectRequest(BaseModel):
