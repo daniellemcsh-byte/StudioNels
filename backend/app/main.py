@@ -344,11 +344,13 @@ async def agent_chat(project_id: str, body: AgentPlanRequest):
         project = load_project(project_id)
     except FileNotFoundError:
         raise HTTPException(404, "Project not found")
-    if not body.message.strip():
-        raise HTTPException(400, "Message required")
-    result = await director_chat(project, body.message.strip())
-    # If caller still wants legacy replace-only behaviour when LLM only returned shots,
-    # director_chat already handles replace/append via actions.
+    if not body.message.strip() and not body.attachments:
+        raise HTTPException(400, "Message or attachment required")
+    result = await director_chat(
+        project,
+        body.message.strip(),
+        attachments=list(body.attachments or []),
+    )
     proj = result["project"]
     return {
         "project": proj.model_dump() if hasattr(proj, "model_dump") else proj,

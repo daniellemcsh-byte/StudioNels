@@ -14,6 +14,7 @@ from .agent import (
 )
 from .frame_sizes import apply_frame_to_project
 from .models import (
+    AgentAttachment,
     AgentMessage,
     CharacterProfile,
     Project,
@@ -33,7 +34,7 @@ Always reply with ONLY valid JSON (no markdown) in this shape:
 }
 
 Allowed actions (only use these types):
-- {"type":"navigate","tab":"agent|profiles|time|shots|filmnight|director|generate|rehearsal|settings|learning"}
+- {"type":"navigate","tab":"agent|profiles|time|shots|filmnight|director|generate|rehearsal|settings|learning|characters"}
 - {"type":"set_logline","logline":"string"}
 - {"type":"set_style","visual_style":"cinematic|animation|clay|cartoon|anime|pixel|documentary|noir|neon_noir|dramatic"}
 - {"type":"set_frame","frame_size_id":"16:9-draft|16:9-hd|9:16|9:16-draft|1:1|1:1-draft|21:9|4:5|3:4|4:3|3:2|2:3"}
@@ -52,11 +53,161 @@ Rules:
 - When they say TikTok / Reels / Shorts / vertical → set_frame 9:16 (or 9:16-draft) and say so.
 - When they say YouTube / landscape / film → 16:9-hd or 16:9-draft.
 - When they name a character, add_character with a useful character_lock.
+- When the user attaches character/image references, put those character_names on EVERY shot and mention face/ref lock in prompts.
 - When they say "let's shoot", "film night", "make it", "do it" → run_film_night full (only if shots exist) and navigate filmnight.
 - When they want to edit/cut → navigate director.
 - Do not invent paid cloud services. Everything stays local.
 - Keep message under ~120 words unless listing beats.
 """
+
+
+def _attachment_lines(attachments: list[AgentAttachment]) -> str:
+    if not attachments:
+        return ""
+    lines = ["Attached references this turn:"]
+    for a in attachments:
+        kind = a.kind or "image"
+        name = a.name or a.character_id or a.scene_id or "untitled"
+        path = a.path or "(no file)"
+        lines.append(f"- {kind}: {name} @ {path}")
+    return "\n".join(lines)
+
+
+def apply_attachments(
+    project: Project, attachments: list[AgentAttachment] | None
+) -> tuple[Project, list[str], list[str], list[AgentAttachment]]:
+    """Wire chat attachments into characters/scenes. Returns char ids, scene ids, normalized atts."""
+    if not attachments:
+        return project, [], [], []
+    char_ids: list[str] = []
+    scene_ids: list[str] = []
+    normalized: list[AgentAttachment] = []
+    orphan_images: list[AgentAttachment] = []
+
+    for raw in attachments:
+        if not isinstance(raw, AgentAttachment):
+            try:
+                att = AgentAttachment.model_validate(raw)
+            except Exception:
+                continue
+        else:
+            att = raw
+
+        if att.kind == "character" and att.character_id:
+            char = next((c for c in project.characters if c.id == att.character_id), None)
+            if char:
+                if att.path and not char.reference_path:
+                    char.reference_path = att.path
+                    try:
+                        from .identity_lock import refresh_character_identity
+
+                        refresh_character_identity(char)
+                    except Exception:
+                        pass
+                if not att.path and char.reference_path:
+                    att.path = char.reference_path
+                if not att.name:
+                    att.name = char.name
+                char_ids.append(char.id)
+                normalized.append(att)
+            continue
+
+        if att.kind == "scene" and att.scene_id:
+            scene = next((s for s in project.scenes if s.id == att.scene_id), None)
+            if scene:
+                if att.path and not scene.reference_path:
+                    scene.reference_path = att.path
+                if not att.path and scene.reference_path:
+                    att.path = scene.reference_path
+                if not att.name:
+                    att.name = scene.name
+                scene_ids.append(scene.id)
+                normalized.append(att)
+            continue
+
+        if att.kind in ("image", "file") and att.path:
+            orphan_images.append(att)
+            normalized.append(att)
+
+    # Loose image uploads become a reference character (or update "Reference" lead)
+    for i, att in enumerate(orphan_images):
+        label = (att.name or "").strip() or f"Ref {i + 1}"
+        existing = next(
+            (c for c in project.characters if c.name.lower() == label.lower()),
+            None,
+        )
+        if existing:
+            existing.reference_path = att.path
+            if not existing.character_lock:
+                existing.character_lock = f"same person every shot: {existing.name}, match reference still"
+            try:
+                from .identity_lock import refresh_character_identity
+
+                refresh_character_identity(existing)
+            except Exception:
+                pass
+            char_ids.append(existing.id)
+            att.kind = "character"
+            att.character_id = existing.id
+            att.name = existing.name
+        else:
+            char = CharacterProfile(
+                name=label if label != f"Ref {i + 1}" else "Lead ref",
+                role="reference lead",
+                look="match attached reference still",
+                character_lock="same person every shot — match the attached reference face/look",
+                reference_path=att.path,
+                tags=["agent-upload"],
+            )
+            try:
+                from .identity_lock import refresh_character_identity
+
+                refresh_character_identity(char)
+            except Exception:
+                pass
+            project.characters.append(char)
+            char_ids.append(char.id)
+            att.kind = "character"
+            att.character_id = char.id
+            att.name = char.name
+
+    # de-dupe preserving order
+    def _uniq(ids: list[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for x in ids:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+        return out
+
+    return project, _uniq(char_ids), _uniq(scene_ids), normalized
+
+
+def _inject_refs_into_shots(
+    project: Project, char_ids: list[str], scene_ids: list[str]
+) -> None:
+    if not char_ids and not scene_ids:
+        return
+    names = [c.name for c in project.characters if c.id in char_ids]
+    for shot in project.shots:
+        if char_ids:
+            merged = list(dict.fromkeys([*(shot.character_ids or []), *char_ids]))
+            shot.character_ids = merged
+            lock_bits = []
+            for c in project.characters:
+                if c.id in char_ids:
+                    bit = c.character_lock or c.look or c.name
+                    if bit:
+                        lock_bits.append(bit)
+            if lock_bits and lock_bits[0] not in (shot.prompt or ""):
+                shot.prompt = (
+                    f"{shot.prompt}, consistent character: {', '.join(lock_bits)}".strip(", ")
+                )
+            if names and not any(n.lower() in (shot.action or "").lower() for n in names):
+                shot.action = f"{names[0]} — {shot.action}".strip(" —")
+        if scene_ids and not shot.scene_id:
+            shot.scene_id = scene_ids[0]
 
 
 def _history_blob(project: Project, limit: int = 8) -> str:
@@ -323,7 +474,9 @@ def _builtin_chat(project: Project, message: str) -> dict[str, Any]:
     }
 
 
-async def _llm_chat(project: Project, message: str) -> dict[str, Any] | None:
+async def _llm_chat(
+    project: Project, message: str, attachments: list[AgentAttachment] | None = None
+) -> dict[str, Any] | None:
     from .llm_providers import chat_json
 
     settings = load_settings()
@@ -332,37 +485,59 @@ async def _llm_chat(project: Project, message: str) -> dict[str, Any] | None:
     preset = get_preset(project.preset_id or settings.preset_id)
     agent_cfg = preset.get("agent", {})
     max_tokens = int(agent_cfg.get("max_tokens") or 1600)
+    att_blob = _attachment_lines(attachments or [])
     user = (
         f"Project state:\n{_project_snapshot(project)}\n\n"
-        f"User says:\n{message}\n\n"
-        "Respond with JSON {message, actions}."
-    )
+        f"{att_blob}\n\n" if att_blob else f"Project state:\n{_project_snapshot(project)}\n\n"
+    ) + f"User says:\n{message}\n\nRespond with JSON {{message, actions}}."
     return await chat_json(settings, DIRECTOR_SYSTEM, user, max_tokens=max_tokens)
 
 
-async def director_chat(project: Project, message: str) -> dict[str, Any]:
+async def director_chat(
+    project: Project,
+    message: str,
+    attachments: list[AgentAttachment] | None = None,
+) -> dict[str, Any]:
     """Main entry: conversational reply + applied actions + ui hooks."""
     settings = load_settings()
     text = (message or "").strip()
-    if not text:
+    atts_in = list(attachments or [])
+
+    project, char_ids, scene_ids, normalized = apply_attachments(project, atts_in)
+
+    if not text and not normalized:
         return {
             "project": project,
-            "message": "Say anything — an idea, a character, or “help”.",
+            "message": "Say anything — an idea, attach a character/image, or “help”.",
             "actions": [],
             "ui_actions": [],
         }
+    if not text and normalized:
+        names = ", ".join(a.name or a.kind for a in normalized)
+        text = f"Use these attached references for the film: {names}."
 
-    project.agent_messages.append(AgentMessage(role="user", content=text))
+    project.agent_messages.append(
+        AgentMessage(role="user", content=text, attachments=normalized)
+    )
 
-    plan = await _llm_chat(project, text)
+    plan = await _llm_chat(project, text, normalized)
     if not plan or not isinstance(plan, dict):
         plan = _builtin_chat(project, text)
+        # Prefer attached character names when planning shots
+        if char_ids and plan.get("actions"):
+            names = [c.name for c in project.characters if c.id in char_ids]
+            for act in plan["actions"]:
+                if act.get("type") in ("replace_shots", "append_shots"):
+                    for sh in act.get("shots") or []:
+                        if isinstance(sh, dict):
+                            existing = list(sh.get("character_names") or [])
+                            sh["character_names"] = list(dict.fromkeys([*existing, *names]))
         provider = settings.agent_provider or "ollama"
-        if provider not in ("builtin",) and not plan.get("used_builtin"):
-            pass
-        elif provider != "builtin":
-            # Soft note when falling back
-            note = f" (Using built-in director — connect Ollama or an API key in Settings for smarter chat.)"
+        if provider != "builtin":
+            note = (
+                " (Using built-in director — connect Ollama or an API key in Settings "
+                "for smarter chat.)"
+            )
             if note.strip() not in (plan.get("message") or ""):
                 plan["message"] = ((plan.get("message") or "") + note).strip()
         plan["used_builtin"] = True
@@ -370,6 +545,10 @@ async def director_chat(project: Project, message: str) -> dict[str, Any]:
         plan["used_provider"] = settings.agent_provider
 
     reply = str(plan.get("message") or plan.get("assistant_message") or "Done.")
+    if normalized and "reference" not in reply.lower() and "attach" not in reply.lower():
+        label = ", ".join(a.name or a.kind for a in normalized[:4])
+        reply = f"{reply}\n\nLocked in your refs: {label}."
+
     actions = list(plan.get("actions") or [])
 
     # Legacy LLM shot-only replies
@@ -378,6 +557,7 @@ async def director_chat(project: Project, message: str) -> dict[str, Any]:
         actions.append({"type": "navigate", "tab": "shots"})
 
     project, ui_actions = apply_actions(project, actions)
+    _inject_refs_into_shots(project, char_ids, scene_ids)
     project.agent_messages.append(AgentMessage(role="assistant", content=reply))
     saved = save_project(project)
 

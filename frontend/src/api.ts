@@ -80,7 +80,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ message, replace_shots }),
     }),
-  agentChat: (id: string, message: string) =>
+  agentChat: (
+    id: string,
+    message: string,
+    attachments: import('./types').AgentAttachment[] = [],
+  ) =>
     req<{
       project: Project
       message: string
@@ -89,7 +93,7 @@ export const api = {
       provider?: string
     }>(`/api/projects/${id}/agent/chat`, {
       method: 'POST',
-      body: JSON.stringify({ message, replace_shots: true }),
+      body: JSON.stringify({ message, replace_shots: true, attachments }),
     }),
   addCharacter: (id: string, body: Partial<CharacterProfile>) =>
     req<Project>(`/api/projects/${id}/characters`, {
@@ -235,10 +239,13 @@ export const api = {
       media_copied: number
       download_url: string
     }>(`/api/projects/${id}/export/nle?fps=${fps}`, { method: 'POST', body: '{}' }),
-  engineUpload: async (file: File) => {
+  engineUpload: async (file: File, kind: string = 'image') => {
     const fd = new FormData()
     fd.append('file', file)
-    const res = await fetch('/api/engine/upload', { method: 'POST', body: fd })
+    const res = await fetch(`/api/engine/upload?kind=${encodeURIComponent(kind)}`, {
+      method: 'POST',
+      body: fd,
+    })
     if (!res.ok) throw new Error(await res.text())
     return res.json() as Promise<{ path: string; url: string }>
   },

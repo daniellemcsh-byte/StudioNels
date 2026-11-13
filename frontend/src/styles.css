@@ -683,6 +683,145 @@ a {
   align-items: center;
 }
 
+.compose-attach-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.compose-attach-bar .btn.acid {
+  margin-left: auto;
+}
+
+.att-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.att-row.in-bubble {
+  margin-top: 10px;
+}
+
+.att-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(57, 255, 199, 0.35);
+  background: rgba(0, 0, 0, 0.45);
+  font-size: 0.85rem;
+  max-width: 220px;
+}
+
+.att-chip img {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+.att-chip .att-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(57, 255, 199, 0.12);
+  color: var(--neon);
+  font-size: 0.75rem;
+}
+
+.att-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.att-x {
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.agent-ref-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+@media (max-width: 720px) {
+  .agent-ref-picker {
+    grid-template-columns: 1fr;
+  }
+}
+
+.agent-ref-col {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.agent-ref-col strong {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+}
+
+.agent-ref-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 12px;
+  padding: 8px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.agent-ref-item:hover {
+  border-color: rgba(57, 255, 199, 0.45);
+}
+
+.agent-ref-item img {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+
+.agent-ref-item span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-ref-item em {
+  font-style: normal;
+  font-weight: 600;
+}
+
+.agent-ref-item small {
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn.tiny {
+  padding: 6px 10px;
+  font-size: 0.82rem;
+}
+
 .two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -147,11 +147,24 @@ class AudioClip(BaseModel):
     order: int = 0
 
 
+class AgentAttachment(BaseModel):
+    """Image, file, or Characters-tab person/scene linked into agent chat."""
+
+    id: str = Field(default_factory=lambda: new_id("att"))
+    kind: Literal["image", "file", "character", "scene"] = "image"
+    path: str | None = None
+    name: str = ""
+    character_id: str | None = None
+    scene_id: str | None = None
+    mime: str = ""
+
+
 class AgentMessage(BaseModel):
     id: str = Field(default_factory=lambda: new_id("msg"))
     role: Literal["user", "assistant", "system"]
     content: str
     created_at: str = Field(default_factory=utc_now)
+    attachments: list[AgentAttachment] = Field(default_factory=list)
 
 
 class Project(BaseModel):
@@ -331,6 +344,7 @@ class ApplyFrameSizeRequest(BaseModel):
 class AgentPlanRequest(BaseModel):
     message: str
     replace_shots: bool = True
+    attachments: list[AgentAttachment] = Field(default_factory=list)
 
 
 class UpdateShotRequest(BaseModel):

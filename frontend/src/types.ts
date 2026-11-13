@@ -205,11 +205,22 @@ export interface AudioClip {
   order: number
 }
 
+export interface AgentAttachment {
+  id?: string
+  kind: 'image' | 'file' | 'character' | 'scene'
+  path?: string | null
+  name?: string
+  character_id?: string | null
+  scene_id?: string | null
+  mime?: string
+}
+
 export interface AgentMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
   created_at: string
+  attachments?: AgentAttachment[]
 }
 
 export interface Project {

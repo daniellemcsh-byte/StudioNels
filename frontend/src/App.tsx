@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { api, mediaUrl } from './api'
 import { LEARN_TOPICS, type LearnSectionId } from './learning'
@@ -25,6 +25,7 @@ import {
   buildCharacterPrompt,
 } from './characterCreator'
 import type {
+  AgentAttachment,
   AgentProvider,
   AgentProviderInfo,
   AgentStatus,
@@ -166,6 +167,7 @@ export default function App() {
   const [title, setTitle] = useState('My first local film')
   const [mode, setMode] = useState<Mode>('short')
   const [agentText, setAgentText] = useState('')
+  const [agentAttachments, setAgentAttachments] = useState<AgentAttachment[]>([])
   const [replaceShots, setReplaceShots] = useState(true)
 
   const notify = (msg: string) => {
@@ -279,24 +281,26 @@ export default function App() {
   }
 
   const runAgent = async () => {
-    if (!project || !agentText.trim()) return
+    if (!project) return
+    if (!agentText.trim() && agentAttachments.length === 0) return
     setBusy(true)
     try {
-      const res = await api.agentChat(project.id, agentText.trim())
+      const pending = [...agentAttachments]
+      const res = await api.agentChat(project.id, agentText.trim(), pending)
       setProject(res.project)
       setAgentText('')
+      setAgentAttachments([])
       await applyAgentUiActions(res.ui_actions || [], res.project.id)
       if (!(res.ui_actions || []).some((a) => a.type === 'navigate' || a.type === 'notify')) {
-        if ((res.project.shots || []).length > 0) {
-          notify(res.message?.slice(0, 120) || 'Director replied.')
-        }
+        notify(res.message?.slice(0, 140) || 'Director replied.')
       }
     } catch (err) {
       // Fallback to classic shot planner if chat endpoint missing on old server
       try {
-        const p = await api.agent(project.id, agentText.trim(), replaceShots)
+        const p = await api.agent(project.id, agentText.trim() || 'Plan with attached refs', replaceShots)
         setProject(p)
         setAgentText('')
+        setAgentAttachments([])
         goTab('shots')
         notify('Shot list ready — edit anything before generating.')
       } catch {
@@ -305,6 +309,40 @@ export default function App() {
     } finally {
       setBusy(false)
     }
+  }
+
+  const attachCharacterToAgent = (c: CharacterProfile) => {
+    setAgentAttachments((prev) => {
+      if (prev.some((a) => a.character_id === c.id)) return prev
+      return [
+        ...prev,
+        {
+          kind: 'character',
+          character_id: c.id,
+          name: c.name,
+          path: c.reference_path || null,
+        },
+      ]
+    })
+    goTab('agent')
+    notify(`Added ${c.name} to agent chat.`)
+  }
+
+  const attachSceneToAgent = (s: SceneProfile) => {
+    setAgentAttachments((prev) => {
+      if (prev.some((a) => a.scene_id === s.id)) return prev
+      return [
+        ...prev,
+        {
+          kind: 'scene',
+          scene_id: s.id,
+          name: s.name,
+          path: s.reference_path || null,
+        },
+      ]
+    })
+    goTab('agent')
+    notify(`Added scene ${s.name} to agent chat.`)
   }
 
   const generateShots = async (shotIds?: string[], continueChain = true) => {
@@ -686,10 +724,13 @@ export default function App() {
             project={project}
             text={agentText}
             setText={setAgentText}
+            attachments={agentAttachments}
+            setAttachments={setAgentAttachments}
             replaceShots={replaceShots}
             setReplaceShots={setReplaceShots}
             busy={busy}
             onSend={runAgent}
+            notify={notify}
           />
         )}
         {tab === 'profiles' && (
@@ -723,6 +764,8 @@ export default function App() {
             onGenerateRefs={generateRefs}
             notify={notify}
             setBusy={setBusy}
+            onAddCharToAgent={attachCharacterToAgent}
+            onAddSceneToAgent={attachSceneToAgent}
           />
         )}
         {tab === 'creator' && (
@@ -825,49 +868,185 @@ function AgentTab({
   project,
   text,
   setText,
+  attachments,
+  setAttachments,
   replaceShots,
   setReplaceShots,
   busy,
   onSend,
+  notify,
 }: {
   project: Project
   text: string
   setText: (v: string) => void
+  attachments: AgentAttachment[]
+  setAttachments: (a: AgentAttachment[] | ((prev: AgentAttachment[]) => AgentAttachment[])) => void
   replaceShots: boolean
   setReplaceShots: (v: boolean) => void
   busy: boolean
   onSend: () => void
+  notify: (m: string) => void
 }) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+
+  const canSend = Boolean(text.trim() || attachments.length)
+
+  const removeAtt = (idx: number) => {
+    setAttachments(attachments.filter((_, i) => i !== idx))
+  }
+
+  const addCharacter = (c: CharacterProfile) => {
+    setAttachments((prev) => {
+      if (prev.some((a) => a.character_id === c.id)) return prev
+      return [
+        ...prev,
+        {
+          kind: 'character',
+          character_id: c.id,
+          name: c.name,
+          path: c.reference_path || null,
+        },
+      ]
+    })
+    setPickerOpen(false)
+  }
+
+  const addScene = (s: SceneProfile) => {
+    setAttachments((prev) => {
+      if (prev.some((a) => a.scene_id === s.id)) return prev
+      return [
+        ...prev,
+        {
+          kind: 'scene',
+          scene_id: s.id,
+          name: s.name,
+          path: s.reference_path || null,
+        },
+      ]
+    })
+    setPickerOpen(false)
+  }
+
+  const onUploadFiles = async (files: FileList | null) => {
+    if (!files?.length) return
+    setUploading(true)
+    try {
+      const next: AgentAttachment[] = []
+      for (const file of Array.from(files)) {
+        const up = await api.engineUpload(file, file.type.startsWith('video/') ? 'reference' : 'image')
+        const isImage = file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(file.name)
+        next.push({
+          kind: isImage ? 'image' : 'file',
+          path: up.path,
+          name: file.name.replace(/\.[^.]+$/, '') || file.name,
+          mime: file.type || '',
+        })
+      }
+      setAttachments((prev) => [...prev, ...next])
+      notify(next.length === 1 ? 'Reference attached.' : `${next.length} references attached.`)
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
   return (
     <div className="chat">
       <p className="hint">
-        Chat with your director — it talks back and can plan shots, set TikTok/YouTube framing,
-        add characters, open Film night or Director. Example: “A rainy neon chase for TikTok.”
+        Chat with your director — attach Characters-tab people, scenes, or upload reference images.
+        Example: attach Mira’s face ref, then “rainy neon chase for TikTok”.
       </p>
       <div className="chat-log">
         {project.agent_messages.length === 0 ? (
           <div className="bubble assistant">
-            Hey — I’m your StudioNels director. Describe a film idea, ask for vertical framing, or
-            say “help”. If Ollama is connected (Settings → Test connection), I’ll use it; otherwise
-            I still work offline.
+            Hey — I’m your StudioNels director. Attach a character or image for face lock, describe a
+            film idea, or say “help”. Refs from the Characters tab stay locked into the shot list.
           </div>
         ) : null}
         {project.agent_messages.map((m) => (
           <div key={m.id} className={`bubble ${m.role}`}>
             {m.content}
+            {m.attachments && m.attachments.length > 0 ? (
+              <div className="att-row in-bubble">
+                {m.attachments.map((a, i) => (
+                  <span key={`${a.character_id || a.path || i}`} className="att-chip">
+                    {mediaUrl(a.path) && a.kind !== 'file' ? (
+                      <img src={mediaUrl(a.path)!} alt="" />
+                    ) : null}
+                    <span>
+                      {a.kind === 'character'
+                        ? a.name || 'Character'
+                        : a.kind === 'scene'
+                          ? a.name || 'Scene'
+                          : a.name || a.kind}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </div>
         ))}
       </div>
       <div className="chat-compose">
+        {attachments.length > 0 ? (
+          <div className="att-row">
+            {attachments.map((a, i) => (
+              <span key={`${a.character_id || a.scene_id || a.path || i}`} className="att-chip">
+                {mediaUrl(a.path) && a.kind !== 'file' ? (
+                  <img src={mediaUrl(a.path)!} alt="" />
+                ) : (
+                  <span className="att-icon" aria-hidden>
+                    {a.kind === 'character' ? '◆' : a.kind === 'scene' ? '◇' : '📎'}
+                  </span>
+                )}
+                <span>
+                  {a.name || a.kind}
+                  {!a.path && a.kind === 'character' ? ' (no image yet)' : ''}
+                </span>
+                <button type="button" className="att-x" onClick={() => removeAtt(i)} aria-label="Remove">
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Talk to the director…"
+          placeholder="Talk to the director… attach refs below"
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onSend()
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && canSend) onSend()
           }}
         />
-        <div className="compose-row">
+        <div className="compose-attach-bar">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*,video/*,.png,.jpg,.jpeg,.webp,.gif,.mp4,.webm"
+            multiple
+            hidden
+            onChange={(e) => void onUploadFiles(e.target.files)}
+          />
+          <button
+            className="btn ghost"
+            type="button"
+            disabled={busy || uploading}
+            onClick={() => fileRef.current?.click()}
+          >
+            {uploading ? 'Uploading…' : 'Upload image / file'}
+          </button>
+          <button
+            className="btn ghost"
+            type="button"
+            disabled={busy}
+            onClick={() => setPickerOpen((v) => !v)}
+          >
+            From Characters
+          </button>
           <label className="muted">
             <input
               type="checkbox"
@@ -876,10 +1055,69 @@ function AgentTab({
             />{' '}
             Prefer replacing shot list on big ideas
           </label>
-          <button className="btn acid" type="button" disabled={busy || !text.trim()} onClick={onSend}>
+          <button
+            className="btn acid"
+            type="button"
+            disabled={busy || !canSend}
+            onClick={onSend}
+          >
             {busy ? 'Thinking…' : 'Send'}
           </button>
         </div>
+        {pickerOpen ? (
+          <div className="agent-ref-picker">
+            <div className="agent-ref-col">
+              <strong>Characters</strong>
+              {project.characters.length === 0 ? (
+                <p className="muted tiny">None yet — add some on Characters, or upload an image here.</p>
+              ) : (
+                project.characters.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className="agent-ref-item"
+                    onClick={() => addCharacter(c)}
+                  >
+                    {mediaUrl(c.reference_path) ? (
+                      <img src={mediaUrl(c.reference_path)!} alt="" />
+                    ) : (
+                      <span className="att-icon">◆</span>
+                    )}
+                    <span>
+                      <em>{c.name}</em>
+                      <small>{c.look || c.role || (c.reference_path ? 'Has ref' : 'No image')}</small>
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+            <div className="agent-ref-col">
+              <strong>Scenes</strong>
+              {project.scenes.length === 0 ? (
+                <p className="muted tiny">No scenes yet.</p>
+              ) : (
+                project.scenes.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className="agent-ref-item"
+                    onClick={() => addScene(s)}
+                  >
+                    {mediaUrl(s.reference_path) ? (
+                      <img src={mediaUrl(s.reference_path)!} alt="" />
+                    ) : (
+                      <span className="att-icon">◇</span>
+                    )}
+                    <span>
+                      <em>{s.name}</em>
+                      <small>{s.location || s.mood || 'Scene'}</small>
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   )
@@ -1540,6 +1778,8 @@ function CharactersTab({
   setBusy,
   onGenerateRefs,
   notify,
+  onAddCharToAgent,
+  onAddSceneToAgent,
 }: {
   project: Project
   setProject: (p: Project) => void
@@ -1547,6 +1787,8 @@ function CharactersTab({
   setBusy: (v: boolean) => void
   onGenerateRefs: (kind: 'character_still' | 'scene_still') => void
   notify: (m: string) => void
+  onAddCharToAgent?: (c: CharacterProfile) => void
+  onAddSceneToAgent?: (s: SceneProfile) => void
 }) {
   const [editingChar, setEditingChar] = useState<string | null>(null)
   const [editingScene, setEditingScene] = useState<string | null>(null)
@@ -1582,8 +1824,8 @@ function CharactersTab({
   return (
     <div>
       <p className="hint">
-        Generate refs, then edit anything — look notes, mood, or swap the reference image if you need
-        a change.
+        Generate refs, then edit anything — look notes, mood, or swap the reference image. Use{' '}
+        <strong>Add to agent</strong> to drop a person or scene into Agent chat as a face/look lock.
       </p>
       <div className="inline-actions" style={{ marginBottom: 16 }}>
         <button className="btn acid" type="button" disabled={busy} onClick={() => onGenerateRefs('character_still')}>
@@ -1611,6 +1853,7 @@ function CharactersTab({
                   await saveChar({ ...c, reference_path: up.path })
                 }}
                 onClear={() => saveChar({ ...c, reference_path: null })}
+                onAddToAgent={onAddCharToAgent ? () => onAddCharToAgent(c) : undefined}
               >
                 <div className="field">
                   <label>Look / ref notes</label>
@@ -1664,6 +1907,7 @@ function CharactersTab({
                   await saveScene({ ...s, reference_path: up.path })
                 }}
                 onClear={() => saveScene({ ...s, reference_path: null })}
+                onAddToAgent={onAddSceneToAgent ? () => onAddSceneToAgent(s) : undefined}
               >
                 <div className="field">
                   <label>Visual / ref notes</label>
@@ -1723,6 +1967,7 @@ function EditableRefCard({
   busy,
   onUpload,
   onClear,
+  onAddToAgent,
   children,
 }: {
   title: string
@@ -1733,6 +1978,7 @@ function EditableRefCard({
   busy: boolean
   onUpload: (file: File) => Promise<void>
   onClear: () => void
+  onAddToAgent?: () => void
   children: ReactNode
 }) {
   return (
@@ -1749,6 +1995,11 @@ function EditableRefCard({
           <button className="btn acid tiny" type="button" onClick={onToggle}>
             {open ? 'Done' : 'Edit ref'}
           </button>
+          {onAddToAgent ? (
+            <button className="btn ghost tiny" type="button" disabled={busy} onClick={onAddToAgent}>
+              Add to agent
+            </button>
+          ) : null}
         </div>
         {open && (
           <div className="profile-form" style={{ marginTop: 8 }}>
