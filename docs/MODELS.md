@@ -1,6 +1,6 @@
 # Built-in models (in-app)
 
-Framewright does **not** use ComfyUI graphs. Models load via Diffusers inside the process.
+Nellwright does **not** use ComfyUI graphs. Models load via Diffusers inside the process.
 
 ## By mode
 
@@ -19,4 +19,4 @@ Framewright does **not** use ComfyUI graphs. Models load via Diffusers inside th
 | Low | `llama3.2:3b` |
 | Comfortable | `llama3.1:8b` |
 
-Weights come from Hugging Face into the local cache / `~/.framewright/models`. You run them; Framewright does not redistribute checkpoints.
+Weights come from Hugging Face into the local cache / `~/.nellwright/models`. You run them; Nellwright does not redistribute checkpoints.

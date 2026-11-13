@@ -35,7 +35,7 @@ export const LEARN_TOPICS: LearnTopic[] = [
     id: 'start-here',
     title: 'Start here (first time with AI?)',
     blurb:
-      'Framewright is a local film studio. You describe a story in plain English, it breaks that into shots, then your computer (or a preview) turns those into images and clips. You do not need to know coding or “prompt engineering.”',
+      'Nellwright is VIPNells’s local film studio. You describe a story in plain English, it breaks that into shots, then your computer (or a preview) turns those into images and clips. You do not need to know coding or “prompt engineering.”',
     where: [
       { label: 'Inspiration', tab: 'inspiration', detail: 'Side nav → Start → Inspiration' },
       { label: 'New project', detail: 'Projects screen → New project' },
@@ -108,7 +108,7 @@ export const LEARN_TOPICS: LearnTopic[] = [
     ],
     examples: [
       'Music video: “neon subway dance, 45 seconds, high energy cuts.”',
-      'If the paid API fails, Framewright falls back to the built-in planner.',
+      'If the paid API fails, Nellwright falls back to the built-in planner.',
     ],
   },
   {
@@ -248,7 +248,7 @@ export const LEARN_TOPICS: LearnTopic[] = [
   {
     id: 'folders',
     title: 'Where files live (Pinokio-style)',
-    blurb: 'Everything sits in the Framewright folder you downloaded — no mystery hidden paths.',
+    blurb: 'Everything sits in the Nellwright folder you downloaded — no mystery hidden paths.',
     where: [{ label: 'Info', tab: 'info', detail: 'System → Info' }],
     howto: [
       {
@@ -269,7 +269,7 @@ export const LEARN_TOPICS: LearnTopic[] = [
     id: 'personal',
     title: 'Your GitHub & Hugging Face',
     blurb:
-      'Save your profile URLs so Framewright knows where “your stuff” lives. Paste a model or LoRA link to pull it into the local folders, or point teammates at your repos.',
+      'Save your profile URLs so Nellwright knows where “your stuff” lives. Paste a model or LoRA link to pull it into the local folders, or point teammates at your repos.',
     where: [
       { label: 'My links', tab: 'sources', detail: 'System → My links' },
       { label: 'Settings', tab: 'settings', detail: 'Also stored with Settings' },
@@ -291,7 +291,7 @@ export const LEARN_TOPICS: LearnTopic[] = [
       'GitHub raw LoRA URL → imports into loras/.',
       'Your HF collection URL is saved so you remember where your packs live.',
     ],
-    tip: 'Tokens stay on your machine in local settings — not uploaded to Framewright cloud.',
+    tip: 'Tokens stay on your machine in local settings — not uploaded to Nellwright cloud.',
   },
   {
     id: 'gpu',

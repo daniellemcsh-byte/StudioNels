@@ -1,6 +1,6 @@
 # loras/
 
-Drop LoRA weight files here. Framewright **auto-scans this folder** and lists them in:
+Drop LoRA weight files here. Nellwright **auto-scans this folder** and lists them in:
 
 - **Generate → Optional LoRA** dropdown
 - **Models → LoRAs in folder**

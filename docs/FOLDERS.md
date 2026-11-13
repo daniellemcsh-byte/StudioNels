@@ -1,6 +1,6 @@
 # Where do I put files? (Pinokio-style)
 
-Everything lives **inside the Framewright folder you downloaded** — same idea as Pinokio apps.
+Everything lives **inside the Nellwright folder you downloaded** — same idea as Pinokio apps.
 
 ```
 local-film-studio/

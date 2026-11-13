@@ -97,6 +97,27 @@ a {
   text-shadow: 0 0 18px rgba(57, 255, 199, 0.55);
 }
 
+.brand-text {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.05;
+  gap: 2px;
+}
+
+.brand-by {
+  font-size: 0.55em;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--neon-3);
+  text-shadow: none;
+}
+
+.hero .brand-mark {
+  font-size: clamp(2.4rem, 7vw, 4.2rem);
+  margin-bottom: 8px;
+}
+
 .brand-mark .dot {
   width: 28px;
   height: 28px;
@@ -180,14 +201,13 @@ a {
 .hero h1 {
   margin: 0;
   font-family: var(--font-display);
-  font-weight: 800;
-  letter-spacing: -0.045em;
-  font-size: clamp(3rem, 9vw, 6.2rem);
-  line-height: 0.92;
-  color: var(--neon);
-  text-shadow:
-    0 0 24px rgba(57, 255, 199, 0.45),
-    0 0 60px rgba(255, 61, 206, 0.2);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-size: clamp(1.15rem, 2.8vw, 1.55rem);
+  line-height: 1.2;
+  color: var(--ink-soft);
+  text-shadow: none;
+  max-width: 28ch;
 }
 
 .hero p {

@@ -147,11 +147,11 @@ def score_take_continuity(
     shot: Shot,
     prompt_used: str,
     take_label: str = "",
+    take: Take | None = None,
 ) -> dict[str, Any]:
     """
-    Heuristic continuity score: do the shot's character/scene lock features
-    appear in the prompt that produced the take?
-    (Vision scoring can plug in later; this keeps the studio useful offline.)
+    Continuity score = prompt-lock heuristics blended with offline vision
+    (histogram match to character ref / previous last frame).
     """
     prompt_toks = _tokens(prompt_used)
     flags: list[str] = []
@@ -160,7 +160,6 @@ def score_take_continuity(
 
     chars = [c for c in project.characters if c.id in (shot.character_ids or [])]
     if not chars and project.characters:
-        # If shot has no cast linked, still check primary lock characters lightly
         chars = project.characters[:1]
 
     for c in chars:
@@ -193,14 +192,29 @@ def score_take_continuity(
         else:
             flags.append(f"Style not reinforced: {project.visual_style}")
 
-    score = 1.0 if checks == 0 else hits / checks
-    # Soften: too many flags from generic misses — clamp presentation
-    score = round(max(0.0, min(1.0, score)), 3)
+    prompt_score = 1.0 if checks == 0 else hits / checks
+    prompt_score = round(max(0.0, min(1.0, prompt_score)), 3)
+
+    vision_score = None
+    if take is not None:
+        try:
+            from .vision_continuity import blend_scores, vision_score_take
+
+            v = vision_score_take(project, shot, take)
+            vision_score = v.get("vision_score")
+            flags.extend(v.get("vision_flags") or [])
+            score = blend_scores(prompt_score, vision_score)
+        except Exception:
+            score = prompt_score
+    else:
+        score = prompt_score
+
     threshold = float(getattr(project, "auto_reject_below", 0.55) or 0.55)
-    rejected = score < threshold and checks > 0
+    rejected = score < threshold and (checks > 0 or vision_score is not None)
 
     note = (
         f"Continuity {int(score * 100)}%"
+        + (f" · vision {int(vision_score * 100)}%" if vision_score is not None else "")
         + (f" · {len(flags)} flags" if flags else " · clean")
         + (f" · auto-reject" if rejected else "")
     )
@@ -209,6 +223,8 @@ def score_take_continuity(
 
     return {
         "continuity_score": score,
+        "prompt_score": prompt_score,
+        "vision_score": vision_score,
         "continuity_flags": flags[:12],
         "rejected": rejected,
         "score_note": note,
@@ -224,9 +240,10 @@ def rescore_project(project: Project) -> Project:
         if not shot:
             continue
         prompt = take.prompt_used or shot.prompt or shot.action or ""
-        result = score_take_continuity(project, shot, prompt, take.label)
+        result = score_take_continuity(project, shot, prompt, take.label, take=take)
         take.continuity_score = result["continuity_score"]
         take.continuity_flags = result["continuity_flags"]
+        take.vision_score = result.get("vision_score")
         take.rejected = result["rejected"]
         take.score_note = result["score_note"]
     return project

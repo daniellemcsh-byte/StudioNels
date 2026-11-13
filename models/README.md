@@ -1,6 +1,6 @@
 # models/
 
-Put **downloaded AI models** here (or let Framewright download them for you from the **Models** tab).
+Put **downloaded AI models** here (or let Nellwright download them for you from the **Models** tab).
 
 Each model gets its own subfolder, named like the Hugging Face id with `/` → `__`:
 

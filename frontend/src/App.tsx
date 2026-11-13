@@ -127,11 +127,14 @@ function formatWhen(iso: string) {
   }
 }
 
-function Brand() {
+function Brand({ showByline = false }: { showByline?: boolean }) {
   return (
-    <div className="brand-mark" aria-label="Framewright">
+    <div className="brand-mark" aria-label="Nellwright by VIPNells">
       <span className="dot" aria-hidden />
-      Framewright
+      <span className="brand-text">
+        Nellwright
+        {showByline ? <span className="brand-by">by VIPNells</span> : null}
+      </span>
     </div>
   )
 }
@@ -384,12 +387,12 @@ export default function App() {
         </div>
 
         <section className="hero">
-          <Brand />
-          <h1>Make films on your Radeon. Fully local.</h1>
+          <Brand showByline />
+          <h1>Local film studio for AMD.</h1>
           <p>
-            Tell an agent your idea, keep character and scene profiles, break the story into
-            editable shots, sample takes, then cut in Director mode — all on your machine, tuned
-            for AMD and low VRAM by default.
+            Make films on your Radeon — fully local. Your faces and projects stay on this machine.
+            Plan with the agent, lock characters, continue shots, cut in Director. Built by VIPNells
+            for AMD and low-VRAM friends.
           </p>
           <div className="cta-row">
             <button className="btn acid" type="button" onClick={() => setShowNew(true)}>
@@ -407,7 +410,7 @@ export default function App() {
         <section className="home-projects" id="projects">
           <div className="section-label">Your projects</div>
           {projects.length === 0 ? (
-            <div className="empty">No projects yet. Start one — it saves under ~/.framewright.</div>
+            <div className="empty">No projects yet. Start one — Nellwright saves into the projects/ folder.</div>
           ) : (
             <div className="project-grid">
               {projects.map((p, i) => (
@@ -1797,7 +1800,7 @@ function GenerateTab({
   return (
     <div>
       <p className="hint">
-        Built-in generator (Wan2GP-style) — pick a mode, model, and run inside Framewright. No ComfyUI.
+        Built-in generator (Wan2GP-style) — pick a mode, model, and run inside Nellwright. No ComfyUI.
         {health?.gpu
           ? ` GPU: ${health.device_name}.`
           : ' Running preview until ROCm PyTorch + weights are installed.'}
@@ -2225,7 +2228,7 @@ function SettingsTab({
   return (
     <div>
       <p className="hint">
-        Default is AMD Low VRAM so friends with smaller cards can use Framewright. Pick a free local
+        Default is AMD Low VRAM so friends with smaller cards can use Nellwright. Pick a free local
         agent (Ollama / built-in) or plug in a paid LLM API for smarter shot planning.
       </p>
       <div className="settings-grid panel">
@@ -2332,7 +2335,7 @@ function SettingsTab({
                 placeholder={draft.agent_api_key_set ? '••••••••' : 'sk-…'}
               />
               <div className="muted tiny">
-                Stored only in your local Framewright settings file — never sent to Framewright
+                Stored only in your local Nellwright settings file — never sent to Nellwright
                 cloud. Falls back to built-in planner if the call fails.
               </div>
             </div>
@@ -2600,7 +2603,7 @@ function InspirationTab({ onTry }: { onTry: (clip: InspirationClip) => void }) {
   return (
     <div>
       <p className="hint">
-        Little idea clips of what Framewright can do — tap <em>Try this</em> to drop the prompt into
+        Little idea clips of what Nellwright can do — tap <em>Try this</em> to drop the prompt into
         Generate.
       </p>
       <div className="inspire-grid">
@@ -3387,7 +3390,7 @@ function AddonsTab({ notify }: { notify: (m: string) => void }) {
         folder. Drop a JSON plugin or Markdown skill there, then restart the API.
       </p>
       <p className="muted">Bundled examples: Neon Color Grading, Auto Audio Bed, Shot List Director.</p>
-      <button className="btn acid" type="button" onClick={() => notify('Check addons/ in your Framewright folder.')}>
+      <button className="btn acid" type="button" onClick={() => notify('Check addons/ in your Nellwright folder.')}>
         Open folder tip
       </button>
     </div>
@@ -3545,7 +3548,7 @@ function SourcesTab({ notify }: { notify: (m: string) => void }) {
   return (
     <div>
       <p className="hint">
-        Personalise Framewright with <strong>your</strong> GitHub and Hugging Face pages. Import
+        Personalise Nellwright with <strong>your</strong> GitHub and Hugging Face pages. Import
         models, LoRAs, or add-ons from those links into the local folders — no path pasting.
       </p>
       <div className="gen-layout">
@@ -3588,7 +3591,7 @@ function SourcesTab({ notify }: { notify: (m: string) => void }) {
               onChange={(e) => setToken(e.target.value)}
               placeholder={tokenSet ? '••••••••' : 'hf_…'}
             />
-            <div className="muted tiny">Stored only in local settings — never sent to Framewright cloud.</div>
+            <div className="muted tiny">Stored only in local settings — never sent to Nellwright cloud.</div>
           </div>
           <div className="inline-actions">
             <button className="btn acid" type="button" disabled={busy} onClick={saveLinks}>
@@ -3636,7 +3639,7 @@ function SourcesTab({ notify }: { notify: (m: string) => void }) {
             />
           </div>
           <button className="btn acid" type="button" disabled={busy} onClick={runImport}>
-            Import to Framewright
+            Import to Nellwright
           </button>
 
           <h3 style={{ marginTop: 20 }}>Recent imports</h3>
@@ -3678,7 +3681,7 @@ function InfoTab() {
   return (
     <div>
       <p className="hint">
-        Pinokio-style layout — everything sits in the Framewright folder you downloaded. No hidden
+        Pinokio-style layout — everything sits in the Nellwright folder you downloaded. No hidden
         mystery directories required. New here? Open <strong>Learning</strong> for first-time how-tos.
       </p>
       <div className="panel">

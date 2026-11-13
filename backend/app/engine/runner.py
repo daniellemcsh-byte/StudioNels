@@ -103,7 +103,7 @@ def _ensure_worker() -> None:
         if _WORKER_STARTED:
             return
         _WORKER_STARTED = True
-        t = threading.Thread(target=_worker_loop, name="framewright-engine", daemon=True)
+        t = threading.Thread(target=_worker_loop, name="nellwright-engine", daemon=True)
         t.start()
 
 
@@ -349,15 +349,21 @@ def _attach_to_project(job: dict[str, Any]) -> None:
         )
         shot = next((s for s in project.shots if s.id == job["shot_id"]), None)
         if shot:
-            scored = score_take_continuity(project, shot, prompt_used, take.label)
+            scored = score_take_continuity(
+                project, shot, prompt_used, take.label, take=take
+            )
             take.continuity_score = scored["continuity_score"]
             take.continuity_flags = scored["continuity_flags"]
+            take.vision_score = scored.get("vision_score")
             take.rejected = scored["rejected"]
             take.score_note = scored["score_note"]
             shot.status = "ready"
             # Auto-pin best non-rejected final take; never auto-pin rehearsals
             if not is_rehearsal and not take.rejected and not shot.pinned_take_id:
                 shot.pinned_take_id = take.id
+            # If rejected, keep generating? — mark shot ready but unpinned for Sampling
+            if take.rejected:
+                take.label = f"{take.label} · REJECT"
         project.takes.append(take)
         # Kick sequential continuation for remaining shots in the chain
         job["_attached_take_id"] = take.id

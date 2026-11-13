@@ -1,6 +1,6 @@
-# Framewright
+# Nellwright by VIPNells
 
-A fully local AI film studio for AMD Radeon GPUs — **your own app**, Wan2GP-style.
+VIPNells’s fully local AI film studio for AMD Radeon GPUs — Wan2GP-style, no ComfyUI.
 
 Describe an idea, keep character/scene profiles, plan editable shots, then generate with a **built-in engine** (no ComfyUI):
 
@@ -51,7 +51,7 @@ See `docs/AMD_ROCM.md` and `docs/MODELS.md`.
 
 ## Data
 
-`~/.framewright/projects/`, `media/`, `models/`, `jobs.json`
+`~/.nellwright/projects/`, `media/`, `models/`, `jobs.json`
 
 ## License
 

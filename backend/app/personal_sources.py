@@ -28,7 +28,7 @@ def personal_profile(settings: Settings | None = None) -> dict[str, Any]:
         "display_name": s.creator_display_name or "",
         "imports": list_imports(12),
         "hints": {
-            "github": "https://github.com/your-username or https://github.com/you/framewright-pack",
+            "github": "https://github.com/your-username or https://github.com/you/nellwright-pack",
             "huggingface": "https://huggingface.co/your-username",
             "import_model": "owner/repo or https://huggingface.co/owner/repo",
             "import_lora": "HF file URL, GitHub raw URL, or local-style owner/repo/file.safetensors",

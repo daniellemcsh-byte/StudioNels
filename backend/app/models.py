@@ -83,6 +83,7 @@ class Take(BaseModel):
     is_placeholder: bool = True
     continuity_score: float | None = None
     continuity_flags: list[str] = Field(default_factory=list)
+    vision_score: float | None = None
     prompt_used: str = ""
     is_rehearsal: bool = False
     rejected: bool = False
@@ -206,7 +207,7 @@ class Settings(BaseModel):
     github_url: str = ""
     huggingface_url: str = ""
     huggingface_token: str = ""
-    creator_display_name: str = ""
+    creator_display_name: str = "VIPNells"
     auto_save: bool = True
     friendly_mode: bool = True
     default_gen_mode: str = "t2v"
