@@ -107,6 +107,33 @@ class TimelineClip(BaseModel):
     filter_id: str = "none"
     filter_intensity: float = 1.0
     director_note: str = ""
+    # TikTok-style reframing
+    scale: float = 1.0
+    pan_x: float = 0.0  # -1 .. 1
+    pan_y: float = 0.0
+    volume: float = 1.0  # clip audio if present
+    fade_in: float = 0.0
+    fade_out: float = 0.0
+
+
+class AudioClip(BaseModel):
+    """Independent audio under the video timeline (music / VO / SFX)."""
+
+    id: str = Field(default_factory=lambda: new_id("aud"))
+    label: str = "Audio"
+    kind: Literal["music", "song", "score", "ambience", "sfx", "vo", "other"] = "music"
+    media_path: str | None = None
+    # Placement on the master timeline (seconds from cut start)
+    timeline_start: float = 0.0
+    duration_sec: float = 8.0
+    trim_in: float = 0.0
+    trim_out: float | None = None
+    volume: float = 0.85
+    fade_in: float = 0.0
+    fade_out: float = 0.5
+    muted: bool = False
+    track: int = 0  # 0 = music bed, 1 = SFX/VO overlay
+    order: int = 0
 
 
 class AgentMessage(BaseModel):
@@ -128,6 +155,7 @@ class Project(BaseModel):
     shots: list[Shot] = Field(default_factory=list)
     takes: list[Take] = Field(default_factory=list)
     timeline: list[TimelineClip] = Field(default_factory=list)
+    audio_timeline: list[AudioClip] = Field(default_factory=list)
     agent_messages: list[AgentMessage] = Field(default_factory=list)
     preset_id: str = "amd-low-vram"
     # Whole-piece timing + look (Time tab)

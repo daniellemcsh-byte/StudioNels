@@ -170,6 +170,29 @@ export interface TimelineClip {
   filter_id?: string
   filter_intensity?: number
   director_note?: string
+  scale?: number
+  pan_x?: number
+  pan_y?: number
+  volume?: number
+  fade_in?: number
+  fade_out?: number
+}
+
+export interface AudioClip {
+  id: string
+  label: string
+  kind: 'music' | 'song' | 'score' | 'ambience' | 'sfx' | 'vo' | 'other'
+  media_path?: string | null
+  timeline_start: number
+  duration_sec: number
+  trim_in?: number
+  trim_out?: number | null
+  volume: number
+  fade_in?: number
+  fade_out?: number
+  muted?: boolean
+  track: number
+  order: number
 }
 
 export interface AgentMessage {
@@ -191,6 +214,7 @@ export interface Project {
   shots: Shot[]
   takes: Take[]
   timeline: TimelineClip[]
+  audio_timeline?: AudioClip[]
   agent_messages: AgentMessage[]
   preset_id: string
   target_duration_sec: number

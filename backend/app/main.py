@@ -18,6 +18,7 @@ from .gpu_estimate import estimate_job
 from .llm_providers import list_providers, probe_agent
 from .models import (
     AgentMessage,
+    AudioClip,
     CharacterProfile,
     ContinuityRulesRequest,
     CreateProjectRequest,
@@ -500,6 +501,34 @@ async def set_timeline(project_id: str, clips: list[TimelineClip]):
     for i, clip in enumerate(clips):
         clip.order = i
     project.timeline = clips
+    return save_project(project)
+
+
+@app.put("/api/projects/{project_id}/audio-timeline", response_model=Project)
+async def set_audio_timeline(project_id: str, clips: list[AudioClip]):
+    project = load_project(project_id)
+    for i, clip in enumerate(clips):
+        clip.order = i
+    project.audio_timeline = clips
+    return save_project(project)
+
+
+@app.post("/api/projects/{project_id}/audio-timeline", response_model=Project)
+async def add_audio_clip(project_id: str, body: AudioClip):
+    project = load_project(project_id)
+    if not body.id:
+        body.id = new_id("aud")
+    body.order = len(project.audio_timeline)
+    project.audio_timeline.append(body)
+    return save_project(project)
+
+
+@app.delete("/api/projects/{project_id}/audio-timeline/{clip_id}", response_model=Project)
+async def delete_audio_clip(project_id: str, clip_id: str):
+    project = load_project(project_id)
+    project.audio_timeline = [c for c in project.audio_timeline if c.id != clip_id]
+    for i, c in enumerate(project.audio_timeline):
+        c.order = i
     return save_project(project)
 
 

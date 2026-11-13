@@ -197,6 +197,20 @@ def build_markers_json(project: Project) -> dict[str, Any]:
         "default_filter_id": getattr(project, "default_filter_id", "none"),
         "captions_enabled": getattr(project, "captions_enabled", True),
         "markers": markers,
+        "audio": [
+            {
+                "id": a.id,
+                "label": a.label,
+                "kind": a.kind,
+                "media_path": a.media_path,
+                "timeline_start": a.timeline_start,
+                "duration_sec": a.duration_sec,
+                "volume": a.volume,
+                "track": a.track,
+                "muted": a.muted,
+            }
+            for a in getattr(project, "audio_timeline", []) or []
+        ],
     }
 
 

@@ -1366,6 +1366,164 @@ a {
   font-size: 1.25rem;
 }
 
+/* TikTok-style Director */
+.tiktok-director .tt-phone {
+  max-width: 360px;
+  margin: 0 auto;
+  aspect-ratio: 9 / 16;
+  border-radius: 22px;
+}
+
+.tt-frame {
+  width: 100%;
+  height: 100%;
+  transform-origin: center center;
+  transition: transform 0.15s ease;
+}
+
+.tt-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.tt-timechip {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tt-timeline {
+  overflow: hidden;
+}
+
+.tt-tracks {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 8px 0 16px;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  cursor: crosshair;
+}
+
+.tt-ticks {
+  position: relative;
+  height: 22px;
+  margin-left: 72px;
+}
+
+.tt-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 0.65rem;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.tt-lane {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  align-items: center;
+  min-height: 52px;
+  margin-bottom: 6px;
+}
+
+.tt-lane-label {
+  font-size: 0.72rem;
+  color: var(--neon);
+  padding-left: 10px;
+  font-family: var(--font-display);
+}
+
+.tt-lane-body {
+  position: relative;
+  height: 44px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+  margin-right: 12px;
+}
+
+.tt-clip {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  border: 1px solid rgba(57, 255, 199, 0.35);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(57, 255, 199, 0.2), rgba(255, 61, 206, 0.12));
+  color: var(--ink);
+  font-size: 0.7rem;
+  padding: 4px 6px;
+  overflow: hidden;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tt-clip.audio {
+  background: linear-gradient(135deg, rgba(184, 255, 61, 0.22), rgba(57, 255, 199, 0.08));
+  border-color: rgba(184, 255, 61, 0.45);
+}
+
+.tt-clip.sfx {
+  background: linear-gradient(135deg, rgba(120, 180, 255, 0.25), rgba(57, 255, 199, 0.08));
+  border-color: rgba(120, 180, 255, 0.5);
+}
+
+.tt-clip.active {
+  box-shadow: 0 0 0 2px var(--neon-2);
+  z-index: 2;
+}
+
+.tt-clip.muted {
+  opacity: 0.4;
+}
+
+.tt-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #ff3dce;
+  box-shadow: 0 0 10px rgba(255, 61, 206, 0.7);
+  pointer-events: none;
+  z-index: 5;
+  margin-left: 72px;
+}
+
+.tt-playhead::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -5px;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 8px solid #ff3dce;
+}
+
+.tt-add-audio {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 900px) {
+  .tiktok-director .tt-phone {
+    max-width: 100%;
+    aspect-ratio: 16 / 9;
+  }
+}
+
 .inspire-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));

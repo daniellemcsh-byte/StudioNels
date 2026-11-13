@@ -1,5 +1,6 @@
 import type {
   AgentProviderInfo,
+  AudioClip,
   CharacterProfile,
   ContinuityData,
   EngineJob,
@@ -149,6 +150,18 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(clips),
     }),
+  setAudioTimeline: (id: string, clips: AudioClip[]) =>
+    req<Project>(`/api/projects/${id}/audio-timeline`, {
+      method: 'PUT',
+      body: JSON.stringify(clips),
+    }),
+  addAudioClip: (id: string, clip: Partial<AudioClip>) =>
+    req<Project>(`/api/projects/${id}/audio-timeline`, {
+      method: 'POST',
+      body: JSON.stringify(clip),
+    }),
+  deleteAudioClip: (id: string, clipId: string) =>
+    req<Project>(`/api/projects/${id}/audio-timeline/${clipId}`, { method: 'DELETE' }),
   generateCaptions: (id: string, overwrite = false) =>
     req<Project>(`/api/projects/${id}/captions/generate?overwrite=${overwrite}`, {
       method: 'POST',
