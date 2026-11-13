@@ -67,6 +67,11 @@ module.exports = {
             href: "start.js",
             params: { kill: true },
           },
+          {
+            icon: "fa-solid fa-microchip",
+            text: "Install AMD engine (stop first)",
+            href: "torch.js",
+          },
         ]
       }
       return [
