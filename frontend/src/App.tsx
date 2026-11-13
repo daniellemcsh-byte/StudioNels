@@ -993,7 +993,19 @@ function ProfileChar({
     const up = await api.engineUpload(file)
     const next = { ...draft, reference_path: up.path }
     setDraft(next)
-    await save(next)
+    setSaving(true)
+    try {
+      await api.updateCharacter(project.id, next)
+      const p = await api.refreshIdentityLock(project.id, c.id)
+      setProject(p)
+      const updated = p.characters.find((x) => x.id === c.id)
+      if (updated) setDraft(updated)
+      notify('Ref saved · identity lock fingerprinted.')
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
