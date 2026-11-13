@@ -878,7 +878,133 @@ export default function App() {
         )}
       </main>
       </div>
+      <GenerationDock
+        projectId={project.id}
+        health={health}
+        setProject={setProject}
+        notify={notify}
+        onOpenGenerate={() => goTab('generate')}
+        onOpenSampling={() => goTab('sampling')}
+      />
       {toast && <div className="toast">{toast}</div>}
+    </div>
+  )
+}
+
+function GenerationDock({
+  projectId,
+  health,
+  setProject,
+  notify,
+  onOpenGenerate,
+  onOpenSampling,
+}: {
+  projectId: string
+  health: Health | null
+  setProject: (p: Project) => void
+  notify: (m: string) => void
+  onOpenGenerate: () => void
+  onOpenSampling: () => void
+}) {
+  const [jobs, setJobs] = useState<EngineJob[]>([])
+  const [open, setOpen] = useState(true)
+  const prevActive = useRef(0)
+
+  useEffect(() => {
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const list = await api.engineJobs()
+        if (cancelled) return
+        setJobs(list.slice(0, 12))
+        const active = list.filter((j) => j.status === 'queued' || j.status === 'running').length
+        const doneNow = list.filter((j) => j.status === 'done' || j.status === 'failed').length
+        if (prevActive.current > 0 && active === 0 && doneNow > 0) {
+          const p = await api.getProject(projectId)
+          if (!cancelled) {
+            setProject(p)
+            notify(
+              health?.will_preview
+                ? `Jobs finished (preview mode). Check Sampling — ${p.takes.length} take(s).`
+                : `Jobs finished — ${p.takes.length} take(s). Open Sampling or Director.`,
+            )
+          }
+        }
+        prevActive.current = active
+        if (active > 0) setOpen(true)
+      } catch {
+        /* api down */
+      }
+    }
+    void tick()
+    const t = window.setInterval(() => void tick(), 1500)
+    return () => {
+      cancelled = true
+      window.clearInterval(t)
+    }
+  }, [projectId, setProject, notify, health?.will_preview])
+
+  const active = jobs.filter((j) => j.status === 'queued' || j.status === 'running')
+  const recent = jobs.slice(0, 6)
+  if (recent.length === 0 && !health?.will_preview) return null
+
+  return (
+    <div className={`gen-dock ${open ? 'open' : 'collapsed'}`}>
+      <button type="button" className="gen-dock-head" onClick={() => setOpen((v) => !v)}>
+        <strong>
+          {active.length > 0
+            ? `Generating · ${active.length} active`
+            : recent.length
+              ? 'Generation'
+              : 'Engine'}
+        </strong>
+        <span className="muted tiny">
+          {health?.will_preview
+            ? 'Preview mode (placeholders until ROCm PyTorch)'
+            : health?.device_name || 'built-in'}
+          {open ? ' · ▾' : ' · ▸'}
+        </span>
+      </button>
+      {open ? (
+        <div className="gen-dock-body">
+          {health?.will_preview ? (
+            <p className="muted tiny">
+              Jobs still run — you get preview clips (color bars + prompt text), not full AI video
+              yet. Takes show up in Sampling when each job finishes.
+            </p>
+          ) : null}
+          {recent.length === 0 ? (
+            <p className="muted tiny">No jobs yet. Film night / Generate will show progress here.</p>
+          ) : (
+            <div className="gen-dock-list">
+              {recent.map((job) => (
+                <div className="gen-dock-row" key={job.id}>
+                  <div className="gen-dock-meta">
+                    <span>
+                      {job.mode.toUpperCase()} · {job.status}
+                      {job.preview ? ' · preview' : ''}
+                    </span>
+                    <span className="muted tiny">{Math.round((job.progress || 0) * 100)}%</span>
+                  </div>
+                  <div className="progress">
+                    <div style={{ width: `${Math.round((job.progress || 0) * 100)}%` }} />
+                  </div>
+                  <div className="muted tiny truncate">{job.message || job.prompt || job.id}</div>
+                  {job.error ? <div className="fit-warn tiny">{job.error.slice(0, 160)}</div> : null}
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="cta-row" style={{ marginTop: 8 }}>
+            <button className="btn ghost tiny" type="button" onClick={onOpenGenerate}>
+              Generate
+            </button>
+            <button className="btn ghost tiny" type="button" onClick={onOpenSampling}>
+              Sampling
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

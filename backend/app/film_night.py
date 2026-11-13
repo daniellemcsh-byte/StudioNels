@@ -58,15 +58,20 @@ async def run_film_night(project: Project, stage: str = "full") -> dict[str, Any
     if stage in ("rehearse", "full") and not any(t.is_rehearsal for t in project.takes):
         if not project.shots:
             return {"ok": False, "message": "Add shots first (Agent).", "steps": steps}
+        n = len(project.shots) * 2
         project = run_rehearsal(project, None, takes_per_shot=2, quality="draft")
-        steps.append("Queued rehearsal drafts for every shot.")
+        steps.append(f"Queued {n} rehearsal draft job(s) — watch the Generation dock.")
         if stage == "rehearse":
             return {
                 "ok": True,
                 "project": project.model_dump(),
                 "steps": steps,
-                "message": "Film night · rehearsal queued. When drafts finish, run Film night again.",
+                "message": (
+                    f"Rehearsal queued ({n} jobs). Watch the Generation dock at the bottom. "
+                    "When jobs say done, run Film night again to promote → finals."
+                ),
                 "next": "promote",
+                "queued_jobs": n,
             }
 
     if stage in ("promote", "full"):
@@ -90,22 +95,27 @@ async def run_film_night(project: Project, stage: str = "full") -> dict[str, Any
     if stage in ("finals", "full"):
         if not project.shots:
             return {"ok": False, "project": project.model_dump(), "steps": steps, "message": "No shots."}
-        if stage == "full" and steps and "rehearsal" in steps[0].lower():
+        if stage == "full" and steps and "rehearsal" in (steps[0] or "").lower():
             return {
                 "ok": True,
                 "project": project.model_dump(),
                 "steps": steps,
-                "message": "Film night started with rehearsal. When drafts are ready, hit Film night again.",
+                "message": (
+                    "Film night · rehearsal jobs are running now (see Generation dock). "
+                    "When they finish, press Film night again for promote → finals → stitch."
+                ),
                 "next": "promote",
             }
         project = await queue_finals_from_pins(project)
-        steps.append("Queued final continue-chain generates for all shots.")
+        steps.append(
+            f"Queued final continue-chain for {len(project.shots)} shot(s) — watch Generation dock."
+        )
         if stage == "finals":
             return {
                 "ok": True,
                 "project": project.model_dump(),
                 "steps": steps,
-                "message": "Finals queued. When done, run Stitch.",
+                "message": "Finals queued. Watch the Generation dock; when done, run Stitch.",
                 "next": "stitch",
             }
 

@@ -47,7 +47,7 @@ export default function FilmNightTab({
       if (res.project) setProject(res.project)
       else setProject(await api.getProject(project.id))
       setSteps(res.steps || [])
-      notify(res.message || 'Done')
+      notify(res.message || 'Done — watch the Generation dock (bottom-right) for job progress.')
       if (res.stitch?.preview_url) setPreviewUrl(res.stitch.preview_url)
       if (stage === 'stitch' || (stage === 'full' && res.stitch)) {
         /* stay here so they can play, or jump */

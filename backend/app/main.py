@@ -86,6 +86,17 @@ ensure_dirs()
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
 
+@app.on_event("startup")
+def _startup_engine_worker() -> None:
+    """Warm the built-in job worker so Generate/Film night don't sit idle."""
+    try:
+        from .engine.runner import _ensure_worker
+
+        _ensure_worker()
+    except Exception:
+        pass
+
+
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     settings = load_settings()
