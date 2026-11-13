@@ -1,0 +1,26 @@
+{
+  "id": "cpu-fallback",
+  "label": "CPU / UI only",
+  "target_vram_gb": 0,
+  "agent": {
+    "provider": "builtin",
+    "base_url": null,
+    "model": "builtin-planner",
+    "max_tokens": 800
+  },
+  "generation": {
+    "backend": "placeholder",
+    "comfyui_url": null,
+    "max_concurrent_jobs": 1,
+    "default_width": 640,
+    "default_height": 360,
+    "default_frames": 24,
+    "fps": 12,
+    "video_model": "none",
+    "image_model": "none",
+    "cpu_offload": true,
+    "attention_slicing": true,
+    "sequential": true
+  },
+  "notes": "Learn the studio without GPU services. Placeholders for media."
+}

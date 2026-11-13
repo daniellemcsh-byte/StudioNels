@@ -1,0 +1,26 @@
+{
+  "id": "amd-low-vram",
+  "label": "AMD Low VRAM (shareable)",
+  "target_vram_gb": 8,
+  "agent": {
+    "provider": "ollama",
+    "base_url": "http://127.0.0.1:11434",
+    "model": "llama3.2:3b",
+    "max_tokens": 1200
+  },
+  "generation": {
+    "backend": "comfyui",
+    "comfyui_url": "http://127.0.0.1:8188",
+    "max_concurrent_jobs": 1,
+    "default_width": 768,
+    "default_height": 432,
+    "default_frames": 49,
+    "fps": 16,
+    "video_model": "ltx-video",
+    "image_model": "sdxl-turbo",
+    "cpu_offload": true,
+    "attention_slicing": true,
+    "sequential": true
+  },
+  "notes": "Default for most users. Short 480p-ish clips, one job at a time."
+}
