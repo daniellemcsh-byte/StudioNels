@@ -1,7 +1,10 @@
 import type {
+  AgentProviderInfo,
   CharacterProfile,
+  ContinuityData,
   EngineJob,
   EngineStatus,
+  GpuEstimate,
   Health,
   Preset,
   Project,
@@ -29,6 +32,19 @@ export const api = {
   getSettings: () => req<Settings>('/api/settings'),
   putSettings: (body: Settings) =>
     req<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(body) }),
+  agentProviders: () =>
+    req<{
+      providers: AgentProviderInfo[]
+      status: {
+        provider: string
+        label: string
+        model: string
+        needs_key: boolean
+        key_set: boolean
+        reachable: boolean
+        detail: string
+      }
+    }>('/api/agent/providers'),
   listProjects: () => req<ProjectSummary[]>('/api/projects'),
   createProject: (body: { title: string; mode: string; logline?: string; preset_id?: string }) =>
     req<Project>('/api/projects', { method: 'POST', body: JSON.stringify(body) }),
@@ -78,11 +94,35 @@ export const api = {
     }),
   deleteShot: (id: string, shotId: string) =>
     req<Project>(`/api/projects/${id}/shots/${shotId}`, { method: 'DELETE' }),
-  generate: (id: string, shot_ids?: string[], kind = 'video', mode?: string) =>
+  generate: (
+    id: string,
+    shot_ids?: string[],
+    kind = 'video',
+    mode?: string,
+    opts?: {
+      continue_from_previous?: boolean
+      continue_from_take_id?: string
+      is_rehearsal?: boolean
+      inject_continuity?: boolean
+    },
+  ) =>
     req<Project>(`/api/projects/${id}/generate`, {
       method: 'POST',
-      body: JSON.stringify({ shot_ids, kind, mode }),
+      body: JSON.stringify({ shot_ids, kind, mode, ...opts }),
     }),
+  continueSource: (id: string, shotId: string, takeId?: string) =>
+    req<{
+      ok: boolean
+      detail?: string
+      image_path?: string
+      from_take_id?: string
+      from_shot_title?: string
+      thumb_path?: string
+    }>(
+      `/api/projects/${id}/shots/${shotId}/continue-source${
+        takeId ? `?take_id=${encodeURIComponent(takeId)}` : ''
+      }`,
+    ),
   pinTake: (id: string, takeId: string) =>
     req<Project>(`/api/projects/${id}/takes/${takeId}/pin`, {
       method: 'POST',
@@ -94,10 +134,43 @@ export const api = {
       body: JSON.stringify(clips),
     }),
   engine: () => req<EngineStatus>('/api/engine'),
+  engineLoras: () =>
+    req<{ path: string; loras: import('./types').LoraFile[]; count: number }>('/api/engine/loras'),
   engineJobs: () => req<EngineJob[]>('/api/engine/jobs'),
   engineJob: (id: string) => req<EngineJob>(`/api/engine/jobs/${id}`),
   engineGenerate: (body: Record<string, unknown>) =>
     req<EngineJob>('/api/engine/generate', { method: 'POST', body: JSON.stringify(body) }),
+  engineEstimate: (body: Record<string, unknown>) =>
+    req<GpuEstimate>('/api/engine/estimate', { method: 'POST', body: JSON.stringify(body) }),
+  getContinuity: (id: string) => req<ContinuityData>(`/api/projects/${id}/continuity`),
+  putContinuity: (
+    id: string,
+    body: { rules: string[]; auto_reject_below?: number; rebuild_bible?: boolean },
+  ) =>
+    req<Project>(`/api/projects/${id}/continuity`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  rescoreContinuity: (id: string) =>
+    req<Project>(`/api/projects/${id}/continuity/rescore`, { method: 'POST', body: '{}' }),
+  rehearsal: (id: string, body?: { shot_ids?: string[]; takes_per_shot?: number; quality?: string }) =>
+    req<Project>(`/api/projects/${id}/rehearsal`, {
+      method: 'POST',
+      body: JSON.stringify(body || {}),
+    }),
+  promoteTake: (id: string, takeId: string) =>
+    req<Project>(`/api/projects/${id}/takes/${takeId}/promote`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  exportNle: (id: string, fps = 24) =>
+    req<{
+      folder: string
+      zip_path: string
+      clip_count: number
+      media_copied: number
+      download_url: string
+    }>(`/api/projects/${id}/export/nle?fps=${fps}`, { method: 'POST', body: '{}' }),
   engineUpload: async (file: File) => {
     const fd = new FormData()
     fd.append('file', file)

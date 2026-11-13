@@ -1057,6 +1057,84 @@ a {
   background: rgba(184, 255, 61, 0.04);
 }
 
+.lora-box select {
+  width: 100%;
+}
+
+.gpu-fit {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  margin: 12px 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: grid;
+  gap: 6px;
+}
+
+.gpu-fit header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+  font-family: var(--font-display);
+}
+
+.gpu-fit.fit-comfortable {
+  border-color: rgba(57, 255, 199, 0.45);
+}
+
+.gpu-fit.fit-tight {
+  border-color: rgba(255, 196, 61, 0.55);
+}
+
+.gpu-fit.fit-wont_fit,
+.gpu-fit.fit-cpu_slow {
+  border-color: rgba(255, 80, 120, 0.55);
+}
+
+.fit-warn {
+  color: #ffb4c0;
+  font-size: 0.85rem;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.cont-score {
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin: 4px 0;
+}
+
+.cont-score.ok {
+  color: var(--neon);
+}
+
+.cont-score.bad {
+  color: #ff7a9a;
+}
+
+.bible {
+  white-space: pre-wrap;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  max-height: 280px;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  color: var(--ink-soft);
+}
+
+.job-item.rejected {
+  opacity: 0.65;
+  border-color: rgba(255, 80, 120, 0.35);
+}
+
 .inspire-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));

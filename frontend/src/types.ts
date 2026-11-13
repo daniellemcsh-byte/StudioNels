@@ -14,6 +14,8 @@ export type TabId =
   | 'upsample'
   | 'models'
   | 'addons'
+  | 'continuity'
+  | 'rehearsal'
   | 'sampling'
   | 'director'
   | 'info'
@@ -64,6 +66,13 @@ export interface EngineJob {
   created_at: string
 }
 
+export interface LoraFile {
+  id: string
+  name: string
+  path: string
+  size_mb: number
+}
+
 export interface EngineStatus {
   backend: string
   device: {
@@ -80,6 +89,9 @@ export interface EngineStatus {
   queue_length: number
   preset_id: string
   models_path: string
+  loras_path?: string
+  loras?: LoraFile[]
+  lora_count?: number
 }
 
 export interface CharacterProfile {
@@ -133,6 +145,11 @@ export interface Take {
   score_note: string
   created_at: string
   is_placeholder: boolean
+  continuity_score?: number | null
+  continuity_flags?: string[]
+  prompt_used?: string
+  is_rehearsal?: boolean
+  rejected?: boolean
 }
 
 export interface TimelineClip {
@@ -171,7 +188,60 @@ export interface Project {
   image_format: 'png' | 'jpg' | 'webp'
   video_format: 'mp4' | 'webm' | 'gif'
   audio_format: 'wav' | 'mp3'
+  world_bible?: string
+  continuity_rules?: string[]
+  auto_reject_below?: number
+  continue_from_previous?: boolean
   meta: Record<string, unknown>
+}
+
+export interface GpuEstimate {
+  ok: boolean
+  fit: 'comfortable' | 'tight' | 'wont_fit' | 'cpu_slow' | 'preview_only' | 'unknown'
+  mode: string
+  model_id?: string
+  model_label?: string
+  device_name: string
+  vram_available_gb: number | null
+  vram_estimate_gb: number
+  eta_sec: number
+  eta_label: string
+  steps: number
+  width: number
+  height: number
+  frames: number
+  quality: string
+  cpu_offload: boolean
+  suggested_preset: string
+  warnings: string[]
+  advice: string[]
+  can_queue: boolean
+  will_preview: boolean
+}
+
+export interface ContinuityData {
+  bible: {
+    title: string
+    style: string
+    logline: string
+    cast: Array<{ id: string; name: string; look: string; lock: string; must_keep: string[] }>
+    world: Array<{ id: string; name: string; location: string; must_keep: string[] }>
+    rules: string[]
+    text: string
+    auto_reject_below: number
+  }
+  world_bible: string
+  rules: string[]
+  auto_reject_below: number
+  takes: Array<{
+    id: string
+    shot_id: string
+    label: string
+    continuity_score: number | null
+    continuity_flags: string[]
+    rejected: boolean
+    is_rehearsal: boolean
+  }>
 }
 
 export interface ProjectSummary {
@@ -183,14 +253,36 @@ export interface ProjectSummary {
   preset_id: string
 }
 
+export type AgentProvider =
+  | 'builtin'
+  | 'ollama'
+  | 'openai'
+  | 'anthropic'
+  | 'openrouter'
+  | 'custom'
+
 export interface Settings {
   preset_id: string
   ollama_url: string
   ollama_model: string
+  agent_provider: AgentProvider
+  agent_model: string
+  agent_api_base: string
+  agent_api_key: string
+  agent_api_key_set?: boolean
   auto_save: boolean
   friendly_mode: boolean
   default_gen_mode: string
   cpu_offload: boolean
+}
+
+export interface AgentProviderInfo {
+  id: AgentProvider
+  label: string
+  blurb: string
+  needs_key: boolean
+  default_model: string
+  default_base: string
 }
 
 export interface Health {
@@ -202,6 +294,10 @@ export interface Health {
   device_name: string
   preset_id: string
   data_dir: string
+  agent_provider?: string
+  agent_label?: string
+  agent_reachable?: boolean
+  agent_detail?: string
 }
 
 export interface Preset {

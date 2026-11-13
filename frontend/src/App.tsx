@@ -19,11 +19,16 @@ import {
   buildCharacterPrompt,
 } from './characterCreator'
 import type {
+  AgentProvider,
+  AgentProviderInfo,
   CharacterProfile,
+  ContinuityData,
   EngineJob,
   EngineStatus,
   GenMode,
+  GpuEstimate,
   Health,
+  LoraFile,
   Mode,
   Preset,
   Project,
@@ -71,6 +76,8 @@ const NAV_GROUPS: { id: string; label: string; items: { id: TabId; label: string
     id: 'edit',
     label: 'Edit',
     items: [
+      { id: 'continuity', label: 'Continuity' },
+      { id: 'rehearsal', label: 'Rehearsal' },
       { id: 'sampling', label: 'Sampling' },
       { id: 'director', label: 'Director' },
     ],
@@ -240,17 +247,23 @@ export default function App() {
     }
   }
 
-  const generateShots = async (shotIds?: string[]) => {
+  const generateShots = async (shotIds?: string[], continueChain = true) => {
     if (!project) return
     setBusy(true)
     try {
-      const p = await api.generate(project.id, shotIds, 'video')
+      const chain = continueChain && (project.continue_from_previous ?? true)
+      const p = await api.generate(project.id, shotIds, 'video', undefined, {
+        continue_from_previous: chain,
+        inject_continuity: true,
+      })
       setProject(p)
-      goTab('sampling')
+      goTab(chain ? 'generate' : 'sampling')
       notify(
-        health?.gpu
-          ? 'Queued on the built-in engine — check Generate for progress.'
-          : 'Queued on built-in preview engine. Install ROCm PyTorch + models for real gen.',
+        chain
+          ? 'Continuing sequence — each shot starts from the last frame of the previous take.'
+          : health?.gpu
+            ? 'Queued on the built-in engine — check Generate for progress.'
+            : 'Queued on built-in preview engine. Install ROCm PyTorch + models for real gen.',
       )
     } catch (err) {
       notify(String((err as Error).message || err))
@@ -279,8 +292,9 @@ export default function App() {
         <div className="home-top">
           <Brand />
           <div className="status-pills">
-            <span className={`pill ${health?.ollama ? 'on' : 'off'}`}>
-              Agent {health?.ollama ? 'Ollama live' : 'built-in planner'}
+            <span className={`pill ${health?.agent_reachable ? 'on' : 'off'}`}>
+              Agent{' '}
+              {health?.agent_label || health?.agent_provider || (health?.ollama ? 'Ollama' : 'built-in')}
             </span>
             <span className={`pill ${health?.gpu ? 'on' : 'off'}`}>
               Engine {health?.gpu ? health.device_name : 'preview (no GPU torch)'}
@@ -405,9 +419,16 @@ export default function App() {
             className="btn acid"
             type="button"
             disabled={busy || project.shots.length === 0}
-            onClick={() => generateShots()}
+            onClick={() => generateShots(undefined, project.continue_from_previous ?? true)}
+            title={
+              project.continue_from_previous !== false
+                ? 'Chain: each shot continues from the last frame of the previous video'
+                : 'Generate shots independently'
+            }
           >
-            Generate all shots
+            {project.continue_from_previous !== false
+              ? 'Continue all shots'
+              : 'Generate all shots'}
           </button>
         </div>
       </header>
@@ -536,6 +557,24 @@ export default function App() {
         {tab === 'models' && <ModelsTab notify={notify} />}
         {tab === 'addons' && <AddonsTab notify={notify} />}
         {tab === 'info' && <InfoTab />}
+        {tab === 'continuity' && (
+          <ContinuityTab
+            project={project}
+            setProject={setProject}
+            busy={busy}
+            setBusy={setBusy}
+            notify={notify}
+          />
+        )}
+        {tab === 'rehearsal' && (
+          <RehearsalTab
+            project={project}
+            setProject={setProject}
+            busy={busy}
+            setBusy={setBusy}
+            notify={notify}
+          />
+        )}
         {tab === 'sampling' && (
           <SamplingTab
             project={project}
@@ -1075,7 +1114,29 @@ function ShotsTab({
 
   return (
     <div>
-      <p className="hint">Every field is editable. Generate one shot to test, or all from the top bar.</p>
+      <p className="hint">
+        Every field is editable. With <em>continue from previous</em> on, Generate runs as i2v from
+        the prior take’s last frame so scenes stay in the same world.
+      </p>
+      <label className="muted" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+        <input
+          type="checkbox"
+          checked={project.continue_from_previous !== false}
+          onChange={async (e) => {
+            const p = await api.putProject({
+              ...project,
+              continue_from_previous: e.target.checked,
+            })
+            setProject(p)
+            notify(
+              e.target.checked
+                ? 'Shot chain on — next generates continue from last video frame.'
+                : 'Shot chain off — each shot starts fresh (t2v).',
+            )
+          }}
+        />
+        Continue each shot from the last frame of the previous video
+      </label>
       <div className="shot-list">
         {project.shots.map((shot) => (
           <div className="shot-card" key={shot.id}>
@@ -1084,7 +1145,9 @@ function ShotsTab({
               <div className="inline-actions">
                 <span className={`badge ${shot.status}`}>{shot.status}</span>
                 <button className="btn ghost tiny" type="button" disabled={busy} onClick={() => onGenerate(shot.id)}>
-                  Generate
+                  {shot.index > 0 && project.continue_from_previous !== false
+                    ? 'Continue'
+                    : 'Generate'}
                 </button>
                 <button
                   className="btn ghost tiny"
@@ -1482,7 +1545,14 @@ function GenerateTab({
   const [quality, setQuality] = useState('balanced')
   const [durationSec, setDurationSec] = useState(3)
   const [loraPath, setLoraPath] = useState('')
+  const [loraScale, setLoraScale] = useState(0.8)
+  const [loras, setLoras] = useState<LoraFile[]>([])
+  const [lorasPath, setLorasPath] = useState('')
   const [busy, setBusy] = useState(false)
+  const [estimate, setEstimate] = useState<GpuEstimate | null>(null)
+  const [estimating, setEstimating] = useState(false)
+  const [continuePrev, setContinuePrev] = useState(project.continue_from_previous !== false)
+  const [continueInfo, setContinueInfo] = useState<string | null>(null)
 
   useEffect(() => {
     if (!seed) return
@@ -1495,6 +1565,8 @@ function GenerateTab({
     const [e, j] = await Promise.all([api.engine(), api.engineJobs()])
     setEngine(e)
     setJobs(j)
+    setLoras(e.loras || [])
+    setLorasPath(e.loras_path || '')
     if (!modelId) {
       const models = e.models.filter((m) => m.modes.includes(mode))
       if (models[0]) setModelId(models[0].id)
@@ -1517,6 +1589,58 @@ function GenerateTab({
     }
   }, [mode, engine])
 
+  const estimatePayload = () => ({
+    mode,
+    model_id: modelId || undefined,
+    width,
+    height,
+    quality,
+    duration_sec: durationSec,
+    cpu_offload: true,
+    preset_id: project.preset_id,
+  })
+
+  useEffect(() => {
+    let cancelled = false
+    setEstimating(true)
+    const payload = estimatePayload()
+    if (continuePrev && (mode === 't2v' || mode === 'i2v')) {
+      payload.mode = 'i2v'
+    }
+    api
+      .engineEstimate(payload)
+      .then((e) => {
+        if (!cancelled) setEstimate(e)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setEstimating(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [mode, modelId, width, height, quality, durationSec, project.preset_id, continuePrev])
+
+  useEffect(() => {
+    if (!continuePrev || !shotId) {
+      setContinueInfo(null)
+      return
+    }
+    api
+      .continueSource(project.id, shotId)
+      .then((s) => {
+        if (s.ok) {
+          setContinueInfo(`From “${s.from_shot_title}” last frame`)
+          setImagePath(s.image_path || null)
+          if (s.thumb_path) setImageUrl(mediaUrl(s.thumb_path) || null)
+          setMode('i2v')
+        } else {
+          setContinueInfo(s.detail || 'No previous take yet')
+        }
+      })
+      .catch(() => setContinueInfo(null))
+  }, [continuePrev, shotId, project.id, project.takes.length])
+
   const modeMeta = engine?.modes.find((m) => m.id === mode)
   const models = engine?.models.filter((m) => m.modes.includes(mode)) || []
   const style = VISUAL_STYLES.find((s) => s.id === project.visual_style)
@@ -1537,17 +1661,24 @@ function GenerateTab({
       notify('Add a prompt first.')
       return
     }
+    if (estimate && !estimate.can_queue) {
+      notify(estimate.warnings[0] || 'This job will not fit on your GPU. Lower settings first.')
+      return
+    }
     setBusy(true)
     try {
       const styled =
         style && !prompt.toLowerCase().includes(style.label.toLowerCase())
           ? `${prompt.trim()}, ${style.prompt_suffix}`
           : prompt
+      const useContinue = continuePrev && !!imagePath && (mode === 'i2v' || mode === 't2v')
       const job = await api.engineGenerate({
-        mode,
+        mode: useContinue ? 'i2v' : mode,
         model_id: modelId || undefined,
-        prompt: styled,
-        negative_prompt: negative,
+        prompt: useContinue
+          ? `seamless continuation from previous shot, same camera world, continuous motion, ${styled}`
+          : styled,
+        negative_prompt: negative || (useContinue ? 'cut, hard edit, flash, jump cut' : ''),
         image_path: imagePath,
         reference_path: refPath,
         project_id: project.id,
@@ -1558,12 +1689,20 @@ function GenerateTab({
         quality,
         duration_sec: durationSec,
         lora_path: loraPath || undefined,
+        lora_scale: loraPath ? loraScale : undefined,
         image_format: project.image_format,
         video_format: project.video_format,
         audio_format: project.audio_format,
         visual_style: project.visual_style,
+        inject_continuity: true,
+        continue_from_previous: useContinue,
       })
-      notify(`Queued ${job.mode.toUpperCase()} · ${job.model_label}`)
+      const eta = estimate?.eta_label ? ` · ETA ${estimate.eta_label}` : ''
+      notify(
+        useContinue
+          ? `Queued continuation i2v · ${job.model_label}${eta}`
+          : `Queued ${job.mode.toUpperCase()} · ${job.model_label}${eta}`,
+      )
       await refresh()
       if (shotId) {
         const p = await api.getProject(project.id)
@@ -1657,13 +1796,66 @@ function GenerateTab({
           </div>
 
           <div className="lora-box">
-            <strong>Optional LoRA</strong>
-            <div className="muted tiny">Drop files in the app’s <code>loras/</code> folder, then paste the full path here.</div>
-            <input
+            <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+              <strong>Optional LoRA</strong>
+              <button
+                className="btn ghost tiny"
+                type="button"
+                onClick={async () => {
+                  try {
+                    const pack = await api.engineLoras()
+                    setLoras(pack.loras)
+                    setLorasPath(pack.path)
+                    if (loraPath && !pack.loras.some((l) => l.path === loraPath)) {
+                      setLoraPath('')
+                    }
+                    notify(
+                      pack.count
+                        ? `Found ${pack.count} LoRA${pack.count === 1 ? '' : 's'} in folder.`
+                        : 'No LoRAs yet — drop .safetensors into loras/.',
+                    )
+                  } catch (err) {
+                    notify(String((err as Error).message || err))
+                  }
+                }}
+              >
+                Refresh folder
+              </button>
+            </div>
+            <div className="muted tiny" style={{ marginBottom: 8 }}>
+              Auto-scans <code>loras/</code>
+              {lorasPath ? ` (${lorasPath})` : ''} — drop .safetensors / .pt files, then pick below.
+            </div>
+            <select
               value={loraPath}
               onChange={(e) => setLoraPath(e.target.value)}
-              placeholder="/path/to/framewright/loras/my_style.safetensors"
-            />
+              aria-label="LoRA from folder"
+            >
+              <option value="">— none —</option>
+              {loras.map((l) => (
+                <option key={l.path} value={l.path}>
+                  {l.name} ({l.size_mb} MB)
+                </option>
+              ))}
+            </select>
+            {loras.length === 0 && (
+              <div className="muted tiny" style={{ marginTop: 6 }}>
+                Folder empty. Add files to <code>loras/</code> and hit Refresh.
+              </div>
+            )}
+            {loraPath && (
+              <div className="field" style={{ marginTop: 10 }}>
+                <label>LoRA strength {loraScale.toFixed(2)}</label>
+                <input
+                  type="range"
+                  min={0.1}
+                  max={1.2}
+                  step={0.05}
+                  value={loraScale}
+                  onChange={(e) => setLoraScale(Number(e.target.value))}
+                />
+              </div>
+            )}
           </div>
 
           {modeMeta?.needs_image && (
@@ -1701,8 +1893,60 @@ function GenerateTab({
             </select>
           </div>
 
-          <button className="btn acid" type="button" disabled={busy} onClick={run}>
+          <label className="muted" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 12 }}>
+            <input
+              type="checkbox"
+              checked={continuePrev}
+              onChange={(e) => setContinuePrev(e.target.checked)}
+            />
+            <span>
+              Continue from previous video’s last frame (i2v chain)
+              {continueInfo ? <span className="tiny"> — {continueInfo}</span> : null}
+            </span>
+          </label>
+
+          <div className={`gpu-fit fit-${estimate?.fit || 'unknown'}`}>
+            <header>
+              <strong>Can my GPU do this?</strong>
+              <span>{estimating ? '…' : estimate?.eta_label || '—'}</span>
+            </header>
+            {estimate ? (
+              <>
+                <div className="muted tiny">
+                  {estimate.device_name}
+                  {estimate.vram_available_gb != null
+                    ? ` · ${estimate.vram_available_gb} GB free`
+                    : ''}{' '}
+                  · needs ~{estimate.vram_estimate_gb} GB · {estimate.width}×{estimate.height} ·{' '}
+                  {estimate.frames} frames
+                </div>
+                {estimate.warnings.map((w) => (
+                  <div className="fit-warn" key={w}>
+                    {w}
+                  </div>
+                ))}
+                {estimate.advice.map((a) => (
+                  <div className="muted tiny" key={a}>
+                    {a}
+                  </div>
+                ))}
+                {estimate.will_preview && (
+                  <div className="muted tiny">Will run as preview until engine weights are ready.</div>
+                )}
+              </>
+            ) : (
+              <div className="muted tiny">Checking VRAM fit…</div>
+            )}
+          </div>
+
+          <button
+            className="btn acid"
+            type="button"
+            disabled={busy || (estimate != null && !estimate.can_queue)}
+            onClick={run}
+          >
             Generate {mode.toUpperCase()}
+            {estimate?.eta_label ? ` · ${estimate.eta_label}` : ''}
           </button>
         </div>
 
@@ -1781,24 +2025,57 @@ function SamplingTab({
                     <div className="muted tiny">
                       seed {take.seed}
                       {take.is_placeholder ? ' · preview placeholder' : ''}
+                      {take.is_rehearsal ? ' · rehearsal' : ''}
+                      {take.rejected ? ' · rejected' : ''}
                     </div>
-                    <button
-                      className="btn acid"
-                      type="button"
-                      disabled={busy || shot.pinned_take_id === take.id}
-                      onClick={async () => {
-                        setBusy(true)
-                        try {
-                          const p = await api.pinTake(project.id, take.id)
-                          setProject(p)
-                          notify(`Pinned ${take.label} for Director.`)
-                        } finally {
-                          setBusy(false)
-                        }
-                      }}
-                    >
-                      {shot.pinned_take_id === take.id ? 'Pinned' : 'Pin take'}
-                    </button>
+                    {take.continuity_score != null && (
+                      <div className={`cont-score ${take.rejected ? 'bad' : 'ok'}`}>
+                        Continuity {Math.round(take.continuity_score * 100)}%
+                      </div>
+                    )}
+                    {(take.continuity_flags || []).slice(0, 2).map((f) => (
+                      <div className="muted tiny" key={f}>
+                        {f}
+                      </div>
+                    ))}
+                    <div className="inline-actions">
+                      <button
+                        className="btn acid"
+                        type="button"
+                        disabled={busy || shot.pinned_take_id === take.id}
+                        onClick={async () => {
+                          setBusy(true)
+                          try {
+                            const p = await api.pinTake(project.id, take.id)
+                            setProject(p)
+                            notify(`Pinned ${take.label} for Director.`)
+                          } finally {
+                            setBusy(false)
+                          }
+                        }}
+                      >
+                        {shot.pinned_take_id === take.id ? 'Pinned' : 'Pin take'}
+                      </button>
+                      {take.is_rehearsal && (
+                        <button
+                          className="btn ghost"
+                          type="button"
+                          disabled={busy}
+                          onClick={async () => {
+                            setBusy(true)
+                            try {
+                              const p = await api.promoteTake(project.id, take.id)
+                              setProject(p)
+                              notify('Promoted rehearsal take to final pin.')
+                            } finally {
+                              setBusy(false)
+                            }
+                          }}
+                        >
+                          Promote
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -1895,6 +2172,27 @@ function DirectorTab({
         <button className="btn acid" type="button" disabled={busy} onClick={buildFromPins}>
           Build timeline from pins
         </button>
+        <button
+          className="btn ghost"
+          type="button"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            try {
+              const pack = await api.exportNle(project.id)
+              notify(
+                `NLE package ready · ${pack.clip_count} clips · ${pack.media_copied} media files`,
+              )
+              window.open(pack.download_url, '_blank')
+            } catch (err) {
+              notify(String((err as Error).message || err))
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          Export EDL / FCPXML zip
+        </button>
       </div>
       {clips.length === 0 ? (
         <div className="empty">Pin takes in Sampling to start directing.</div>
@@ -1964,23 +2262,49 @@ function SettingsTab({
   notify: (m: string) => void
 }) {
   const [draft, setDraft] = useState(settings)
+  const [providers, setProviders] = useState<AgentProviderInfo[]>([])
+  const [keyDraft, setKeyDraft] = useState('')
 
   useEffect(() => setDraft(settings), [settings])
+  useEffect(() => {
+    api.agentProviders().then((r) => setProviders(r.providers)).catch(() => undefined)
+  }, [])
+
+  const selected = providers.find((p) => p.id === draft.agent_provider)
 
   const save = async () => {
-    const s = await api.putSettings(draft)
+    const body = {
+      ...draft,
+      agent_api_key: keyDraft.trim() || (draft.agent_api_key_set ? '(unchanged)' : ''),
+    }
+    const s = await api.putSettings(body)
     setSettings(s)
+    setKeyDraft('')
     const updated = { ...project, preset_id: draft.preset_id }
     const p = await api.putProject(updated)
     setProject(p)
-    notify('Settings saved. Low-VRAM preset keeps the app shareable.')
+    notify('Settings saved.')
+  }
+
+  const onProviderChange = (id: AgentProvider) => {
+    const meta = providers.find((p) => p.id === id)
+    setDraft({
+      ...draft,
+      agent_provider: id,
+      agent_model: draft.agent_model || meta?.default_model || '',
+      agent_api_base:
+        id === 'ollama'
+          ? draft.ollama_url || meta?.default_base || ''
+          : draft.agent_api_base || meta?.default_base || '',
+      ollama_model: id === 'ollama' ? draft.agent_model || draft.ollama_model : draft.ollama_model,
+    })
   }
 
   return (
     <div>
       <p className="hint">
-        Default is AMD Low VRAM so friends with smaller cards can use Framewright. On your R9700
-        32GB, switch to the R9700 preset. Generation is built-in (Diffusers / Wan) — not ComfyUI.
+        Default is AMD Low VRAM so friends with smaller cards can use Framewright. Pick a free local
+        agent (Ollama / built-in) or plug in a paid LLM API for smarter shot planning.
       </p>
       <div className="settings-grid panel">
         <div className="field">
@@ -1996,20 +2320,103 @@ function SettingsTab({
             ))}
           </select>
         </div>
-        <div className="field">
-          <label>Ollama URL</label>
-          <input
-            value={draft.ollama_url}
-            onChange={(e) => setDraft({ ...draft, ollama_url: e.target.value })}
-          />
+
+        <h3 style={{ gridColumn: '1 / -1', margin: '8px 0 0' }}>Agent LLM</h3>
+        <div className="field" style={{ gridColumn: '1 / -1' }}>
+          <label>Provider</label>
+          <div className="provider-grid">
+            {(providers.length
+              ? providers
+              : [
+                  { id: 'builtin' as const, label: 'Built-in', blurb: '', needs_key: false, default_model: '', default_base: '' },
+                  { id: 'ollama' as const, label: 'Ollama', blurb: '', needs_key: false, default_model: '', default_base: '' },
+                  { id: 'openai' as const, label: 'OpenAI', blurb: '', needs_key: true, default_model: '', default_base: '' },
+                  { id: 'anthropic' as const, label: 'Anthropic', blurb: '', needs_key: true, default_model: '', default_base: '' },
+                  { id: 'openrouter' as const, label: 'OpenRouter', blurb: '', needs_key: true, default_model: '', default_base: '' },
+                  { id: 'custom' as const, label: 'Custom', blurb: '', needs_key: true, default_model: '', default_base: '' },
+                ]
+            ).map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={`mode-chip ${draft.agent_provider === p.id ? 'active' : ''}`}
+                onClick={() => onProviderChange(p.id)}
+              >
+                <strong>{p.label}</strong>
+                <span>{p.blurb || (p.needs_key ? 'Paid API' : 'Free / local')}</span>
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="field">
-          <label>Ollama model</label>
-          <input
-            value={draft.ollama_model}
-            onChange={(e) => setDraft({ ...draft, ollama_model: e.target.value })}
-          />
-        </div>
+
+        {(draft.agent_provider === 'ollama' || draft.agent_provider === 'builtin') && (
+          <>
+            <div className="field">
+              <label>Ollama URL</label>
+              <input
+                value={draft.ollama_url}
+                onChange={(e) =>
+                  setDraft({ ...draft, ollama_url: e.target.value, agent_api_base: e.target.value })
+                }
+                disabled={draft.agent_provider === 'builtin'}
+              />
+            </div>
+            <div className="field">
+              <label>Ollama / agent model</label>
+              <input
+                value={draft.agent_model || draft.ollama_model}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    agent_model: e.target.value,
+                    ollama_model: e.target.value,
+                  })
+                }
+                disabled={draft.agent_provider === 'builtin'}
+                placeholder="llama3.2:3b"
+              />
+            </div>
+          </>
+        )}
+
+        {selected?.needs_key ||
+        ['openai', 'anthropic', 'openrouter', 'custom'].includes(draft.agent_provider) ? (
+          <>
+            <div className="field">
+              <label>Model</label>
+              <input
+                value={draft.agent_model}
+                onChange={(e) => setDraft({ ...draft, agent_model: e.target.value })}
+                placeholder={selected?.default_model || 'model id'}
+              />
+            </div>
+            <div className="field">
+              <label>API base URL</label>
+              <input
+                value={draft.agent_api_base || selected?.default_base || ''}
+                onChange={(e) => setDraft({ ...draft, agent_api_base: e.target.value })}
+                placeholder={selected?.default_base || 'https://…'}
+              />
+            </div>
+            <div className="field" style={{ gridColumn: '1 / -1' }}>
+              <label>
+                API key {draft.agent_api_key_set ? '(saved — leave blank to keep)' : ''}
+              </label>
+              <input
+                type="password"
+                autoComplete="off"
+                value={keyDraft}
+                onChange={(e) => setKeyDraft(e.target.value)}
+                placeholder={draft.agent_api_key_set ? '••••••••' : 'sk-…'}
+              />
+              <div className="muted tiny">
+                Stored only in your local Framewright settings file — never sent to Framewright
+                cloud. Falls back to built-in planner if the call fails.
+              </div>
+            </div>
+          </>
+        ) : null}
+
         <div className="field">
           <label>Default generate mode</label>
           <select
@@ -2031,14 +2438,237 @@ function SettingsTab({
           />{' '}
           CPU offload (saves VRAM)
         </label>
-        <div className="muted">
+        <div className="muted" style={{ gridColumn: '1 / -1' }}>
           Engine: built-in · Torch: {health?.torch ? 'yes' : 'no'} · GPU:{' '}
-          {health?.gpu ? health.device_name : 'not ready'} · Ollama:{' '}
-          {health?.ollama ? 'connected' : 'offline'} · Data: {health?.data_dir}
+          {health?.gpu ? health.device_name : 'not ready'} · Agent:{' '}
+          {health?.agent_detail || health?.agent_label || '—'} · Data: {health?.data_dir}
         </div>
         <button className="btn acid" type="button" onClick={save}>
           Save settings
         </button>
+      </div>
+    </div>
+  )
+}
+
+function ContinuityTab({
+  project,
+  setProject,
+  busy,
+  setBusy,
+  notify,
+}: {
+  project: Project
+  setProject: (p: Project) => void
+  busy: boolean
+  setBusy: (v: boolean) => void
+  notify: (m: string) => void
+}) {
+  const [data, setData] = useState<ContinuityData | null>(null)
+  const [rulesText, setRulesText] = useState('')
+  const [threshold, setThreshold] = useState(0.55)
+
+  const refresh = async () => {
+    const c = await api.getContinuity(project.id)
+    setData(c)
+    setRulesText((c.rules || []).join('\n'))
+    setThreshold(c.auto_reject_below ?? 0.55)
+  }
+
+  useEffect(() => {
+    refresh().catch((e) => notify(String(e.message || e)))
+  }, [project.id, project.takes.length, project.characters.length])
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      const p = await api.putContinuity(project.id, {
+        rules: rulesText
+          .split('\n')
+          .map((r) => r.trim())
+          .filter(Boolean),
+        auto_reject_below: threshold,
+        rebuild_bible: true,
+      })
+      setProject(p)
+      await refresh()
+      notify('Continuity bible updated + takes rescored.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div>
+      <p className="hint">
+        Continuity brain keeps cast locks and scene rules glued across takes. Scores are prompt-lock
+        heuristics offline; vision scoring can plug in later.
+      </p>
+      <div className="gen-layout">
+        <div className="panel">
+          <h3>World bible</h3>
+          <pre className="bible">{data?.world_bible || data?.bible?.text || 'Building…'}</pre>
+          <div className="field">
+            <label>Extra rules (one per line)</label>
+            <textarea rows={5} value={rulesText} onChange={(e) => setRulesText(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Auto-reject below {Math.round(threshold * 100)}%</label>
+            <input
+              type="range"
+              min={0.2}
+              max={0.9}
+              step={0.05}
+              value={threshold}
+              onChange={(e) => setThreshold(Number(e.target.value))}
+            />
+          </div>
+          <div className="inline-actions">
+            <button className="btn acid" type="button" disabled={busy} onClick={save}>
+              Save & rescore
+            </button>
+            <button
+              className="btn ghost"
+              type="button"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true)
+                try {
+                  const p = await api.rescoreContinuity(project.id)
+                  setProject(p)
+                  await refresh()
+                  notify('Rescored all takes.')
+                } finally {
+                  setBusy(false)
+                }
+              }}
+            >
+              Rescore only
+            </button>
+          </div>
+        </div>
+        <div className="panel">
+          <h3>Take scores</h3>
+          <div className="job-list">
+            {(data?.takes || []).length === 0 && <div className="empty">No takes yet.</div>}
+            {(data?.takes || []).map((t) => (
+              <div className={`job-item ${t.rejected ? 'rejected' : ''}`} key={t.id}>
+                <header>
+                  <strong>{t.label}</strong>
+                  <span className={`badge ${t.rejected ? 'failed' : 'done'}`}>
+                    {t.continuity_score != null
+                      ? `${Math.round(t.continuity_score * 100)}%`
+                      : '—'}
+                  </span>
+                </header>
+                {(t.continuity_flags || []).map((f) => (
+                  <div className="muted tiny" key={f}>
+                    {f}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RehearsalTab({
+  project,
+  setProject,
+  busy,
+  setBusy,
+  notify,
+}: {
+  project: Project
+  setProject: (p: Project) => void
+  busy: boolean
+  setBusy: (v: boolean) => void
+  notify: (m: string) => void
+}) {
+  const [takesPer, setTakesPer] = useState(2)
+  const rehearsals = project.takes.filter((t) => t.is_rehearsal)
+
+  const run = async () => {
+    if (!project.shots.length) {
+      notify('Add shots first (Agent or Shots tab).')
+      return
+    }
+    setBusy(true)
+    try {
+      const p = await api.rehearsal(project.id, {
+        takes_per_shot: takesPer,
+        quality: 'draft',
+      })
+      setProject(p)
+      notify(`Rehearsal queued · ${takesPer} draft take(s) per shot.`)
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div>
+      <p className="hint">
+        Greybox pass — cheap draft takes for blocking and timing before you spend VRAM on finals.
+        Promote winners, then generate high quality in Generate / Sampling.
+      </p>
+      <div className="panel">
+        <div className="controls-grid">
+          <div className="field">
+            <label>Takes per shot</label>
+            <input
+              type="number"
+              min={1}
+              max={4}
+              value={takesPer}
+              onChange={(e) => setTakesPer(Number(e.target.value))}
+            />
+          </div>
+        </div>
+        <button className="btn acid" type="button" disabled={busy} onClick={run}>
+          Run rehearsal pass ({project.shots.length} shots)
+        </button>
+      </div>
+      <div className="takes-grid" style={{ marginTop: 20 }}>
+        {rehearsals.length === 0 && <div className="empty">No rehearsal takes yet.</div>}
+        {rehearsals.map((take) => {
+          const shot = project.shots.find((s) => s.id === take.shot_id)
+          return (
+            <div className="take-card" key={take.id}>
+              {mediaUrl(take.media_path) && (
+                <img src={mediaUrl(take.media_path)} alt={take.label} />
+              )}
+              <div className="body">
+                <strong>
+                  {shot ? `${shot.index + 1}. ${shot.title}` : take.label}
+                </strong>
+                <div className="muted tiny">{take.score_note}</div>
+                <button
+                  className="btn acid"
+                  type="button"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true)
+                    try {
+                      const p = await api.promoteTake(project.id, take.id)
+                      setProject(p)
+                      notify('Promoted to Director pin.')
+                    } finally {
+                      setBusy(false)
+                    }
+                  }}
+                >
+                  Promote winner
+                </button>
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -2762,21 +3392,66 @@ function UpsampleTab({ project, notify }: { project: Project; notify: (m: string
 }
 
 function ModelsTab({ notify }: { notify: (m: string) => void }) {
+  const [loras, setLoras] = useState<LoraFile[]>([])
+  const [lorasPath, setLorasPath] = useState('')
+
+  const load = async () => {
+    const pack = await api.engineLoras()
+    setLoras(pack.loras)
+    setLorasPath(pack.path)
+  }
+
+  useEffect(() => {
+    load().catch((e) => notify(String(e.message || e)))
+  }, [])
+
   return (
-    <div className="panel">
-      <h3>Models</h3>
-      <p className="hint">
-        Switch and download models from the Generate tab’s model menu. Files land in the app’s{' '}
-        <code>models/</code> folder (Pinokio-style). Drop LoRAs in <code>loras/</code>.
-      </p>
-      <p className="muted">
-        Tip: open <strong>Info</strong> for the full folder map. In-app download buttons arrive with
-        the Models manager API on your next pull — for now pick a model in Generate and it will fetch
-        on first real GPU run.
-      </p>
-      <button className="btn" type="button" onClick={() => notify('Use Generate → Model dropdown to switch.')}>
-        Got it
-      </button>
+    <div>
+      <div className="panel">
+        <h3>Models</h3>
+        <p className="hint">
+          Switch and download models from the Generate tab’s model menu. Files land in the app’s{' '}
+          <code>models/</code> folder (Pinokio-style).
+        </p>
+        <p className="muted">
+          Tip: open <strong>Info</strong> for the full folder map. Pick a model in Generate and it
+          will fetch on first real GPU run.
+        </p>
+      </div>
+      <div className="panel" style={{ marginTop: 16 }}>
+        <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
+          <h3 style={{ margin: 0 }}>LoRAs in folder</h3>
+          <button
+            className="btn ghost tiny"
+            type="button"
+            onClick={async () => {
+              await load()
+              notify(loras.length ? `Scanned ${lorasPath}` : 'Folder empty — drop files into loras/.')
+            }}
+          >
+            Rescan
+          </button>
+        </div>
+        <p className="muted tiny">
+          Drop <code>.safetensors</code> / <code>.pt</code> into <code>loras/</code>
+          {lorasPath ? ` → ${lorasPath}` : ''}. They appear in Generate’s LoRA dropdown.
+        </p>
+        {loras.length === 0 ? (
+          <div className="empty">No LoRAs found yet.</div>
+        ) : (
+          <div className="job-list">
+            {loras.map((l) => (
+              <div className="job-item" key={l.path}>
+                <header>
+                  <strong>{l.name}</strong>
+                  <span className="badge done">{l.size_mb} MB</span>
+                </header>
+                <div className="muted tiny">{l.path}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

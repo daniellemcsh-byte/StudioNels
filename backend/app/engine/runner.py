@@ -21,7 +21,7 @@ from .device import detect_device
 from .pipelines import run_diffusers_job, run_preview_job
 from .queue_store import get_job as store_get
 from .queue_store import list_jobs as store_list
-from .queue_store import models_dir
+from .queue_store import loras_dir, models_dir
 from .queue_store import upsert_job
 
 _WORKER_STARTED = False
@@ -69,7 +69,10 @@ def _dedupe_models(status: EngineStatus) -> EngineStatus:
 
 
 def engine_status_public() -> dict[str, Any]:
+    from .models_manager import list_loras
+
     st = _dedupe_models(engine_status())
+    loras = list_loras()
     return {
         "device": st.device,
         "modes": st.modes,
@@ -80,7 +83,9 @@ def engine_status_public() -> dict[str, Any]:
         "backend": "builtin",  # never ComfyUI
         "size_presets": SIZE_PRESETS,
         "quality_presets": QUALITY_PRESETS,
-        "loras_path": str(models_dir() / "loras"),
+        "loras_path": str(loras_dir()),
+        "loras": loras,
+        "lora_count": len(loras),
     }
 
 
@@ -144,18 +149,48 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     if mode == "t2a" and not duration_sec:
         duration_sec = float(model.get("default_duration_sec") or 8)
 
+    prompt = payload.get("prompt") or ""
+    negative = payload.get("negative_prompt") or ""
+    is_rehearsal = bool(payload.get("is_rehearsal"))
+    inject_continuity = payload.get("inject_continuity", True)
+
+    # Inject continuity locks when attached to a project shot
+    if inject_continuity and payload.get("project_id"):
+        try:
+            from ..continuity import continuity_prompt_prefix
+            from ..storage import load_project
+
+            project = load_project(payload["project_id"])
+            shot = None
+            if payload.get("shot_id"):
+                shot = next((s for s in project.shots if s.id == payload["shot_id"]), None)
+            prefix = continuity_prompt_prefix(project, shot)
+            if prefix and prefix not in prompt:
+                prompt = f"{prefix} | {prompt}" if prompt else prefix
+            if project.visual_style and project.visual_style.lower() not in prompt.lower():
+                prompt = f"{prompt}, {project.visual_style}" if prompt else project.visual_style
+        except Exception:
+            pass
+
+    if is_rehearsal:
+        # Greybox: fewer steps, draft quality, short clips
+        quality = "draft"
+        steps = max(4, min(steps, 10))
+        frames = min(int(frames), 24)
+        prompt = f"REHEARSAL GREYBOX, simple blocking, muted colors, {prompt}"
+
     job = {
         "id": new_id("job"),
         "created_at": utc_now(),
         "updated_at": utc_now(),
         "status": "queued",
         "progress": 0.0,
-        "message": "Queued",
+        "message": "Queued (rehearsal)" if is_rehearsal else "Queued",
         "mode": mode,
         "model_id": model["id"],
         "model_label": model["label"],
-        "prompt": payload.get("prompt") or "",
-        "negative_prompt": payload.get("negative_prompt") or "",
+        "prompt": prompt,
+        "negative_prompt": negative,
         "width": int(payload.get("width") or gen.get("default_width") or 768),
         "height": int(payload.get("height") or gen.get("default_height") or 432),
         "steps": steps,
@@ -174,8 +209,13 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         "lora_scale": float(payload.get("lora_scale") if payload.get("lora_scale") is not None else 0.8),
         "project_id": payload.get("project_id"),
         "shot_id": payload.get("shot_id"),
+        "is_rehearsal": is_rehearsal,
+        "continue_from_previous": bool(payload.get("continue_from_previous")),
+        "continue_from_take_id": payload.get("continue_from_take_id"),
+        "chain_shot_ids": list(payload.get("chain_shot_ids") or []),
         "media_path": None,
         "thumb_path": None,
+        "last_frame_path": None,
         "error": None,
         "preview": False,
         "engine": "builtin",
@@ -242,15 +282,25 @@ def _run_one(job: dict[str, Any]) -> None:
 
         job["media_path"] = result.get("media_path")
         job["thumb_path"] = result.get("thumb_path")
+        try:
+            from ..continue_video import ensure_last_frame_sidecar
+
+            job["last_frame_path"] = ensure_last_frame_sidecar(job.get("media_path"))
+        except Exception:
+            job["last_frame_path"] = None
         job["status"] = "done"
         job["progress"] = 1.0
         if not job.get("message") or job["status"] == "done" and not job["preview"]:
-            job["message"] = "Complete"
+            msg = "Complete"
+            if job.get("continue_from_previous"):
+                msg = "Complete (continued from previous)"
+            job["message"] = msg
         job["updated_at"] = utc_now()
         upsert_job(job)
 
         if job.get("project_id") and job.get("media_path"):
             _attach_to_project(job)
+            _maybe_chain_next(job)
     except Exception as exc:  # noqa: BLE001
         job["status"] = "failed"
         job["error"] = f"{exc}\n{traceback.format_exc()[-1500:]}"
@@ -277,20 +327,100 @@ def _attach_to_project(job: dict[str, Any]) -> None:
             scene.reference_path = job.get("thumb_path") or job["media_path"]
 
     if job.get("shot_id"):
+        from ..continuity import score_take_continuity
+
+        prompt_used = job.get("prompt") or ""
+        is_rehearsal = bool(job.get("is_rehearsal"))
+        label = (
+            f"REHEARSAL · {job['mode'].upper()}"
+            if is_rehearsal
+            else f"{job['mode'].upper()} · {job['model_label']}"
+        )
         take = Take(
             shot_id=job["shot_id"],
-            label=f"{job['mode'].upper()} · {job['model_label']}",
+            label=label,
             media_path=job["media_path"],
             thumb_path=job.get("thumb_path") or job["media_path"],
             seed=job.get("seed"),
             is_placeholder=bool(job.get("preview")),
             score_note=job.get("message") or "",
+            prompt_used=prompt_used,
+            is_rehearsal=is_rehearsal,
         )
+        shot = next((s for s in project.shots if s.id == job["shot_id"]), None)
+        if shot:
+            scored = score_take_continuity(project, shot, prompt_used, take.label)
+            take.continuity_score = scored["continuity_score"]
+            take.continuity_flags = scored["continuity_flags"]
+            take.rejected = scored["rejected"]
+            take.score_note = scored["score_note"]
+            shot.status = "ready"
+            # Auto-pin best non-rejected final take; never auto-pin rehearsals
+            if not is_rehearsal and not take.rejected and not shot.pinned_take_id:
+                shot.pinned_take_id = take.id
         project.takes.append(take)
-        for shot in project.shots:
-            if shot.id == job["shot_id"]:
-                shot.status = "ready"
-                if not shot.pinned_take_id:
-                    shot.pinned_take_id = take.id
-                break
+        # Kick sequential continuation for remaining shots in the chain
+        job["_attached_take_id"] = take.id
+    save_project(project)
+
+
+def _maybe_chain_next(job: dict[str, Any]) -> None:
+    """After a chained shot finishes, queue the next shot as i2v from this last frame."""
+    chain = list(job.get("chain_shot_ids") or [])
+    shot_id = job.get("shot_id")
+    if not chain or not shot_id or shot_id not in chain:
+        return
+    idx = chain.index(shot_id)
+    if idx >= len(chain) - 1:
+        return
+    next_id = chain[idx + 1]
+    from ..continue_video import extract_last_frame
+    from ..storage import get_preset, load_project, save_project
+
+    try:
+        project = load_project(job["project_id"])
+    except FileNotFoundError:
+        return
+
+    next_shot = next((s for s in project.shots if s.id == next_id), None)
+    if not next_shot:
+        return
+
+    frame = job.get("last_frame_path") or extract_last_frame(job.get("media_path"))
+    if not frame:
+        next_shot.status = "failed"
+        save_project(project)
+        return
+
+    preset = get_preset(project.preset_id)
+    gen = preset.get("generation", {})
+    prompt = next_shot.prompt or next_shot.action or next_shot.title
+    prompt = (
+        f"seamless continuation from previous shot, same camera world, "
+        f"continuous motion, {prompt}"
+    )
+    enqueue_job(
+        {
+            "mode": "i2v",
+            "model_id": gen.get("default_i2v") or gen.get("default_t2v"),
+            "prompt": prompt,
+            "negative_prompt": next_shot.negative_prompt
+            or "cut, hard edit, flash, jump cut",
+            "project_id": project.id,
+            "shot_id": next_shot.id,
+            "image_path": frame,
+            "cpu_offload": gen.get("cpu_offload", True),
+            "frames": gen.get("default_frames"),
+            "width": gen.get("default_width"),
+            "height": gen.get("default_height"),
+            "fps": gen.get("fps"),
+            "is_rehearsal": bool(job.get("is_rehearsal")),
+            "inject_continuity": True,
+            "continue_from_previous": True,
+            "continue_from_take_id": job.get("_attached_take_id"),
+            "chain_shot_ids": chain,
+            "quality": job.get("quality") if job.get("is_rehearsal") else None,
+        }
+    )
+    next_shot.status = "generating"
     save_project(project)

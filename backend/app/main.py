@@ -9,24 +9,32 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent import plan_project
+from .continuity import build_bible, rescore_project
 from .engine.device import detect_device
 from .engine.runner import engine_status_public, enqueue_job, get_job, list_jobs
 from .generate import generate_takes
+from .gpu_estimate import estimate_job
+from .llm_providers import list_providers, probe_agent
 from .models import (
     AgentMessage,
     CharacterProfile,
+    ContinuityRulesRequest,
     CreateProjectRequest,
     AgentPlanRequest,
     EngineGenerateRequest,
     GenerateRequest,
+    GpuEstimateRequest,
     HealthResponse,
     Project,
+    RehearsalRequest,
     SceneProfile,
     Settings,
     TimelineClip,
     UpdateShotRequest,
     new_id,
 )
+from .nle_export import export_nle_package
+from .rehearsal import promote_rehearsal_take, run_rehearsal
 from .paths import DATA_DIR, MEDIA_DIR, UPLOADS_DIR, ensure_dirs
 from .storage import (
     delete_project,
@@ -37,6 +45,7 @@ from .storage import (
     load_settings,
     save_project,
     save_settings,
+    settings_public,
 )
 
 
@@ -66,6 +75,7 @@ app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 async def health() -> HealthResponse:
     settings = load_settings()
     device = detect_device()
+    agent = await probe_agent(settings)
     return HealthResponse(
         ok=True,
         ollama=await probe_ollama(),
@@ -75,12 +85,30 @@ async def health() -> HealthResponse:
         device_name=str(device.get("device_name") or "CPU"),
         preset_id=settings.preset_id,
         data_dir=str(DATA_DIR),
+        agent_provider=str(agent.get("provider") or settings.agent_provider),
+        agent_label=str(agent.get("label") or settings.agent_provider),
+        agent_reachable=bool(agent.get("reachable")),
+        agent_detail=str(agent.get("detail") or ""),
     )
 
 
 @app.get("/api/engine")
 async def engine():
     return engine_status_public()
+
+
+@app.get("/api/engine/loras")
+async def engine_loras():
+    """Scan the app loras/ folder for dropdown picks — no path pasting."""
+    from .engine.models_manager import list_loras
+    from .engine.queue_store import loras_dir
+
+    items = list_loras()
+    return {
+        "path": str(loras_dir()),
+        "loras": items,
+        "count": len(items),
+    }
 
 
 @app.get("/api/engine/jobs")
@@ -104,6 +132,12 @@ async def engine_generate(body: EngineGenerateRequest):
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.post("/api/engine/estimate")
+async def engine_estimate(body: GpuEstimateRequest):
+    """Honest GPU fit + ETA before queueing — #5 can-my-GPU-do-this."""
+    return estimate_job(body.model_dump())
+
+
 @app.post("/api/engine/upload")
 async def engine_upload(file: UploadFile = File(...), kind: str = "image"):
     ensure_dirs()
@@ -120,14 +154,21 @@ async def presets():
     return list_presets()
 
 
-@app.get("/api/settings", response_model=Settings)
+@app.get("/api/settings")
 async def get_settings():
-    return load_settings()
+    return settings_public()
 
 
-@app.put("/api/settings", response_model=Settings)
+@app.put("/api/settings")
 async def put_settings(body: Settings):
-    return save_settings(body)
+    return settings_public(save_settings(body))
+
+
+@app.get("/api/agent/providers")
+async def agent_providers():
+    settings = load_settings()
+    probe = await probe_agent(settings)
+    return {"providers": list_providers(), "status": probe}
 
 
 @app.get("/api/projects")
@@ -279,7 +320,104 @@ async def delete_shot(project_id: str, shot_id: str):
 @app.post("/api/projects/{project_id}/generate", response_model=Project)
 async def generate(project_id: str, body: GenerateRequest):
     project = load_project(project_id)
-    return await generate_takes(project, body.shot_ids, body.kind, body.mode)
+    return await generate_takes(
+        project,
+        body.shot_ids,
+        body.kind,
+        body.mode,
+        is_rehearsal=body.is_rehearsal,
+        inject_continuity=body.inject_continuity,
+        continue_from_previous=body.continue_from_previous,
+        continue_from_take_id=body.continue_from_take_id,
+    )
+
+
+@app.get("/api/projects/{project_id}/shots/{shot_id}/continue-source")
+async def continue_source(project_id: str, shot_id: str, take_id: str | None = None):
+    from .continue_video import continuation_source
+
+    project = load_project(project_id)
+    shot = next((s for s in project.shots if s.id == shot_id), None)
+    if not shot:
+        raise HTTPException(404, "Shot not found")
+    src = continuation_source(project, shot, from_take_id=take_id)
+    if not src:
+        return {
+            "ok": False,
+            "detail": "No previous take with media — generate the prior shot first, or start with t2v.",
+        }
+    return {"ok": True, **src}
+
+
+@app.get("/api/projects/{project_id}/continuity")
+async def get_continuity(project_id: str):
+    project = load_project(project_id)
+    bible = build_bible(project)
+    if not project.world_bible:
+        project.world_bible = bible["text"]
+        save_project(project)
+    takes = [
+        {
+            "id": t.id,
+            "shot_id": t.shot_id,
+            "label": t.label,
+            "continuity_score": t.continuity_score,
+            "continuity_flags": t.continuity_flags,
+            "rejected": t.rejected,
+            "is_rehearsal": t.is_rehearsal,
+        }
+        for t in project.takes
+    ]
+    return {
+        "bible": bible,
+        "world_bible": project.world_bible,
+        "rules": project.continuity_rules,
+        "auto_reject_below": project.auto_reject_below,
+        "takes": takes,
+    }
+
+
+@app.put("/api/projects/{project_id}/continuity", response_model=Project)
+async def put_continuity(project_id: str, body: ContinuityRulesRequest):
+    project = load_project(project_id)
+    project.continuity_rules = [r.strip() for r in body.rules if r and r.strip()]
+    if body.auto_reject_below is not None:
+        project.auto_reject_below = max(0.0, min(1.0, float(body.auto_reject_below)))
+    if body.rebuild_bible:
+        project.world_bible = build_bible(project)["text"]
+    project = rescore_project(project)
+    return save_project(project)
+
+
+@app.post("/api/projects/{project_id}/continuity/rescore", response_model=Project)
+async def continuity_rescore(project_id: str):
+    project = load_project(project_id)
+    project.world_bible = build_bible(project)["text"]
+    project = rescore_project(project)
+    return save_project(project)
+
+
+@app.post("/api/projects/{project_id}/rehearsal", response_model=Project)
+async def rehearsal_pass(project_id: str, body: RehearsalRequest):
+    project = load_project(project_id)
+    if not project.shots:
+        raise HTTPException(400, "Add shots before running a rehearsal pass.")
+    return run_rehearsal(project, body.shot_ids, body.takes_per_shot, body.quality)
+
+
+@app.post("/api/projects/{project_id}/takes/{take_id}/promote", response_model=Project)
+async def promote_take(project_id: str, take_id: str):
+    project = load_project(project_id)
+    try:
+        return promote_rehearsal_take(project, take_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/export/nle")
+async def export_nle(project_id: str, fps: float = 24.0):
+    project = load_project(project_id)
+    return export_nle_package(project, fps=fps)
 
 
 @app.post("/api/projects/{project_id}/takes/{take_id}/pin", response_model=Project)
@@ -288,6 +426,7 @@ async def pin_take(project_id: str, take_id: str):
     take = next((t for t in project.takes if t.id == take_id), None)
     if not take:
         raise HTTPException(404, "Take not found")
+    take.rejected = False
     for shot in project.shots:
         if shot.id == take.shot_id:
             shot.pinned_take_id = take.id

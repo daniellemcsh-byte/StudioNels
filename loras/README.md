@@ -1,14 +1,16 @@
 # loras/
 
-Drop optional **LoRA** files here:
+Drop LoRA weight files here. Framewright **auto-scans this folder** and lists them in:
 
-- `.safetensors`
-- `.pt` / `.bin`
+- **Generate → Optional LoRA** dropdown
+- **Models → LoRAs in folder**
 
-Then pick one in the **Generate** tab (LoRA is optional).
+Supported extensions: `.safetensors`, `.pt`, `.bin`, `.gguf`
 
 ```
 loras/
-  neon_night.safetensors
-  character_mira.safetensors
+  my_style.safetensors
+  character_face.safetensors
 ```
+
+Hit **Refresh folder** in Generate after adding files — no path copy/paste needed.

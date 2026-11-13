@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
-
-import httpx
 
 from .models import (
     AgentMessage,
@@ -75,37 +72,17 @@ def _profiles_context(project: Project) -> str:
     )
 
 
-async def _ollama_plan(project: Project, message: str) -> dict[str, Any] | None:
+async def _llm_plan(project: Project, message: str) -> dict[str, Any] | None:
+    from .llm_providers import chat_json
+
     settings = load_settings()
+    if (settings.agent_provider or "").lower() == "builtin":
+        return None
     preset = get_preset(project.preset_id or settings.preset_id)
     agent_cfg = preset.get("agent", {})
-    if agent_cfg.get("provider") == "builtin":
-        return None
-
-    model = settings.ollama_model or agent_cfg.get("model") or "llama3.2:3b"
-    base = settings.ollama_url or agent_cfg.get("base_url") or "http://127.0.0.1:11434"
-    payload = {
-        "model": model,
-        "stream": False,
-        "format": "json",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": f"{_profiles_context(project)}\n\nUser idea:\n{message}",
-            },
-        ],
-        "options": {"num_predict": agent_cfg.get("max_tokens", 1200)},
-    }
-    try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            res = await client.post(f"{base.rstrip('/')}/api/chat", json=payload)
-            if res.status_code != 200:
-                return None
-            content = res.json().get("message", {}).get("content", "")
-            return json.loads(content)
-    except Exception:
-        return None
+    max_tokens = int(agent_cfg.get("max_tokens") or 1200)
+    user = f"{_profiles_context(project)}\n\nUser idea:\n{message}"
+    return await chat_json(settings, SYSTEM_PROMPT, user, max_tokens=max_tokens)
 
 
 def _builtin_plan(project: Project, message: str) -> dict[str, Any]:
@@ -281,8 +258,17 @@ def apply_plan(
 async def plan_project(
     project: Project, message: str, replace_shots: bool = True
 ) -> Project:
-    plan = await _ollama_plan(project, message)
+    settings = load_settings()
+    plan = await _llm_plan(project, message)
     if not plan:
         plan = _builtin_plan(project, message)
         plan["used_builtin"] = True
+        provider = settings.agent_provider or "ollama"
+        if provider != "builtin":
+            plan["assistant_message"] = (
+                (plan.get("assistant_message") or "")
+                + f" (Fell back to built-in planner — check {provider} settings/API key.)"
+            ).strip()
+    else:
+        plan["used_provider"] = settings.agent_provider
     return apply_plan(project, plan, message, replace_shots)

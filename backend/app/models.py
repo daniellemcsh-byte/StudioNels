@@ -22,6 +22,8 @@ TabHint = Literal[
     "shots",
     "storyboard",
     "characters",
+    "continuity",
+    "rehearsal",
     "sampling",
     "director",
     "settings",
@@ -79,6 +81,11 @@ class Take(BaseModel):
     score_note: str = ""
     created_at: str = Field(default_factory=utc_now)
     is_placeholder: bool = True
+    continuity_score: float | None = None
+    continuity_flags: list[str] = Field(default_factory=list)
+    prompt_used: str = ""
+    is_rehearsal: bool = False
+    rejected: bool = False
 
 
 class TimelineClip(BaseModel):
@@ -118,6 +125,11 @@ class Project(BaseModel):
     image_format: Literal["png", "jpg", "webp"] = "png"
     video_format: Literal["mp4", "webm", "gif"] = "mp4"
     audio_format: Literal["wav", "mp3"] = "wav"
+    world_bible: str = ""
+    continuity_rules: list[str] = Field(default_factory=list)
+    auto_reject_below: float = 0.55
+    # When true, multi-shot generate chains i2v from each prior take's last frame
+    continue_from_previous: bool = True
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -134,6 +146,13 @@ class Settings(BaseModel):
     preset_id: str = "amd-low-vram"
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "llama3.2:3b"
+    # Agent LLM: builtin | ollama | openai | anthropic | openrouter | custom
+    agent_provider: Literal[
+        "builtin", "ollama", "openai", "anthropic", "openrouter", "custom"
+    ] = "ollama"
+    agent_model: str = ""
+    agent_api_base: str = ""
+    agent_api_key: str = ""
     auto_save: bool = True
     friendly_mode: bool = True
     default_gen_mode: str = "t2v"
@@ -177,6 +196,36 @@ class EngineGenerateRequest(BaseModel):
     video_format: Literal["mp4", "webm", "gif"] | None = None
     audio_format: Literal["wav", "mp3"] | None = None
     visual_style: str | None = None
+    is_rehearsal: bool = False
+    inject_continuity: bool = True
+    continue_from_previous: bool = False
+    continue_from_take_id: str | None = None
+
+
+class GpuEstimateRequest(BaseModel):
+    mode: str = "t2v"
+    model_id: str | None = None
+    width: int | None = None
+    height: int | None = None
+    frames: int | None = None
+    duration_sec: float | None = None
+    fps: int | None = None
+    quality: Literal["draft", "balanced", "high", "max"] | None = "balanced"
+    steps: int | None = None
+    cpu_offload: bool | None = None
+    preset_id: str | None = None
+
+
+class RehearsalRequest(BaseModel):
+    shot_ids: list[str] | None = None
+    takes_per_shot: int = 2
+    quality: Literal["draft", "balanced"] = "draft"
+
+
+class ContinuityRulesRequest(BaseModel):
+    rules: list[str] = Field(default_factory=list)
+    auto_reject_below: float | None = None
+    rebuild_bible: bool = True
 
 
 class AgentInstallRequest(BaseModel):
@@ -215,6 +264,11 @@ class GenerateRequest(BaseModel):
     shot_ids: list[str] | None = None
     kind: Literal["video", "character_still", "scene_still"] = "video"
     mode: Literal["t2i", "t2v", "i2v", "ref2i", "ref2v"] | None = None
+    is_rehearsal: bool = False
+    inject_continuity: bool = True
+    # None = use project.continue_from_previous; True/False overrides
+    continue_from_previous: bool | None = None
+    continue_from_take_id: str | None = None
 
 
 class HealthResponse(BaseModel):
@@ -226,3 +280,7 @@ class HealthResponse(BaseModel):
     device_name: str
     preset_id: str
     data_dir: str
+    agent_provider: str = "ollama"
+    agent_label: str = "Ollama"
+    agent_reachable: bool = False
+    agent_detail: str = ""

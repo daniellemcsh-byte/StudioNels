@@ -29,8 +29,23 @@ def load_settings() -> Settings:
 
 def save_settings(settings: Settings) -> Settings:
     ensure_dirs()
+    # Keep existing API key when client sends blank / masked placeholder
+    existing = load_settings()
+    key = (settings.agent_api_key or "").strip()
+    if not key or key in ("••••••••", "***", "(unchanged)"):
+        settings.agent_api_key = existing.agent_api_key or ""
     _write_json(SETTINGS_PATH, settings.model_dump())
     return settings
+
+
+def settings_public(settings: Settings | None = None) -> dict:
+    """Settings for the UI — never send the raw API key back."""
+    s = settings or load_settings()
+    data = s.model_dump()
+    key = (data.get("agent_api_key") or "").strip()
+    data["agent_api_key"] = ""
+    data["agent_api_key_set"] = bool(key)
+    return data
 
 
 def list_presets() -> list[dict[str, Any]]:

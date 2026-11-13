@@ -34,6 +34,12 @@ def _save_image(img, path: Path) -> str:
 
 def _export_video_frames(frames, path: Path, fps: int = 16) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Always write last frame sidecar for video continuation (i2v chain)
+    if frames:
+        try:
+            frames[-1].save(path.with_name(path.stem + "_last.png"))
+        except Exception:
+            pass
     try:
         import imageio.v2 as imageio
         import numpy as np
@@ -44,8 +50,6 @@ def _export_video_frames(frames, path: Path, fps: int = 16) -> str:
         return str(path.with_suffix(".mp4"))
     except Exception:
         frames[0].save(path.with_suffix(".png"))
-        if len(frames) > 1:
-            frames[-1].save(path.with_name(path.stem + "_last.png"))
         return str(path.with_suffix(".png"))
 
 
