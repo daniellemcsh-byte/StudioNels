@@ -47,17 +47,11 @@ module.exports = {
         ],
       },
     },
+    // Sets kernel.memory.local[start.js].url — pinokio.js uses this for in-app Web UI
     {
       method: "local.set",
       params: {
-        url: "http://127.0.0.1:5173",
-      },
-    },
-    {
-      method: "notify",
-      params: {
-        html: "StudioNels is running — click to open inside Pinokio",
-        href: "http://127.0.0.1:5173",
+        url: "http://127.0.0.1:5173/",
       },
     },
   ],
