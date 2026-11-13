@@ -1,3 +1,4 @@
+# Use Python 3.11 or 3.12 on Windows (3.14 is too new for these wheels).
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
