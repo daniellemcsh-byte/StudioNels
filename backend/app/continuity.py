@@ -196,6 +196,7 @@ def score_take_continuity(
     prompt_score = round(max(0.0, min(1.0, prompt_score)), 3)
 
     vision_score = None
+    identity_score = None
     if take is not None:
         try:
             from .vision_continuity import blend_scores, vision_score_take
@@ -206,15 +207,28 @@ def score_take_continuity(
             score = blend_scores(prompt_score, vision_score)
         except Exception:
             score = prompt_score
+        try:
+            from .identity_lock import identity_score_take
+
+            ident = identity_score_take(project, take)
+            identity_score = ident.get("identity_score")
+            flags.extend(ident.get("identity_flags") or [])
+            if identity_score is not None:
+                score = blend_scores(score, identity_score, vision_weight=0.35)
+        except Exception:
+            pass
     else:
         score = prompt_score
 
     threshold = float(getattr(project, "auto_reject_below", 0.55) or 0.55)
-    rejected = score < threshold and (checks > 0 or vision_score is not None)
+    rejected = score < threshold and (
+        checks > 0 or vision_score is not None or identity_score is not None
+    )
 
     note = (
         f"Continuity {int(score * 100)}%"
         + (f" · vision {int(vision_score * 100)}%" if vision_score is not None else "")
+        + (f" · identity {int(identity_score * 100)}%" if identity_score is not None else "")
         + (f" · {len(flags)} flags" if flags else " · clean")
         + (f" · auto-reject" if rejected else "")
     )
@@ -225,6 +239,7 @@ def score_take_continuity(
         "continuity_score": score,
         "prompt_score": prompt_score,
         "vision_score": vision_score,
+        "identity_score": identity_score,
         "continuity_flags": flags[:12],
         "rejected": rejected,
         "score_note": note,
@@ -244,6 +259,7 @@ def rescore_project(project: Project) -> Project:
         take.continuity_score = result["continuity_score"]
         take.continuity_flags = result["continuity_flags"]
         take.vision_score = result.get("vision_score")
+        take.identity_score = result.get("identity_score")
         take.rejected = result["rejected"]
         take.score_note = result["score_note"]
     return project

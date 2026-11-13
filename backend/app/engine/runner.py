@@ -355,6 +355,7 @@ def _attach_to_project(job: dict[str, Any]) -> None:
             take.continuity_score = scored["continuity_score"]
             take.continuity_flags = scored["continuity_flags"]
             take.vision_score = scored.get("vision_score")
+            take.identity_score = scored.get("identity_score")
             take.rejected = scored["rejected"]
             take.score_note = scored["score_note"]
             shot.status = "ready"

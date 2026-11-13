@@ -80,13 +80,23 @@ GENERATION_MODES: list[dict[str, Any]] = [
     },
 ]
 
-SIZE_PRESETS = [
-    {"id": "512x512", "width": 512, "height": 512, "label": "512² square"},
-    {"id": "768x432", "width": 768, "height": 432, "label": "768×432 (16:9 draft)"},
-    {"id": "1024x576", "width": 1024, "height": 576, "label": "1024×576"},
-    {"id": "1280x720", "width": 1280, "height": 720, "label": "1280×720 HD"},
-    {"id": "1024x1024", "width": 1024, "height": 1024, "label": "1024² square"},
-]
+def _frame_size_presets() -> list[dict]:
+    try:
+        from ..frame_sizes import size_presets_for_engine
+
+        return size_presets_for_engine()
+    except Exception:
+        return [
+            {"id": "512x512", "width": 512, "height": 512, "label": "512² square"},
+            {"id": "768x432", "width": 768, "height": 432, "label": "768×432 (16:9 draft)"},
+            {"id": "1024x576", "width": 1024, "height": 576, "label": "1024×576"},
+            {"id": "1280x720", "width": 1280, "height": 720, "label": "1280×720 HD"},
+            {"id": "1024x1024", "width": 1024, "height": 1024, "label": "1024² square"},
+            {"id": "9:16", "width": 720, "height": 1280, "label": "720×1280 (9:16 portrait)"},
+        ]
+
+
+SIZE_PRESETS = _frame_size_presets()
 
 QUALITY_PRESETS = [
     {"id": "draft", "label": "Draft (fast)", "steps_scale": 0.6, "guidance_scale": 0.85},

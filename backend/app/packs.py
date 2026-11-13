@@ -18,7 +18,7 @@ def export_project_pack(project: Project) -> dict[str, Any]:
     out_dir = OUTPUTS_DIR / project.id / "packs"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = utc_now().replace(":", "").replace("-", "")[:15]
-    zip_path = out_dir / f"{project.id}_{stamp}.nellpack.zip"
+    zip_path = out_dir / f"{project.id}_{stamp}.studionels.zip"
 
     media_paths: list[Path] = []
     for take in project.takes:
@@ -29,18 +29,51 @@ def export_project_pack(project: Project) -> dict[str, Any]:
     for clip in project.audio_timeline or []:
         if clip.media_path and Path(clip.media_path).exists():
             media_paths.append(Path(clip.media_path))
+    for char in project.characters:
+        if char.reference_path and Path(char.reference_path).exists():
+            media_paths.append(Path(char.reference_path))
+    for scene in project.scenes:
+        if scene.reference_path and Path(scene.reference_path).exists():
+            media_paths.append(Path(scene.reference_path))
+
+    look_bible = {
+        "visual_style": project.visual_style,
+        "frame_size_id": getattr(project, "frame_size_id", None),
+        "aspect_ratio": getattr(project, "aspect_ratio", None),
+        "width": getattr(project, "width", None),
+        "height": getattr(project, "height", None),
+        "continuity_rules": project.continuity_rules,
+        "world_bible": project.world_bible,
+        "auto_reject_below": project.auto_reject_below,
+        "continue_from_previous": project.continue_from_previous,
+        "preset_id": project.preset_id,
+        "characters": [
+            {
+                "name": c.name,
+                "lock": c.character_lock,
+                "look": c.look,
+                "has_ref": bool(c.reference_path),
+                "has_identity": bool(c.identity_fingerprint),
+            }
+            for c in project.characters
+        ],
+        "recipe": (project.meta or {}).get("recipe"),
+    }
 
     manifest = {
         "format": "studionels-pack-v1",
+        "kind": "look_bible_project_pack",
         "exported_at": utc_now(),
         "creator": "StudioNels",
         "project_id": project.id,
         "title": project.title,
         "media_count": len(media_paths),
+        "look_bible": look_bible,
     }
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+        zf.writestr("look_bible.json", json.dumps(look_bible, indent=2))
         zf.writestr("project.json", project.model_dump_json(indent=2))
         for i, path in enumerate(media_paths):
             arc = f"media/{i:04d}_{path.name}"
@@ -118,7 +151,9 @@ def list_packs() -> list[dict[str, Any]]:
     packs: list[dict[str, Any]] = []
     if not OUTPUTS_DIR.exists():
         return packs
-    for zip_path in OUTPUTS_DIR.rglob("*.nellpack.zip"):
+    for zip_path in list(OUTPUTS_DIR.rglob("*.studionels.zip")) + list(
+        OUTPUTS_DIR.rglob("*.nellpack.zip")
+    ):
         packs.append(
             {
                 "path": str(zip_path),

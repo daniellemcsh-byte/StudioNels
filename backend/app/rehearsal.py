@@ -30,8 +30,14 @@ def run_rehearsal(
                     "shot_id": shot.id,
                     "cpu_offload": gen.get("cpu_offload", True),
                     "frames": min(int(gen.get("default_frames") or 49), 24),
-                    "width": min(int(gen.get("default_width") or 768), 640),
-                    "height": min(int(gen.get("default_height") or 432), 360),
+                    "width": min(
+                        int(getattr(project, "width", None) or gen.get("default_width") or 768),
+                        768,
+                    ),
+                    "height": min(
+                        int(getattr(project, "height", None) or gen.get("default_height") or 432),
+                        768,
+                    ),
                     "fps": gen.get("fps") or 12,
                     "quality": quality,
                     "is_rehearsal": True,

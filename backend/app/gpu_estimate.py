@@ -106,8 +106,17 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
         suggested_preset = "cpu-fallback"
 
     advice = []
+    coach = {
+        "comfortable": f"GO — {device.get('device_name') or 'GPU'} can handle this (~{_fmt_eta(eta)}).",
+        "tight": f"TIGHT — close to VRAM limit. Keep offload on; ETA ~{_fmt_eta(eta)}.",
+        "wont_fit": "STOP — this will not fit. Drop to 16:9 draft / 9:16 draft / 1:1 draft, or AMD Low VRAM preset.",
+        "cpu_slow": "CPU ONLY — expect a long wait or preview frames. Install ROCm PyTorch for AMD.",
+        "preview_only": "PREVIEW MODE — PyTorch/Diffusers missing. Jobs draw placeholders until the engine is installed.",
+        "unknown": "Checking your GPU… pick a draft size if unsure.",
+    }
+    coach_headline = coach.get(fit, coach["unknown"])
     if fit == "wont_fit":
-        advice.append("Try Wan 1.3B / SDXL Turbo, 768×432, draft quality, fewer frames.")
+        advice.append("Try Wan 1.3B / SDXL Turbo, 768×432 landscape draft, or 432×768 portrait draft.")
     elif fit == "tight":
         advice.append("Use draft/balanced quality and one job at a time.")
     elif fit == "comfortable":
@@ -118,6 +127,7 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "ok": fit != "wont_fit",
         "fit": fit,
+        "coach_headline": coach_headline,
         "mode": mode,
         "model_id": (model or {}).get("id"),
         "model_label": (model or {}).get("label"),

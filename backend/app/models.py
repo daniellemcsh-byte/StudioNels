@@ -39,6 +39,8 @@ class CharacterProfile(BaseModel):
     voice_notes: str = ""
     character_lock: str = ""
     reference_path: str | None = None
+    # Offline identity fingerprint from reference still (palette / histogram)
+    identity_fingerprint: list[float] | None = None
     tags: list[str] = Field(default_factory=list)
 
 
@@ -84,6 +86,7 @@ class Take(BaseModel):
     continuity_score: float | None = None
     continuity_flags: list[str] = Field(default_factory=list)
     vision_score: float | None = None
+    identity_score: float | None = None
     prompt_used: str = ""
     is_rehearsal: bool = False
     rejected: bool = False
@@ -172,6 +175,11 @@ class Project(BaseModel):
     image_format: Literal["png", "jpg", "webp"] = "png"
     video_format: Literal["mp4", "webm", "gif"] = "mp4"
     audio_format: Literal["wav", "mp3"] = "wav"
+    # Frame size / aspect (landscape, portrait, 1:1, …)
+    frame_size_id: str = "16:9-draft"
+    aspect_ratio: str = "16:9"
+    width: int = 768
+    height: int = 432
     world_bible: str = ""
     continuity_rules: list[str] = Field(default_factory=list)
     auto_reject_below: float = 0.55
@@ -305,6 +313,19 @@ class CreateProjectRequest(BaseModel):
     mode: Mode = "short"
     logline: str = ""
     preset_id: str | None = None
+    frame_size_id: str | None = None
+
+
+class FilmNightRequest(BaseModel):
+    stage: Literal["full", "rehearse", "promote", "finals", "stitch"] = "full"
+
+
+class ApplyRecipeRequest(BaseModel):
+    recipe_id: str
+
+
+class ApplyFrameSizeRequest(BaseModel):
+    frame_size_id: str
 
 
 class AgentPlanRequest(BaseModel):
@@ -352,3 +373,13 @@ class HealthResponse(BaseModel):
     agent_label: str = "Ollama"
     agent_reachable: bool = False
     agent_detail: str = ""
+    # AMD / first-run coach
+    rocm: bool = False
+    vram_gb: float | None = None
+    backend: str = "none"
+    ready_for_inference: bool = False
+    will_preview: bool = True
+    suggested_preset: str = "amd-low-vram"
+    first_run_headline: str = ""
+    first_run_detail: str = ""
+    notes: list[str] = Field(default_factory=list)

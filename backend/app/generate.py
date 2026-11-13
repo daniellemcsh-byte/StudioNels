@@ -121,8 +121,8 @@ async def generate_takes(
             "shot_id": shot.id,
             "cpu_offload": gen.get("cpu_offload", True),
             "frames": gen.get("default_frames"),
-            "width": gen.get("default_width"),
-            "height": gen.get("default_height"),
+            "width": getattr(project, "width", None) or gen.get("default_width"),
+            "height": getattr(project, "height", None) or gen.get("default_height"),
             "fps": gen.get("fps"),
             "is_rehearsal": is_rehearsal,
             "inject_continuity": inject_continuity,
@@ -130,9 +130,19 @@ async def generate_takes(
             "continue_from_previous": bool(cont) or bool(chain_ids),
             "continue_from_take_id": cont["from_take_id"] if cont else None,
             "chain_shot_ids": chain_ids,
+            "image_format": project.image_format,
+            "video_format": project.video_format,
+            "visual_style": project.visual_style,
         }
         if image_path:
             payload["image_path"] = image_path
+        # Attach first cast ref for ref2v-style identity when available
+        if shot.character_ids:
+            for cid in shot.character_ids:
+                ch = next((c for c in project.characters if c.id == cid), None)
+                if ch and ch.reference_path:
+                    payload.setdefault("reference_path", ch.reference_path)
+                    break
 
         enqueue_job(payload)
         shot.status = "generating"

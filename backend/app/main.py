@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,12 +18,15 @@ from .gpu_estimate import estimate_job
 from .llm_providers import list_providers, probe_agent
 from .models import (
     AgentMessage,
+    ApplyFrameSizeRequest,
+    ApplyRecipeRequest,
     AudioClip,
     CharacterProfile,
     ContinuityRulesRequest,
     CreateProjectRequest,
     AgentPlanRequest,
     EngineGenerateRequest,
+    FilmNightRequest,
     GenerateRequest,
     GpuEstimateRequest,
     HealthResponse,
@@ -87,6 +90,30 @@ async def health() -> HealthResponse:
     settings = load_settings()
     device = detect_device()
     agent = await probe_agent(settings)
+    vram = device.get("vram_gb")
+    ready = bool(device.get("ready_for_inference") and device.get("diffusers_available"))
+    suggested = settings.preset_id or "amd-low-vram"
+    if isinstance(vram, (int, float)):
+        if vram >= 24:
+            suggested = "amd-r9700"
+        elif vram >= 8:
+            suggested = "amd-low-vram"
+        else:
+            suggested = "cpu-fallback"
+    elif not device.get("torch_available"):
+        suggested = "cpu-fallback"
+    if ready and device.get("rocm"):
+        headline = f"AMD ready — {device.get('device_name')} · {vram} GB"
+        detail = "Real generation available. Start a project or open Film night."
+    elif ready:
+        headline = f"GPU ready — {device.get('device_name')}"
+        detail = "Engine can load Diffusers. Pick a frame size and generate."
+    elif device.get("torch_available"):
+        headline = "Torch installed — Diffusers/ROCm still needed for real frames"
+        detail = "Jobs may preview until engine extras + AMD ROCm PyTorch are in place."
+    else:
+        headline = "First run — preview mode until ROCm PyTorch is installed"
+        detail = "StudioNels still plans, locks characters, and cuts. Install ROCm torch for real video."
     return HealthResponse(
         ok=True,
         ollama=await probe_ollama(),
@@ -100,6 +127,15 @@ async def health() -> HealthResponse:
         agent_label=str(agent.get("label") or settings.agent_provider),
         agent_reachable=bool(agent.get("reachable")),
         agent_detail=str(agent.get("detail") or ""),
+        rocm=bool(device.get("rocm")),
+        vram_gb=float(vram) if isinstance(vram, (int, float)) else None,
+        backend=str(device.get("backend") or "none"),
+        ready_for_inference=ready,
+        will_preview=not ready,
+        suggested_preset=suggested,
+        first_run_headline=headline,
+        first_run_detail=detail,
+        notes=list(device.get("notes") or []),
     )
 
 
@@ -225,6 +261,8 @@ async def projects():
 
 @app.post("/api/projects", response_model=Project)
 async def create_project(body: CreateProjectRequest):
+    from .frame_sizes import apply_frame_to_project
+
     settings = load_settings()
     project = Project(
         title=body.title.strip() or "Untitled",
@@ -232,6 +270,7 @@ async def create_project(body: CreateProjectRequest):
         logline=body.logline,
         preset_id=body.preset_id or settings.preset_id,
     )
+    apply_frame_to_project(project, body.frame_size_id or "16:9-draft")
     project.agent_messages.append(
         AgentMessage(
             role="assistant",
@@ -290,20 +329,24 @@ async def agent_plan(project_id: str, body: AgentPlanRequest):
 
 @app.post("/api/projects/{project_id}/characters", response_model=Project)
 async def add_character(project_id: str, body: CharacterProfile):
+    from .identity_lock import refresh_character_identity
+
     project = load_project(project_id)
     if not body.id:
         body.id = new_id("char")
-    project.characters.append(body)
+    project.characters.append(refresh_character_identity(body))
     return save_project(project)
 
 
 @app.put("/api/projects/{project_id}/characters/{character_id}", response_model=Project)
 async def update_character(project_id: str, character_id: str, body: CharacterProfile):
+    from .identity_lock import refresh_character_identity
+
     project = load_project(project_id)
     for i, c in enumerate(project.characters):
         if c.id == character_id:
             body.id = character_id
-            project.characters[i] = body
+            project.characters[i] = refresh_character_identity(body)
             return save_project(project)
     raise HTTPException(404, "Character not found")
 
@@ -563,6 +606,142 @@ async def get_timeline_progress(project_id: str):
 async def project_preset(project_id: str):
     project = load_project(project_id)
     return get_preset(project.preset_id)
+
+
+@app.get("/api/frame-sizes")
+async def frame_sizes():
+    from .frame_sizes import list_frame_sizes
+
+    return {"sizes": list_frame_sizes()}
+
+
+@app.post("/api/projects/{project_id}/frame-size", response_model=Project)
+async def set_frame_size(project_id: str, body: ApplyFrameSizeRequest):
+    from .frame_sizes import apply_frame_to_project
+
+    project = load_project(project_id)
+    apply_frame_to_project(project, body.frame_size_id)
+    return save_project(project)
+
+
+@app.get("/api/recipes")
+async def recipes():
+    from .recipes import list_recipes
+
+    return {"recipes": list_recipes()}
+
+
+@app.post("/api/projects/{project_id}/recipes/apply", response_model=Project)
+async def recipe_apply(project_id: str, body: ApplyRecipeRequest):
+    from .recipes import apply_recipe
+
+    project = load_project(project_id)
+    try:
+        return apply_recipe(project, body.recipe_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/stitch")
+async def stitch_project(project_id: str):
+    from .stitch import stitch_preview
+
+    project = load_project(project_id)
+    return stitch_preview(project)
+
+
+@app.post("/api/projects/{project_id}/film-night")
+async def film_night(project_id: str, body: FilmNightRequest | None = None):
+    from .film_night import run_film_night
+
+    project = load_project(project_id)
+    stage = (body.stage if body else "full") or "full"
+    result = await run_film_night(project, stage)
+    if result.get("project") and isinstance(result["project"], dict):
+        # reload latest from disk if saved during pipeline
+        try:
+            result["project"] = load_project(project_id).model_dump()
+        except Exception:
+            pass
+    return result
+
+
+@app.post("/api/projects/{project_id}/export/pack")
+async def export_pack(project_id: str):
+    from .packs import export_project_pack
+
+    project = load_project(project_id)
+    return export_project_pack(project)
+
+
+@app.get("/api/packs")
+async def packs_list():
+    from .packs import list_packs
+
+    return {"packs": list_packs()}
+
+
+@app.post("/api/packs/import", response_model=Project)
+async def packs_import(path: str):
+    from .packs import import_project_pack
+
+    try:
+        return import_project_pack(Path(path))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/characters/{character_id}/identity-lock", response_model=Project)
+async def character_identity_lock(project_id: str, character_id: str):
+    from .identity_lock import refresh_character_identity
+
+    project = load_project(project_id)
+    for i, c in enumerate(project.characters):
+        if c.id == character_id:
+            project.characters[i] = refresh_character_identity(c)
+            return save_project(project)
+    raise HTTPException(404, "Character not found")
+
+
+@app.post("/api/projects/{project_id}/director/import-video")
+async def director_import_video(
+    project_id: str,
+    file: UploadFile | None = File(None),
+    path: str | None = Form(None),
+    title: str | None = Form(None),
+    insert_at: int | None = Form(None),
+):
+    """Add an existing video clip to the Director timeline (shot + take + clip)."""
+    from .director_import import import_video_clip, store_upload_bytes
+
+    project = load_project(project_id)
+    source: str | None = path
+    if file is not None and file.filename:
+        data = await file.read()
+        if not data:
+            raise HTTPException(400, "Empty file")
+        stored = store_upload_bytes(file.filename, data)
+        source = str(stored)
+        if not title:
+            title = Path(file.filename).stem
+    if not source:
+        raise HTTPException(400, "Provide a video file upload or path=")
+    try:
+        result = import_video_clip(
+            project, source, title=title, insert_at=insert_at
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    proj = result.pop("project")
+    return {
+        "ok": True,
+        "project": proj.model_dump() if hasattr(proj, "model_dump") else proj,
+        **result,
+    }
 
 
 @app.get("/api/file")

@@ -231,6 +231,26 @@ export const api = {
     if (!res.ok) throw new Error(await res.text())
     return res.json() as Promise<{ path: string; url: string }>
   },
+  importDirectorVideo: async (id: string, file: File, opts?: { title?: string; insert_at?: number }) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    if (opts?.title) fd.append('title', opts.title)
+    if (opts?.insert_at != null) fd.append('insert_at', String(opts.insert_at))
+    const res = await fetch(`/api/projects/${id}/director/import-video`, {
+      method: 'POST',
+      body: fd,
+    })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json() as Promise<{
+      ok: boolean
+      project: import('./types').Project
+      shot_id: string
+      take_id: string
+      clip_id: string
+      duration_sec: number
+      message: string
+    }>
+  },
 }
 
 export function mediaUrl(path?: string | null): string | undefined {

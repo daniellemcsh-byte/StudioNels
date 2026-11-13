@@ -430,6 +430,30 @@ export default function DirectorStudio({
     }
   }
 
+  const addUploadedVideo = async (file: File) => {
+    setBusy(true)
+    try {
+      // Insert after the clip under the playhead when possible
+      let insertAt = clips.length
+      const hit = layout.find((s) => playhead >= s.start && playhead < s.end)
+      if (hit) {
+        const idx = clips.findIndex((c) => c.id === hit.clip.id)
+        if (idx >= 0) insertAt = idx + 1
+      }
+      const res = await api.importDirectorVideo(project.id, file, {
+        title: file.name.replace(/\.[^.]+$/, ''),
+        insert_at: insertAt,
+      })
+      setProject(res.project)
+      setSel({ kind: 'video', id: res.clip_id })
+      notify(res.message || 'Clip added to the timeline.')
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const onTrackClick = (e: { clientX: number; currentTarget: HTMLDivElement }) => {
     const el = trackRef.current
     if (!el) return
@@ -454,12 +478,26 @@ export default function DirectorStudio({
   return (
     <div className="director tiktok-director">
       <p className="hint">
-        TikTok-style edit bay — captions on the video, transitions between clips, audio under, zoom
-        for fine cuts.
+        TikTok-style edit bay — upload clips you already have, or build from pinned takes. Captions,
+        transitions, audio under, zoom for fine cuts.
       </p>
 
       <div className="director-toolbar inline-actions" style={{ flexWrap: 'wrap' }}>
-        <button className="btn acid" type="button" disabled={busy} onClick={buildFromPins}>
+        <label className={`btn acid ${busy ? 'disabled' : ''}`} style={{ cursor: busy ? 'wait' : 'pointer' }}>
+          Upload video
+          <input
+            type="file"
+            accept="video/*,.mp4,.webm,.mov,.mkv,.m4v,.gif"
+            hidden
+            disabled={busy}
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              e.target.value = ''
+              if (f) addUploadedVideo(f)
+            }}
+          />
+        </label>
+        <button className="btn secondary" type="button" disabled={busy} onClick={buildFromPins}>
           Build video from pins
         </button>
         <button
@@ -1122,10 +1160,29 @@ export default function DirectorStudio({
         </div>
 
         <div className="tt-add-audio">
-          <strong>Add audio under video</strong>
+          <strong>Add clips &amp; audio</strong>
           <div className="muted tiny" style={{ marginBottom: 8 }}>
-            Drop music/VO at the playhead ({formatTimecode(playhead)}). Generate beds in the Audio
-            tab, then pick them here — or upload a file.
+            Already have footage? Upload video onto the cut (inserts after the playhead clip). Audio
+            lands at {formatTimecode(playhead)}.
+          </div>
+          <div className="inline-actions" style={{ flexWrap: 'wrap', marginBottom: 8 }}>
+            <label className="btn acid tiny">
+              Upload video clip
+              <input
+                type="file"
+                accept="video/*,.mp4,.webm,.mov,.mkv,.m4v,.gif"
+                hidden
+                disabled={busy}
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  e.target.value = ''
+                  if (f) addUploadedVideo(f)
+                }}
+              />
+            </label>
+          </div>
+          <div className="muted tiny" style={{ marginBottom: 8 }}>
+            Music / VO / SFX under the video:
           </div>
           <div className="inline-actions" style={{ flexWrap: 'wrap' }}>
             <label className="btn ghost tiny">
