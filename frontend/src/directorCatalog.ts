@@ -31,7 +31,45 @@ export const CAPTION_STYLES: CaptionStyle[] = [
   { id: 'top', label: 'Top centre', blurb: 'Titles / lower-third flip' },
   { id: 'lower-third', label: 'Lower third', blurb: 'Name/place cards' },
   { id: 'center', label: 'Centre punch-in', blurb: 'Big title moment' },
+  { id: 'free', label: 'Free position', blurb: 'Drag on the video' },
 ]
+
+export interface TransitionPreset {
+  id: string
+  label: string
+  blurb: string
+}
+
+export const TRANSITIONS: TransitionPreset[] = [
+  { id: 'none', label: 'Hard cut', blurb: 'Instant change' },
+  { id: 'fade', label: 'Fade', blurb: 'Fade through black' },
+  { id: 'dissolve', label: 'Dissolve', blurb: 'Cross-dissolve' },
+  { id: 'wipe', label: 'Wipe', blurb: 'Edge wipe' },
+  { id: 'slide', label: 'Slide', blurb: 'Push slide' },
+  { id: 'zoom', label: 'Zoom', blurb: 'Zoom through' },
+  { id: 'flash', label: 'Flash', blurb: 'White flash cut' },
+]
+
+export function transitionPreviewCss(id: string | null | undefined, t = 0): string {
+  // t = 0..1 how far through the transition preview
+  const x = Math.max(0, Math.min(1, t))
+  switch (id) {
+    case 'fade':
+      return `opacity ${0.35 + 0.65 * (1 - x)}`
+    case 'dissolve':
+      return `opacity ${1 - x * 0.55}`
+    case 'wipe':
+      return `clip-path inset(0 ${x * 100}% 0 0)`
+    case 'slide':
+      return `transform translateX(${(1 - x) * -18}%)`
+    case 'zoom':
+      return `transform scale(${1 + x * 0.12}); opacity ${1 - x * 0.35}`
+    case 'flash':
+      return `brightness(${1 + (x < 0.5 ? x * 4 : (1 - x) * 4)})`
+    default:
+      return ''
+  }
+}
 
 export function filterCss(id: string | null | undefined, intensity = 1): string {
   const f = DIRECTOR_FILTERS.find((x) => x.id === id) || DIRECTOR_FILTERS[0]

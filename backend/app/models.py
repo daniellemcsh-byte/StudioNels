@@ -100,9 +100,13 @@ class TimelineClip(BaseModel):
     speed: float = 1.0
     pinned: bool = False
     order: int = 0
-    # Captions (editable in Director)
+    # Captions (editable in Director / on-video)
     caption: str = ""
     caption_style: str = "bottom"
+    caption_x: float = 0.0  # -1 .. 1 relative nudge
+    caption_y: float = 0.0
+    caption_start: float = 0.0  # within clip
+    caption_end: float | None = None
     # Look filter over this clip
     filter_id: str = "none"
     filter_intensity: float = 1.0
@@ -114,6 +118,9 @@ class TimelineClip(BaseModel):
     volume: float = 1.0  # clip audio if present
     fade_in: float = 0.0
     fade_out: float = 0.0
+    # Transition INTO this clip from the previous one
+    transition: str = "none"  # none|cut|fade|dissolve|wipe|slide|zoom|flash
+    transition_dur: float = 0.35
 
 
 class AudioClip(BaseModel):

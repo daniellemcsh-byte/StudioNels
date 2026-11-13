@@ -167,6 +167,10 @@ export interface TimelineClip {
   order: number
   caption?: string
   caption_style?: string
+  caption_x?: number
+  caption_y?: number
+  caption_start?: number
+  caption_end?: number | null
   filter_id?: string
   filter_intensity?: number
   director_note?: string
@@ -176,6 +180,8 @@ export interface TimelineClip {
   volume?: number
   fade_in?: number
   fade_out?: number
+  transition?: string
+  transition_dur?: number
 }
 
 export interface AudioClip {

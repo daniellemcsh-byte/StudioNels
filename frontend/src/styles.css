@@ -1517,6 +1517,111 @@ a {
   border-top: 1px solid var(--line);
 }
 
+.tt-clip.caption {
+  background: linear-gradient(135deg, rgba(255, 61, 206, 0.28), rgba(57, 255, 199, 0.1));
+  border-color: rgba(255, 61, 206, 0.55);
+  font-size: 0.65rem;
+}
+
+.tt-trans-mark {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  margin-top: -6px;
+  transform: rotate(45deg);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.5);
+  padding: 0;
+  z-index: 3;
+  cursor: pointer;
+}
+
+.tt-trans-mark.on {
+  background: #ff3dce;
+  border-color: #fff;
+  box-shadow: 0 0 10px rgba(255, 61, 206, 0.55);
+}
+
+.caption-overlay.editable {
+  cursor: grab;
+  pointer-events: auto;
+  min-width: 40%;
+}
+
+.caption-overlay.editable.dragging {
+  cursor: grabbing;
+  outline: 1px dashed rgba(255, 255, 255, 0.6);
+}
+
+.caption-overlay.active-edit {
+  box-shadow: 0 0 0 2px rgba(57, 255, 199, 0.55);
+}
+
+.caption-tap {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  width: 100%;
+  text-align: inherit;
+  cursor: text;
+  padding: 0;
+}
+
+.caption-inline-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #fff;
+  font: inherit;
+  text-align: inherit;
+  resize: none;
+  outline: none;
+}
+
+.tt-trans-chip {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: rgba(255, 61, 206, 0.85);
+  color: #fff;
+  font-size: 0.68rem;
+  padding: 3px 8px;
+  border-radius: 999px;
+  text-transform: capitalize;
+}
+
+.tt-transition-fx {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.tt-transition-fx.fx-fade,
+.tt-transition-fx.fx-dissolve {
+  background: #000;
+}
+
+.tt-transition-fx.fx-flash {
+  background: #fff;
+}
+
+.tt-transition-fx.fx-wipe {
+  background: #000;
+  clip-path: inset(0 0 0 0);
+}
+
+.tt-transition-fx.fx-slide {
+  background: linear-gradient(90deg, #000, transparent);
+}
+
+.tt-transition-fx.fx-zoom {
+  background: radial-gradient(circle, transparent 30%, #000 100%);
+}
+
 @media (max-width: 900px) {
   .tiktok-director .tt-phone {
     max-width: 100%;

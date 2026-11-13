@@ -3,6 +3,7 @@ import { api, mediaUrl } from './api'
 import {
   CAPTION_STYLES,
   DIRECTOR_FILTERS,
+  TRANSITIONS,
   filterCss,
   formatTimecode,
 } from './directorCatalog'
@@ -32,6 +33,10 @@ function normalizeClip(c: TimelineClip, order: number, shotDur = 3): TimelineCli
     order,
     caption: c.caption ?? '',
     caption_style: c.caption_style || 'bottom',
+    caption_x: c.caption_x ?? 0,
+    caption_y: c.caption_y ?? 0,
+    caption_start: c.caption_start ?? 0,
+    caption_end: c.caption_end ?? null,
     filter_id: c.filter_id || 'none',
     filter_intensity: c.filter_intensity ?? 1,
     director_note: c.director_note ?? '',
@@ -41,12 +46,15 @@ function normalizeClip(c: TimelineClip, order: number, shotDur = 3): TimelineCli
     volume: c.volume ?? 1,
     fade_in: c.fade_in ?? 0,
     fade_out: c.fade_out ?? 0,
+    transition: c.transition || 'none',
+    transition_dur: c.transition_dur ?? 0.35,
   }
 }
 
 type Sel =
   | { kind: 'video'; id: string }
   | { kind: 'audio'; id: string }
+  | { kind: 'caption'; id: string }
   | null
 
 export default function DirectorStudio({
@@ -67,7 +75,12 @@ export default function DirectorStudio({
   const [zoom, setZoom] = useState(48) // px per second
   const [snap, setSnap] = useState(true)
   const [audioJobs, setAudioJobs] = useState<EngineJob[]>([])
+  const [editingCaption, setEditingCaption] = useState(false)
+  const [captionDraft, setCaptionDraft] = useState('')
+  const [dragCaption, setDragCaption] = useState(false)
   const trackRef = useRef<HTMLDivElement>(null)
+  const viewerRef = useRef<HTMLDivElement>(null)
+  const captionInputRef = useRef<HTMLTextAreaElement>(null)
 
   const clips: TimelineClip[] = useMemo(() => {
     if (project.timeline.length > 0) {
@@ -124,7 +137,7 @@ export default function DirectorStudio({
   )
 
   const selectedVideo =
-    sel?.kind === 'video'
+    sel?.kind === 'video' || sel?.kind === 'caption'
       ? clips.find((c) => c.id === sel.id) || null
       : clips.find((c) => {
           const seg = layout.find((s) => s.clip.id === c.id)
@@ -196,6 +209,105 @@ export default function DirectorStudio({
   const patchAudio = async (patch: Partial<AudioClip>) => {
     if (!selectedAudio) return
     await persistAudio(audioClips.map((c) => (c.id === selectedAudio.id ? { ...c, ...patch } : c)))
+  }
+
+  useEffect(() => {
+    if (selectedVideo) {
+      setCaptionDraft(selectedVideo.caption || '')
+    }
+  }, [selectedVideo?.id, selectedVideo?.caption])
+
+  const startCaptionEdit = (seed?: string) => {
+    if (!selectedVideo) {
+      notify('Select a video clip first.')
+      return
+    }
+    setSel({ kind: 'caption', id: selectedVideo.id })
+    setCaptionDraft(seed ?? selectedVideo.caption ?? '')
+    setEditingCaption(true)
+    window.setTimeout(() => captionInputRef.current?.focus(), 50)
+  }
+
+  const saveCaption = async () => {
+    if (!selectedVideo) return
+    const text = captionDraft.trim()
+    await patchVideo({
+      caption: text,
+      caption_style: selectedVideo.caption_style || 'bottom',
+    })
+    setEditingCaption(false)
+    setSel({ kind: 'video', id: selectedVideo.id })
+    notify(text ? 'Caption saved on clip.' : 'Caption cleared.')
+  }
+
+  const addCaptionAtPlayhead = async () => {
+    if (!selectedVideo || !selectedSeg) {
+      notify('Build the video track and select a clip first.')
+      return
+    }
+    const local = Math.max(0, playhead - selectedSeg.start)
+    await persistVideo(
+      clips.map((c) =>
+        c.id === selectedVideo.id
+          ? {
+              ...c,
+              caption: c.caption || 'New caption',
+              caption_start: Number(local.toFixed(2)),
+              caption_style: c.caption_style || 'free',
+            }
+          : c,
+      ),
+      'Caption added — edit it on the video.',
+    )
+    setSel({ kind: 'caption', id: selectedVideo.id })
+    setCaptionDraft(selectedVideo.caption || 'New caption')
+    setEditingCaption(true)
+  }
+
+  const onCaptionPointerDown = (e: { clientX: number; clientY: number; preventDefault: () => void }) => {
+    if (!selectedVideo || !viewerRef.current) return
+    e.preventDefault()
+    setDragCaption(true)
+    setSel({ kind: 'caption', id: selectedVideo.id })
+    const rect = viewerRef.current.getBoundingClientRect()
+    const move = (ev: PointerEvent) => {
+      const nx = ((ev.clientX - rect.left) / rect.width) * 2 - 1
+      const ny = ((ev.clientY - rect.top) / rect.height) * 2 - 1
+      setCaptionDraft((d) => d) // keep draft
+      // live preview via direct patch would thrash — stash on element dataset
+      viewerRef.current?.style.setProperty('--cap-x', String(Math.max(-1, Math.min(1, nx))))
+      viewerRef.current?.style.setProperty('--cap-y', String(Math.max(-1, Math.min(1, ny))))
+    }
+    const up = async (ev: PointerEvent) => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      setDragCaption(false)
+      const nx = ((ev.clientX - rect.left) / rect.width) * 2 - 1
+      const ny = ((ev.clientY - rect.top) / rect.height) * 2 - 1
+      await patchVideo({
+        caption_x: Number(Math.max(-1, Math.min(1, nx)).toFixed(3)),
+        caption_y: Number(Math.max(-1, Math.min(1, ny)).toFixed(3)),
+        caption_style: 'free',
+      })
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  const applyTransition = async (transition: string) => {
+    if (!selectedVideo) {
+      notify('Select the clip that comes AFTER the cut.')
+      return
+    }
+    await patchVideo({
+      transition,
+      transition_dur: selectedVideo.transition_dur ?? 0.35,
+    })
+    notify(
+      transition === 'none'
+        ? 'Hard cut.'
+        : `Transition “${transition}” into this clip (${selectedVideo.transition_dur ?? 0.35}s).`,
+    )
   }
 
   const buildFromPins = async () => {
@@ -342,8 +454,8 @@ export default function DirectorStudio({
   return (
     <div className="director tiktok-director">
       <p className="hint">
-        TikTok-style edit bay — multi-track timeline, zoom for fine cuts, audio under video, filters
-        and reframing on the preview.
+        TikTok-style edit bay — captions on the video, transitions between clips, audio under, zoom
+        for fine cuts.
       </p>
 
       <div className="director-toolbar inline-actions" style={{ flexWrap: 'wrap' }}>
@@ -359,6 +471,22 @@ export default function DirectorStudio({
           Split at playhead
         </button>
         <button
+          className="btn secondary"
+          type="button"
+          disabled={busy || !selectedVideo}
+          onClick={() => addCaptionAtPlayhead()}
+        >
+          Add caption
+        </button>
+        <button
+          className="btn ghost"
+          type="button"
+          disabled={busy || !selectedVideo}
+          onClick={() => startCaptionEdit()}
+        >
+          Edit on video
+        </button>
+        <button
           className="btn ghost"
           type="button"
           disabled={busy}
@@ -367,7 +495,7 @@ export default function DirectorStudio({
             try {
               const p = await api.generateCaptions(project.id, false)
               setProject(p)
-              notify('Captions generated — edit on the video clip.')
+              notify('Captions generated from dialogue — tap Edit on video to tweak.')
             } catch (err) {
               notify(String((err as Error).message || err))
             } finally {
@@ -375,7 +503,7 @@ export default function DirectorStudio({
             }
           }}
         >
-          Captions
+          Auto captions
         </button>
         <button
           className="btn ghost"
@@ -414,8 +542,21 @@ export default function DirectorStudio({
         <div className="panel tt-preview-wrap">
           <div
             className="director-viewer tt-phone"
+            ref={viewerRef}
             style={{
               filter: filterCss(selectedVideo?.filter_id, selectedVideo?.filter_intensity ?? 1),
+              ['--cap-x' as string]: String(selectedVideo?.caption_x ?? 0),
+              ['--cap-y' as string]: String(selectedVideo?.caption_y ?? 0),
+              ...(selectedVideo?.transition && selectedVideo.transition !== 'none'
+                ? {
+                    // subtle preview of outgoing transition at clip end
+                    ...(playhead > (selectedSeg?.end || 0) - (selectedVideo.transition_dur || 0.35)
+                      ? {
+                          // applied via child overlay
+                        }
+                      : {}),
+                  }
+                : {}),
             }}
           >
             <div
@@ -433,13 +574,98 @@ export default function DirectorStudio({
                 <div className="empty">Pin takes & build the video track</div>
               )}
             </div>
-            {selectedVideo?.caption && project.captions_enabled !== false && (
-              <div className={`caption-overlay style-${selectedVideo.caption_style || 'bottom'}`}>
-                {selectedVideo.caption}
+            {selectedVideo &&
+              selectedSeg &&
+              selectedVideo.transition &&
+              selectedVideo.transition !== 'none' &&
+              playhead >= selectedSeg.start &&
+              playhead < selectedSeg.start + (selectedVideo.transition_dur || 0.35) && (
+                <div
+                  className={`tt-transition-fx fx-${selectedVideo.transition}`}
+                  style={{
+                    opacity:
+                      1 -
+                      (playhead - selectedSeg.start) / (selectedVideo.transition_dur || 0.35),
+                  }}
+                  aria-hidden
+                />
+              )}
+            {(editingCaption || (selectedVideo?.caption && project.captions_enabled !== false)) && (
+              <div
+                className={`caption-overlay editable style-${selectedVideo?.caption_style || 'bottom'} ${dragCaption ? 'dragging' : ''} ${editingCaption || sel?.kind === 'caption' ? 'active-edit' : ''}`}
+                style={
+                  selectedVideo?.caption_style === 'free'
+                    ? {
+                        left: `${50 + (selectedVideo.caption_x || 0) * 42}%`,
+                        top: `${50 + (selectedVideo.caption_y || 0) * 42}%`,
+                        bottom: 'auto',
+                        transform: 'translate(-50%, -50%)',
+                      }
+                    : undefined
+                }
+                onPointerDown={onCaptionPointerDown}
+                title="Drag to reposition · click Edit on video to type"
+              >
+                {editingCaption ? (
+                  <textarea
+                    ref={captionInputRef}
+                    className="caption-inline-input"
+                    rows={2}
+                    value={captionDraft}
+                    onChange={(e) => setCaptionDraft(e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onBlur={() => saveCaption()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        saveCaption()
+                      }
+                      if (e.key === 'Escape') {
+                        setEditingCaption(false)
+                        setCaptionDraft(selectedVideo?.caption || '')
+                      }
+                    }}
+                    placeholder="Type caption…"
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    className="caption-tap"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      startCaptionEdit(selectedVideo?.caption || '')
+                    }}
+                  >
+                    {selectedVideo?.caption || 'Tap to add caption'}
+                  </button>
+                )}
               </div>
             )}
             <div className="tt-timechip">{formatTimecode(playhead)}</div>
+            {selectedVideo?.transition && selectedVideo.transition !== 'none' && (
+              <div className="tt-trans-chip">
+                {selectedVideo.transition} {selectedVideo.transition_dur ?? 0.35}s
+              </div>
+            )}
           </div>
+          {editingCaption && (
+            <div className="inline-actions" style={{ marginTop: 8, justifyContent: 'center' }}>
+              <button className="btn acid tiny" type="button" disabled={busy} onClick={saveCaption}>
+                Save caption
+              </button>
+              <button
+                className="btn ghost tiny"
+                type="button"
+                onClick={() => {
+                  setEditingCaption(false)
+                  setCaptionDraft(selectedVideo?.caption || '')
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
           {selectedAudio?.media_path && mediaUrl(selectedAudio.media_path) && (
             <audio
               key={selectedAudio.id}
@@ -657,8 +883,15 @@ export default function DirectorStudio({
                 <label>Caption</label>
                 <textarea
                   rows={2}
-                  value={selectedVideo.caption || ''}
-                  onChange={(e) => patchVideo({ caption: e.target.value })}
+                  value={editingCaption ? captionDraft : selectedVideo.caption || ''}
+                  onChange={(e) => {
+                    setCaptionDraft(e.target.value)
+                    setEditingCaption(true)
+                  }}
+                  onBlur={() => {
+                    if (editingCaption) saveCaption()
+                  }}
+                  placeholder="Type here or on the video…"
                 />
               </div>
               <div className="field">
@@ -674,6 +907,58 @@ export default function DirectorStudio({
                   ))}
                 </select>
               </div>
+              <div className="inline-actions">
+                <button
+                  className="btn ghost tiny"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => startCaptionEdit(selectedVideo.caption || 'New caption')}
+                >
+                  Edit on video
+                </button>
+                <button
+                  className="btn ghost tiny"
+                  type="button"
+                  disabled={busy || !selectedVideo.caption}
+                  onClick={() => patchVideo({ caption: '', caption_x: 0, caption_y: 0 })}
+                >
+                  Clear caption
+                </button>
+              </div>
+
+              <h4 style={{ margin: '14px 0 8px', fontFamily: 'var(--font-display)', color: 'var(--neon)' }}>
+                Transition in
+              </h4>
+              <div className="muted tiny" style={{ marginBottom: 8 }}>
+                How this clip arrives from the previous one.
+              </div>
+              <div className="provider-grid">
+                {TRANSITIONS.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className={`mode-chip ${(selectedVideo.transition || 'none') === t.id ? 'active' : ''}`}
+                    disabled={busy}
+                    onClick={() => applyTransition(t.id)}
+                  >
+                    <strong>{t.label}</strong>
+                    <span>{t.blurb}</span>
+                  </button>
+                ))}
+              </div>
+              {(selectedVideo.transition || 'none') !== 'none' && (
+                <div className="field" style={{ marginTop: 8 }}>
+                  <label>Transition length {(selectedVideo.transition_dur ?? 0.35).toFixed(2)}s</label>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={1.5}
+                    step={0.05}
+                    value={selectedVideo.transition_dur ?? 0.35}
+                    onChange={(e) => patchVideo({ transition_dur: Number(e.target.value) })}
+                  />
+                </div>
+              )}
             </>
           ) : (
             <div className="empty">Select a clip on the timeline.</div>
@@ -728,6 +1013,57 @@ export default function DirectorStudio({
                     {i + 1}. {seg.shot?.title || 'Clip'}
                   </span>
                 </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="tt-lane captions">
+            <div className="tt-lane-label">CC</div>
+            <div className="tt-lane-body" style={{ width: px(totalSec) }}>
+              {layout
+                .filter((seg) => !!seg.clip.caption)
+                .map((seg) => {
+                  const localStart = seg.clip.caption_start ?? 0
+                  const localEnd =
+                    seg.clip.caption_end != null ? seg.clip.caption_end : seg.dur
+                  const start = seg.start + localStart
+                  const dur = Math.max(0.2, Math.min(seg.dur, localEnd) - localStart)
+                  return (
+                    <button
+                      key={`cc-${seg.clip.id}`}
+                      type="button"
+                      className={`tt-clip caption ${sel?.kind === 'caption' && sel.id === seg.clip.id ? 'active' : ''}`}
+                      style={{ left: px(start), width: Math.max(8, px(dur)) }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setSel({ kind: 'caption', id: seg.clip.id })
+                        setPlayhead(start)
+                        startCaptionEdit(seg.clip.caption || '')
+                      }}
+                      title={seg.clip.caption}
+                    >
+                      <span>{seg.clip.caption}</span>
+                    </button>
+                  )
+                })}
+              {/* transition diamonds between clips */}
+              {layout.slice(1).map((seg) => (
+                <button
+                  key={`tr-${seg.clip.id}`}
+                  type="button"
+                  className={`tt-trans-mark ${(seg.clip.transition || 'none') !== 'none' ? 'on' : ''}`}
+                  style={{ left: px(seg.start) }}
+                  title={
+                    (seg.clip.transition || 'none') === 'none'
+                      ? 'Hard cut — click clip to set transition'
+                      : `${seg.clip.transition} ${seg.clip.transition_dur ?? 0.35}s`
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setSel({ kind: 'video', id: seg.clip.id })
+                    setPlayhead(seg.start)
+                  }}
+                />
               ))}
             </div>
           </div>
@@ -817,6 +1153,28 @@ export default function DirectorStudio({
               <span className="muted tiny">No finished audio jobs yet — open Audio tab first.</span>
             )}
           </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <h3>Transitions</h3>
+        <p className="muted tiny">
+          Select the <em>incoming</em> clip, then pick how it arrives. Diamonds on the CC lane mark
+          styled cuts.
+        </p>
+        <div className="provider-grid">
+          {TRANSITIONS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`mode-chip ${(selectedVideo?.transition || 'none') === t.id ? 'active' : ''}`}
+              disabled={busy || !selectedVideo}
+              onClick={() => applyTransition(t.id)}
+            >
+              <strong>{t.label}</strong>
+              <span>{t.blurb}</span>
+            </button>
+          ))}
         </div>
       </div>
 
