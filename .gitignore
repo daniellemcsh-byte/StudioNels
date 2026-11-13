@@ -7,3 +7,15 @@ __pycache__/
 *.tmp
 .env
 .framewright/
+models/**
+!models/README.md
+loras/**
+!loras/README.md
+outputs/**
+!outputs/README.md
+uploads/**
+!uploads/README.md
+projects/**
+!projects/README.md
+cache/**
+!cache/README.md
