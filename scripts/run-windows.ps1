@@ -1,11 +1,10 @@
-# StudioNels — start API + UI on Windows
+# StudioNels - start API + UI on Windows
 # Run after setup-windows.ps1
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $Root
 
-$venvPython = Join-Path $Root "backend\.venv\Scripts\python.exe"
 $uvicorn = Join-Path $Root "backend\.venv\Scripts\uvicorn.exe"
 
 if (-not (Test-Path $uvicorn)) {
@@ -25,8 +24,8 @@ $api = Start-Process -FilePath $uvicorn -ArgumentList @(
 Start-Sleep -Seconds 2
 
 Write-Host "Starting UI on http://127.0.0.1:5173 ..." -ForegroundColor Cyan
-Write-Host "Open that URL in your browser. Close this window to stop the UI;"
-Write-Host "then close the minimized API window if it is still running."
+Write-Host "Open that URL in your browser."
+Write-Host "Close this window to stop the UI."
 Write-Host ""
 
 try {

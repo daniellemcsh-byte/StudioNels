@@ -1,6 +1,6 @@
-# StudioNels — one-time setup for Windows (PowerShell)
-# Run:  Right-click → Run with PowerShell
-#   or:  powershell -ExecutionPolicy Bypass -File scripts\setup-windows.ps1
+# StudioNels - one-time setup for Windows (PowerShell)
+# Run from the project root:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -20,7 +20,7 @@ function Need($cmd, $hint) {
   Write-Host "OK  $cmd" -ForegroundColor Green
 }
 
-Need "python" "Install Python 3.10+ from https://www.python.org/downloads/ — tick 'Add python.exe to PATH'."
+Need "python" "Install Python 3.10+ from https://www.python.org/downloads/ and tick Add python.exe to PATH."
 Need "npm" "Install Node 18+ LTS from https://nodejs.org/"
 
 $py = (Get-Command python).Source
@@ -33,7 +33,6 @@ if (-not (Test-Path $venv)) {
 }
 
 $pip = Join-Path $venv "Scripts\pip.exe"
-$pythonVenv = Join-Path $venv "Scripts\python.exe"
 
 Write-Host "Installing API packages..."
 & $pip install --upgrade pip
@@ -47,6 +46,6 @@ Pop-Location
 Write-Host ""
 Write-Host "Setup done." -ForegroundColor Green
 Write-Host "Next: run  scripts\run-windows.ps1" -ForegroundColor Cyan
-Write-Host "Optional GPU: see docs\AMD_ROCM.md (ROCm / DirectML later)"
+Write-Host "Optional GPU: see docs\AMD_ROCM.md"
 Write-Host ""
 pause
