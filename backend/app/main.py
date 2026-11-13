@@ -67,9 +67,10 @@ from .storage import (
 async def probe_ollama() -> bool:
     settings = load_settings()
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            r = await client.get(f"{settings.ollama_url.rstrip('/')}/api/tags")
-            return r.status_code == 200
+        from .llm_providers import _ollama_get_tags
+
+        base, payload, _ = await _ollama_get_tags(settings)
+        return bool(base and payload is not None)
     except Exception:
         return False
 

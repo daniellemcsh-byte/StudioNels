@@ -10,6 +10,50 @@ from .models import Settings
 
 # Local-first film planner can use free Ollama, built-in offline, or a paid API.
 
+# Never honour HTTP(S)_PROXY for local Ollama — Pinokio/Windows proxies often
+# break 127.0.0.1 and make a running Ollama look "offline".
+_OLLAMA_TIMEOUT = httpx.Timeout(8.0, connect=3.0)
+
+
+def _ollama_client(timeout: httpx.Timeout | float | None = None) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=timeout if timeout is not None else _OLLAMA_TIMEOUT,
+        trust_env=False,
+    )
+
+
+def _ollama_base_candidates(settings: Settings) -> list[str]:
+    raw = (
+        (settings.agent_api_base or "").strip()
+        or (settings.ollama_url or "").strip()
+        or "http://127.0.0.1:11434"
+    )
+    bases = [raw.rstrip("/")]
+    # Common Windows / Pinokio variants
+    for alt in (
+        "http://127.0.0.1:11434",
+        "http://localhost:11434",
+        "http://[::1]:11434",
+    ):
+        if alt.rstrip("/") not in bases:
+            bases.append(alt.rstrip("/"))
+    return bases
+
+
+async def _ollama_get_tags(settings: Settings) -> tuple[str | None, dict[str, Any] | None, str]:
+    """Try candidate bases; return (base, json, error_detail)."""
+    errors: list[str] = []
+    async with _ollama_client() as client:
+        for base in _ollama_base_candidates(settings):
+            try:
+                r = await client.get(f"{base}/api/tags")
+                if r.status_code == 200:
+                    return base, r.json(), ""
+                errors.append(f"{base} → HTTP {r.status_code}")
+            except Exception as exc:
+                errors.append(f"{base} → {exc.__class__.__name__}")
+    return None, None, "; ".join(errors) or "no response"
+
 
 PROVIDERS = [
     {
@@ -122,7 +166,11 @@ async def _ollama_chat(
     settings: Settings, system: str, user: str, max_tokens: int
 ) -> dict[str, Any] | None:
     model = settings.agent_model or settings.ollama_model or "llama3.2:3b"
-    base = settings.agent_api_base or settings.ollama_url or "http://127.0.0.1:11434"
+    base, _, _ = await _ollama_get_tags(settings)
+    if not base:
+        base = (settings.agent_api_base or settings.ollama_url or "http://127.0.0.1:11434").rstrip(
+            "/"
+        )
     payload = {
         "model": model,
         "stream": False,
@@ -134,8 +182,8 @@ async def _ollama_chat(
         "options": {"num_predict": max_tokens},
     }
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            res = await client.post(f"{base.rstrip('/')}/api/chat", json=payload)
+        async with _ollama_client(timeout=90.0) as client:
+            res = await client.post(f"{base}/api/chat", json=payload)
             if res.status_code != 200:
                 return None
             content = res.json().get("message", {}).get("content", "")
@@ -252,56 +300,50 @@ async def probe_agent(settings: Settings) -> dict[str, Any]:
         status["detail"] = "Built-in offline planner ready (no Ollama needed)"
         return status
     if provider == "ollama":
-        base = settings.agent_api_base or settings.ollama_url or "http://127.0.0.1:11434"
-        try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                r = await client.get(f"{base.rstrip('/')}/api/tags")
-                if r.status_code != 200:
-                    status["detail"] = f"Ollama answered HTTP {r.status_code} — is it running?"
-                    return status
-                status["reachable"] = True
-                names = []
-                for m in (r.json().get("models") or []):
-                    name = m.get("name") or m.get("model") or ""
-                    if name:
-                        names.append(name)
-                status["models"] = names
-                # Match model with or without :tag
-                want = (model or "").strip()
-                ready = False
-                if want:
-                    ready = any(
-                        n == want or n.startswith(want + ":") or want.startswith(n.split(":")[0])
-                        for n in names
-                    )
-                    # also exact family match llama3.2 vs llama3.2:3b
-                    if not ready and ":" not in want:
-                        ready = any(n.split(":")[0] == want for n in names)
-                    if not ready:
-                        ready = any(want in n or n in want for n in names)
-                status["model_ready"] = bool(ready) if want else bool(names)
-                if not names:
-                    status["detail"] = (
-                        "Ollama is running, but no models are installed. "
-                        "In a terminal run: ollama pull llama3.2:3b"
-                    )
-                elif want and not status["model_ready"]:
-                    status["detail"] = (
-                        f"Ollama connected · model “{want}” not found. "
-                        f"Installed: {', '.join(names[:8]) or '(none)'}. "
-                        f"Run: ollama pull {want}"
-                    )
-                else:
-                    status["ok"] = True
-                    status["detail"] = (
-                        f"Ollama connected · using {want or names[0]} "
-                        f"({len(names)} model{'s' if len(names) != 1 else ''} installed)"
-                    )
-        except Exception as exc:
+        base, payload, err = await _ollama_get_tags(settings)
+        if not base or payload is None:
             status["detail"] = (
-                "Cannot reach Ollama at "
-                f"{base}. Start the Ollama app, then click Test again. "
-                f"({exc.__class__.__name__})"
+                "Cannot reach Ollama. Open the Ollama app from the Start menu "
+                "(tray icon), then in a browser open http://127.0.0.1:11434/api/tags — "
+                f"you should see JSON with your models. Tried: {err}"
+            )
+            return status
+        status["reachable"] = True
+        status["base"] = base
+        names = []
+        for m in (payload.get("models") or []):
+            name = m.get("name") or m.get("model") or ""
+            if name:
+                names.append(name)
+        status["models"] = names
+        want = (model or "").strip()
+        ready = False
+        if want:
+            ready = any(
+                n == want or n.startswith(want + ":") or want.startswith(n.split(":")[0])
+                for n in names
+            )
+            if not ready and ":" not in want:
+                ready = any(n.split(":")[0] == want for n in names)
+            if not ready:
+                ready = any(want in n or n in want for n in names)
+        status["model_ready"] = bool(ready) if want else bool(names)
+        if not names:
+            status["detail"] = (
+                "Ollama is running, but no models are installed. "
+                "In PowerShell: & \"$env:LOCALAPPDATA\\Programs\\Ollama\\ollama.exe\" pull llama3.2:3b"
+            )
+        elif want and not status["model_ready"]:
+            status["detail"] = (
+                f"Ollama connected at {base} · model “{want}” not found. "
+                f"Installed: {', '.join(names[:8]) or '(none)'}. "
+                f"Pick one of those in Settings."
+            )
+        else:
+            status["ok"] = True
+            status["detail"] = (
+                f"Ollama connected at {base} · using {want or names[0]} "
+                f"({len(names)} model{'s' if len(names) != 1 else ''} installed)"
             )
         return status
     if not status["key_set"]:
