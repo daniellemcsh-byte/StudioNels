@@ -20,22 +20,57 @@ function Need($cmd, $hint) {
   Write-Host "OK  $cmd" -ForegroundColor Green
 }
 
-Need "python" "Install Python 3.10+ from https://www.python.org/downloads/ and tick Add python.exe to PATH."
-Need "npm" "Install Node 18+ LTS from https://nodejs.org/"
+Need "npm" "Install Node 18+ LTS from https://nodejs.org/ then reopen PowerShell."
 
-$py = (Get-Command python).Source
-Write-Host "Using Python: $py"
+# Prefer real Python - reject the Microsoft Store stub
+$pyCmd = Get-Command python -ErrorAction SilentlyContinue
+$py = $null
+if ($pyCmd) { $py = $pyCmd.Source }
 
-$venv = Join-Path $Root "backend\.venv"
-if (-not (Test-Path $venv)) {
-  Write-Host "Creating Python venv..."
-  python -m venv $venv
+if (-not $py -or $py -match "WindowsApps\\python\.exe$") {
+  $py3 = Get-Command py -ErrorAction SilentlyContinue
+  if ($py3) {
+    Write-Host "Using Python launcher: py -3" -ForegroundColor Cyan
+    $createVenv = { param($path) & py -3 -m venv $path }
+    $pyLabel = "py -3"
+  } else {
+    Write-Host "MISSING: real Python" -ForegroundColor Red
+    Write-Host "Windows is using the Store shortcut, not a real install." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "1) Download: https://www.python.org/downloads/"
+    Write-Host "2) Run installer - tick 'Add python.exe to PATH'"
+    Write-Host "3) Settings > Apps > Advanced app settings > App execution aliases"
+    Write-Host "   Turn OFF 'python.exe' and 'python3.exe'"
+    Write-Host "4) Close PowerShell, open a NEW window, run this script again."
+    Write-Host ""
+    pause
+    exit 1
+  }
+} else {
+  Write-Host "Using Python: $py"
+  $createVenv = { param($path) & python -m venv $path }
+  $pyLabel = "python"
 }
 
+$venv = Join-Path $Root "backend\.venv"
+if (Test-Path $venv) {
+  Write-Host "Removing broken/old venv..."
+  Remove-Item -Recurse -Force $venv
+}
+
+Write-Host "Creating Python venv with $pyLabel ..."
+& $createVenv $venv
+
 $pip = Join-Path $venv "Scripts\pip.exe"
+$venvPy = Join-Path $venv "Scripts\python.exe"
+if (-not (Test-Path $pip)) {
+  Write-Host "venv failed - pip.exe missing. Install Python from python.org with PATH ticked." -ForegroundColor Red
+  pause
+  exit 1
+}
 
 Write-Host "Installing API packages..."
-& $pip install --upgrade pip
+& $venvPy -m pip install --upgrade pip
 & $pip install -r (Join-Path $Root "backend\requirements.txt")
 
 Write-Host "Installing UI packages..."
