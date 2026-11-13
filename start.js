@@ -56,7 +56,8 @@ module.exports = {
     {
       method: "notify",
       params: {
-        html: "StudioNels is running — UI <b>http://127.0.0.1:5173</b> · API <b>http://127.0.0.1:8787/api/health</b>",
+        html: "StudioNels is running — click to open inside Pinokio",
+        href: "http://127.0.0.1:5173",
       },
     },
   ],
