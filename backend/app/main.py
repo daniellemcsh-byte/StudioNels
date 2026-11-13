@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
