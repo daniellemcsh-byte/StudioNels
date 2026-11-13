@@ -1,7 +1,7 @@
 const path = require("path")
 
 module.exports = {
-  version: "1.8",
+  version: "1.9",
   title: "StudioNels",
   description:
     "Local AI film studio for AMD — Agent, Film night, Director, upload clips. Wan2GP-style built-in engine (no ComfyUI).",
@@ -9,6 +9,7 @@ module.exports = {
   menu: async (kernel, info) => {
     const installing = info.running("install.js")
     const updating = info.running("update.js")
+    const installingTorch = info.running("torch.js")
     const running = info.running("start.js")
     const installed = info.exists("backend/.venv") || info.exists("frontend/node_modules")
 
@@ -19,6 +20,17 @@ module.exports = {
           icon: "fa-solid fa-plug",
           text: "Installing",
           href: "install.js",
+        },
+      ]
+    }
+
+    if (installingTorch) {
+      return [
+        {
+          default: true,
+          icon: "fa-solid fa-microchip",
+          text: "Installing AMD engine…",
+          href: "torch.js",
         },
       ]
     }
@@ -37,7 +49,6 @@ module.exports = {
     if (running) {
       const local = kernel.memory.local[path.resolve(__dirname, "start.js")]
       if (local && local.url) {
-        // default:true + http href (no popout) → Pinokio shows the UI inside the app page
         return [
           {
             default: true,
@@ -58,7 +69,6 @@ module.exports = {
           },
         ]
       }
-      // Still booting — keep Terminal until local.url is set
       return [
         {
           default: true,
@@ -78,6 +88,11 @@ module.exports = {
           href: "start.js",
         },
         {
+          icon: "fa-solid fa-microchip",
+          text: "Install AMD engine",
+          href: "torch.js",
+        },
+        {
           icon: "fa-solid fa-rotate",
           text: "Update",
           href: "update.js",
@@ -89,8 +104,8 @@ module.exports = {
         },
         {
           icon: "fa-solid fa-book",
-          text: "Docs",
-          href: "docs/FOLDERS.md",
+          text: "Docs (AMD ROCm)",
+          href: "docs/AMD_ROCM.md",
         },
       ]
     }

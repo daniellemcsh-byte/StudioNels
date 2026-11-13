@@ -1,19 +1,16 @@
+// Install Diffusers extras + (on Windows) AMD ROCm PyTorch wheels for Radeon.
 module.exports = {
   run: [
     {
       method: "shell.run",
       params: {
-        path: "backend",
-        venv: ".venv",
-        message: [
-          "python -m pip install -r requirements-engine.txt",
-        ],
+        message: ["node scripts/install-amd-torch.js"],
       },
     },
     {
       method: "notify",
       params: {
-        html: "Engine extras installed. On Windows+AMD, real ROCm gens may still be limited — preview + Director upload still work.",
+        html: "AMD engine install finished. Stop → Start StudioNels, set preset <b>amd-r9700</b>, then Generate again.",
       },
     },
   ],
