@@ -1,75 +1,58 @@
 # Framewright
 
-A fully local AI film studio for AMD Radeon GPUs. Describe an idea, keep character and scene profiles, let a local agent break the story into editable shots, generate on-device, then refine in Sampling and Director mode.
+A fully local AI film studio for AMD Radeon GPUs — **your own app**, Wan2GP-style.
 
-Designed to stay usable on modest VRAM (8–12 GB+) while taking advantage of cards like the Radeon AI PRO R9700 32 GB when available.
+Describe an idea, keep character/scene profiles, plan editable shots, then generate with a **built-in engine** (no ComfyUI):
 
-## What you get
+| Mode | Meaning |
+|------|---------|
+| **t2i** | Text → Image |
+| **t2v** | Text → Video |
+| **i2v** | Image → Video |
+| **ref2i** | Reference → Image |
+| **ref2v** | Reference → Video |
 
-- **Agent** — tell your idea in plain language; get a shot list you can edit
-- **Profiles** — character + scene cards the planner reuses
-- **Shots** — every beat is editable before / after generation
-- **Storyboard** — visual planning board
-- **Characters** — generate or import look references for people and places
-- **Sampling** — pick takes after generation
-- **Director** — pin clips on a timeline and edit as you go
-- **Save** — projects persist on disk so you can power off and continue
-
-Nothing leaves your machine. No cloud accounts required.
+Plus Agent, Profiles, Shots, Storyboard, Sampling, Director, and Save-to-disk.
 
 ## Quick start
 
-### 1. Backend
-
 ```bash
+# API
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8787
-```
 
-### 2. Frontend
-
-```bash
+# UI
 cd frontend
 npm install
 npm run dev
 ```
 
-Open http://localhost:5173
+Open http://localhost:5173 → **Generate** tab.
 
-### 3. Optional local AI services
+### Real GPU generation (AMD)
 
-| Service | Role | Suggested install |
-|--------|------|-------------------|
-| [Ollama](https://ollama.com) | Planning agent | `ollama pull llama3.2:3b` (low RAM) or `llama3.1:8b` |
-| [ComfyUI](https://github.com/comfyanonymous/ComfyUI) + ROCm | Image / video gen on AMD | See `docs/AMD_ROCM.md` |
+1. Install **ROCm PyTorch** for your Radeon  
+2. `pip install -r backend/requirements-engine.txt`  
+3. Pick a model in Generate (Wan 1.3B / SDXL Turbo / …)
 
-Without Ollama / ComfyUI the app still runs: the agent uses a built-in planner, and generation creates local preview placeholders so you can learn the studio flow.
+Until then the built-in **preview engine** still runs every mode so you can learn the studio.
 
-## Hardware profiles
+See `docs/AMD_ROCM.md` and `docs/MODELS.md`.
 
-Pick a preset in **Settings → Compute**, or copy from `presets/`:
+## Presets
 
-| Preset | VRAM target | Notes |
-|--------|-------------|--------|
-| `amd-r9700.json` | ~20–28 GB | Your 32 GB R9700 Pro — higher quality, longer clips |
-| `amd-low-vram.json` | ~6–10 GB | Default for sharing with others |
-| `cpu-fallback.json` | 0 GB GPU | Planning + UI only; slow image drafts |
+| Preset | Target |
+|--------|--------|
+| `amd-low-vram` | ~8GB — default, shareable |
+| `amd-r9700` | your 32GB R9700 Pro |
+| `cpu-fallback` | preview / UI only |
 
-Framewright defaults to the **low-VRAM** path so more people can use it. On the R9700 you can switch to the high preset anytime.
+## Data
 
-## Project data
-
-Saved under `~/.framewright/projects/` (JSON + media). Hit **Save** or rely on autosave.
-
-## Docs
-
-- `docs/AMD_ROCM.md` — ROCm, PyTorch, ComfyUI on Radeon
-- `docs/MODELS.md` — recommended local models by VRAM
-- `docs/WORKFLOW.md` — Agent → Profiles → Shots → Generate → Sampling → Director
+`~/.framewright/projects/`, `media/`, `models/`, `jobs.json`
 
 ## License
 
-MIT — run it, fork it, ship it for your crew.
+MIT

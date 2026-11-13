@@ -127,9 +127,31 @@ class Settings(BaseModel):
     preset_id: str = "amd-low-vram"
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "llama3.2:3b"
-    comfyui_url: str = "http://127.0.0.1:8188"
     auto_save: bool = True
     friendly_mode: bool = True
+    default_gen_mode: str = "t2v"
+    cpu_offload: bool = True
+
+
+class EngineGenerateRequest(BaseModel):
+    mode: Literal["t2i", "t2v", "i2v", "ref2i", "ref2v"]
+    prompt: str = ""
+    negative_prompt: str = ""
+    model_id: str | None = None
+    width: int | None = None
+    height: int | None = None
+    steps: int | None = None
+    guidance: float | None = None
+    frames: int | None = None
+    fps: int | None = None
+    seed: int | None = None
+    strength: float | None = None
+    cpu_offload: bool | None = None
+    image_path: str | None = None
+    reference_path: str | None = None
+    project_id: str | None = None
+    shot_id: str | None = None
+    force_preview: bool = False
 
 
 class CreateProjectRequest(BaseModel):
@@ -163,11 +185,15 @@ class UpdateShotRequest(BaseModel):
 class GenerateRequest(BaseModel):
     shot_ids: list[str] | None = None
     kind: Literal["video", "character_still", "scene_still"] = "video"
+    mode: Literal["t2i", "t2v", "i2v", "ref2i", "ref2v"] | None = None
 
 
 class HealthResponse(BaseModel):
     ok: bool
     ollama: bool
-    comfyui: bool
+    engine: str
+    torch: bool
+    gpu: bool
+    device_name: str
     preset_id: str
     data_dir: str

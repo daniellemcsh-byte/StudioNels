@@ -1,5 +1,7 @@
 import type {
   CharacterProfile,
+  EngineJob,
+  EngineStatus,
   Health,
   Preset,
   Project,
@@ -76,10 +78,10 @@ export const api = {
     }),
   deleteShot: (id: string, shotId: string) =>
     req<Project>(`/api/projects/${id}/shots/${shotId}`, { method: 'DELETE' }),
-  generate: (id: string, shot_ids?: string[], kind = 'video') =>
+  generate: (id: string, shot_ids?: string[], kind = 'video', mode?: string) =>
     req<Project>(`/api/projects/${id}/generate`, {
       method: 'POST',
-      body: JSON.stringify({ shot_ids, kind }),
+      body: JSON.stringify({ shot_ids, kind, mode }),
     }),
   pinTake: (id: string, takeId: string) =>
     req<Project>(`/api/projects/${id}/takes/${takeId}/pin`, {
@@ -91,6 +93,18 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(clips),
     }),
+  engine: () => req<EngineStatus>('/api/engine'),
+  engineJobs: () => req<EngineJob[]>('/api/engine/jobs'),
+  engineJob: (id: string) => req<EngineJob>(`/api/engine/jobs/${id}`),
+  engineGenerate: (body: Record<string, unknown>) =>
+    req<EngineJob>('/api/engine/generate', { method: 'POST', body: JSON.stringify(body) }),
+  engineUpload: async (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch('/api/engine/upload', { method: 'POST', body: fd })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json() as Promise<{ path: string; url: string }>
+  },
 }
 
 export function mediaUrl(path?: string | null): string | undefined {

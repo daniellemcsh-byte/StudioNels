@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+import json
+import threading
+from pathlib import Path
+from typing import Any
+
+from ..paths import DATA_DIR, ensure_dirs
+
+_LOCK = threading.Lock()
+_JOBS_PATH = DATA_DIR / "jobs.json"
+
+
+def _load() -> list[dict[str, Any]]:
+    ensure_dirs()
+    if not _JOBS_PATH.exists():
+        return []
+    try:
+        return json.loads(_JOBS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _save(jobs: list[dict[str, Any]]) -> None:
+    ensure_dirs()
+    tmp = _JOBS_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+    tmp.replace(_JOBS_PATH)
+
+
+def list_jobs(limit: int = 50) -> list[dict[str, Any]]:
+    with _LOCK:
+        jobs = _load()
+        return list(reversed(jobs[-limit:]))
+
+
+def get_job(job_id: str) -> dict[str, Any] | None:
+    with _LOCK:
+        for job in _load():
+            if job.get("id") == job_id:
+                return job
+    return None
+
+
+def upsert_job(job: dict[str, Any]) -> dict[str, Any]:
+    with _LOCK:
+        jobs = _load()
+        for i, existing in enumerate(jobs):
+            if existing.get("id") == job["id"]:
+                jobs[i] = job
+                _save(jobs)
+                return job
+        jobs.append(job)
+        _save(jobs)
+        return job
+
+
+def models_dir() -> Path:
+    path = DATA_DIR / "models"
+    path.mkdir(parents=True, exist_ok=True)
+    return path

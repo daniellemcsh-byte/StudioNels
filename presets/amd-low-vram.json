@@ -9,18 +9,20 @@
     "max_tokens": 1200
   },
   "generation": {
-    "backend": "comfyui",
-    "comfyui_url": "http://127.0.0.1:8188",
+    "backend": "builtin",
     "max_concurrent_jobs": 1,
     "default_width": 768,
     "default_height": 432,
     "default_frames": 49,
     "fps": 16,
-    "video_model": "ltx-video",
-    "image_model": "sdxl-turbo",
+    "default_t2v": "wan21-t2v-1.3b",
+    "default_t2i": "sdxl-turbo",
+    "default_i2v": "ltx-video-0.9.7",
+    "default_ref2i": "sdxl-turbo",
+    "default_ref2v": "ltx-video-0.9.7",
     "cpu_offload": true,
     "attention_slicing": true,
     "sequential": true
   },
-  "notes": "Default for most users. Short 480p-ish clips, one job at a time."
+  "notes": "Built-in engine (no ComfyUI). Short clips, one job at a time."
 }

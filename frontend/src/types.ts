@@ -6,9 +6,65 @@ export type TabId =
   | 'shots'
   | 'storyboard'
   | 'characters'
+  | 'generate'
   | 'sampling'
   | 'director'
   | 'settings'
+
+export type GenMode = 't2i' | 't2v' | 'i2v' | 'ref2i' | 'ref2v'
+
+export interface EngineMode {
+  id: GenMode
+  label: string
+  needs_image: boolean
+  needs_reference: boolean
+  output: string
+  blurb: string
+}
+
+export interface EngineModel {
+  id: string
+  label: string
+  modes: GenMode[]
+  hf_id: string
+  min_vram_gb: number
+  kind: string
+  notes?: string
+}
+
+export interface EngineJob {
+  id: string
+  status: string
+  progress: number
+  message: string
+  mode: GenMode
+  model_id: string
+  model_label: string
+  prompt: string
+  media_path?: string | null
+  thumb_path?: string | null
+  preview?: boolean
+  error?: string | null
+  created_at: string
+}
+
+export interface EngineStatus {
+  backend: string
+  device: {
+    torch_available: boolean
+    ready_for_inference: boolean
+    device_name: string
+    vram_gb: number | null
+    rocm: boolean
+    backend: string
+    notes: string[]
+  }
+  modes: EngineMode[]
+  models: EngineModel[]
+  queue_length: number
+  preset_id: string
+  models_path: string
+}
 
 export interface CharacterProfile {
   id: string
@@ -109,15 +165,19 @@ export interface Settings {
   preset_id: string
   ollama_url: string
   ollama_model: string
-  comfyui_url: string
   auto_save: boolean
   friendly_mode: boolean
+  default_gen_mode: string
+  cpu_offload: boolean
 }
 
 export interface Health {
   ok: boolean
   ollama: boolean
-  comfyui: boolean
+  engine: string
+  torch: boolean
+  gpu: boolean
+  device_name: string
   preset_id: string
   data_dir: string
 }

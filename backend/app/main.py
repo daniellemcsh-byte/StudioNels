@@ -2,18 +2,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent import plan_project
-from .generate import generate_takes, probe_comfyui, probe_ollama
+from .engine.device import detect_device
+from .engine.runner import engine_status_public, enqueue_job, get_job, list_jobs
+from .generate import generate_takes
 from .models import (
     AgentMessage,
     CharacterProfile,
     CreateProjectRequest,
     AgentPlanRequest,
+    EngineGenerateRequest,
     GenerateRequest,
     HealthResponse,
     Project,
@@ -35,6 +39,16 @@ from .storage import (
     save_settings,
 )
 
+
+async def probe_ollama() -> bool:
+    settings = load_settings()
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"{settings.ollama_url.rstrip('/')}/api/tags")
+            return r.status_code == 200
+    except Exception:
+        return False
+
 app = FastAPI(title="Framewright", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -51,13 +65,54 @@ app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     settings = load_settings()
+    device = detect_device()
     return HealthResponse(
         ok=True,
         ollama=await probe_ollama(),
-        comfyui=await probe_comfyui(),
+        engine="builtin",
+        torch=bool(device.get("torch_available")),
+        gpu=bool(device.get("ready_for_inference")),
+        device_name=str(device.get("device_name") or "CPU"),
         preset_id=settings.preset_id,
         data_dir=str(DATA_DIR),
     )
+
+
+@app.get("/api/engine")
+async def engine():
+    return engine_status_public()
+
+
+@app.get("/api/engine/jobs")
+async def engine_jobs(limit: int = 40):
+    return list_jobs(limit)
+
+
+@app.get("/api/engine/jobs/{job_id}")
+async def engine_job(job_id: str):
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return job
+
+
+@app.post("/api/engine/generate")
+async def engine_generate(body: EngineGenerateRequest):
+    try:
+        return enqueue_job(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/engine/upload")
+async def engine_upload(file: UploadFile = File(...), kind: str = "image"):
+    ensure_dirs()
+    suffix = Path(file.filename or "upload.png").suffix or ".png"
+    dest = MEDIA_DIR / "uploads" / f"{new_id(kind)}{suffix}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    data = await file.read()
+    dest.write_bytes(data)
+    return {"path": str(dest), "url": f"/media/uploads/{dest.name}"}
 
 
 @app.get("/api/presets")
@@ -224,7 +279,7 @@ async def delete_shot(project_id: str, shot_id: str):
 @app.post("/api/projects/{project_id}/generate", response_model=Project)
 async def generate(project_id: str, body: GenerateRequest):
     project = load_project(project_id)
-    return await generate_takes(project, body.shot_ids, body.kind)
+    return await generate_takes(project, body.shot_ids, body.kind, body.mode)
 
 
 @app.post("/api/projects/{project_id}/takes/{take_id}/pin", response_model=Project)

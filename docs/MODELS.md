@@ -1,29 +1,22 @@
-# Local models by VRAM
+# Built-in models (in-app)
 
-## Planning agent (Ollama)
+Framewright does **not** use ComfyUI graphs. Models load via Diffusers inside the process.
 
-| VRAM / RAM | Model | Why |
-|------------|-------|-----|
-| Shared / low | `llama3.2:3b` | Fast, small, good enough for shot lists |
-| 16 GB+ system RAM | `llama3.1:8b` | Stronger structure & dialogue |
-| Plenty of headroom | `qwen2.5:14b` | Better directing notes |
+## By mode
 
-## Image / character stills
+| Mode | Low VRAM start | More VRAM |
+|------|----------------|-----------|
+| t2i | SDXL Turbo | FLUX Schnell |
+| t2v | Wan 2.1 T2V 1.3B | longer frames / larger Wan |
+| i2v | LTX-Video | Wan 2.1 I2V 14B |
+| ref2i | SDXL Turbo (+ ref image) | FLUX when supported |
+| ref2v | LTX / Wan I2V with reference | Wan I2V 14B |
 
-| VRAM | Model family |
-|------|----------------|
-| 6–10 GB | SDXL Turbo / Lightning, or Flux-schnell GGUF / NF4 if supported |
-| 16 GB+ | SDXL full, Flux-dev quantized |
-| 24–32 GB | Higher-res Flux / SD3-class |
+## Agent (planning only)
 
-## Video
+| RAM | Ollama model |
+|-----|----------------|
+| Low | `llama3.2:3b` |
+| Comfortable | `llama3.1:8b` |
 
-| VRAM | Start here |
-|------|------------|
-| 8–12 GB | LTX-Video short clips, 480p |
-| 16–24 GB | Wan 1.3B / LTX longer |
-| 32 GB (R9700) | Wan larger / longer clips, better consistency |
-
-Always draft short. Promote winners in **Sampling**, then assemble in **Director**.
-
-Hugging Face / GitHub weights are for **your** local runtimes (ComfyUI, Diffusers). Framewright orchestrates them; it does not redistribute model weights.
+Weights come from Hugging Face into the local cache / `~/.framewright/models`. You run them; Framewright does not redistribute checkpoints.

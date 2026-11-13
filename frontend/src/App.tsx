@@ -3,6 +3,9 @@ import type { FormEvent } from 'react'
 import { api, mediaUrl } from './api'
 import type {
   CharacterProfile,
+  EngineJob,
+  EngineStatus,
+  GenMode,
   Health,
   Mode,
   Preset,
@@ -22,6 +25,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'shots', label: 'Shots' },
   { id: 'storyboard', label: 'Storyboard' },
   { id: 'characters', label: 'Characters' },
+  { id: 'generate', label: 'Generate' },
   { id: 'sampling', label: 'Sampling' },
   { id: 'director', label: 'Director' },
   { id: 'settings', label: 'Settings' },
@@ -164,9 +168,9 @@ export default function App() {
       setProject(p)
       setTab('sampling')
       notify(
-        health?.comfyui
-          ? 'Generation queued / previews ready.'
-          : 'Local preview takes created. Connect ComfyUI + ROCm for real video.',
+        health?.gpu
+          ? 'Queued on the built-in engine — check Generate for progress.'
+          : 'Queued on built-in preview engine. Install ROCm PyTorch + models for real gen.',
       )
     } catch (err) {
       notify(String((err as Error).message || err))
@@ -198,8 +202,8 @@ export default function App() {
             <span className={`pill ${health?.ollama ? 'on' : 'off'}`}>
               Agent {health?.ollama ? 'Ollama live' : 'built-in planner'}
             </span>
-            <span className={`pill ${health?.comfyui ? 'on' : 'off'}`}>
-              Gen {health?.comfyui ? 'ComfyUI live' : 'preview mode'}
+            <span className={`pill ${health?.gpu ? 'on' : 'off'}`}>
+              Engine {health?.gpu ? health.device_name : 'preview (no GPU torch)'}
             </span>
             <span className="pill">
               Preset {settings?.preset_id || 'amd-low-vram'}
@@ -372,6 +376,9 @@ export default function App() {
             notify={notify}
             setBusy={setBusy}
           />
+        )}
+        {tab === 'generate' && (
+          <GenerateTab project={project} setProject={setProject} notify={notify} health={health} />
         )}
         {tab === 'sampling' && (
           <SamplingTab
@@ -873,8 +880,8 @@ function CharactersTab({
   return (
     <div>
       <p className="hint">
-        Need a face or place look? Generate local reference stills from your profiles. With ComfyUI
-        + ROCm these become real model outputs; otherwise you get studio placeholders.
+        Need a face or place look? Queue T2I jobs on the built-in engine from your profiles. Real
+        stills need ROCm PyTorch + a downloaded image model; otherwise you get preview frames.
       </p>
       <div className="inline-actions" style={{ marginBottom: 16 }}>
         <button className="btn acid" type="button" disabled={busy} onClick={() => onGenerateRefs('character_still')}>
@@ -921,6 +928,220 @@ function CharactersTab({
               </div>
             ))}
             {project.scenes.length === 0 && <div className="empty">Add scenes in Profiles first.</div>}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function GenerateTab({
+  project,
+  setProject,
+  notify,
+  health,
+}: {
+  project: Project
+  setProject: (p: Project) => void
+  notify: (m: string) => void
+  health: Health | null
+}) {
+  const [engine, setEngine] = useState<EngineStatus | null>(null)
+  const [jobs, setJobs] = useState<EngineJob[]>([])
+  const [mode, setMode] = useState<GenMode>('t2v')
+  const [modelId, setModelId] = useState('')
+  const [prompt, setPrompt] = useState('')
+  const [negative, setNegative] = useState('')
+  const [shotId, setShotId] = useState('')
+  const [imagePath, setImagePath] = useState<string | null>(null)
+  const [refPath, setRefPath] = useState<string | null>(null)
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
+  const [refUrl, setRefUrl] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const refresh = async () => {
+    const [e, j] = await Promise.all([api.engine(), api.engineJobs()])
+    setEngine(e)
+    setJobs(j)
+    if (!modelId) {
+      const models = e.models.filter((m) => m.modes.includes(mode))
+      if (models[0]) setModelId(models[0].id)
+    }
+  }
+
+  useEffect(() => {
+    refresh().catch((err) => notify(String(err.message || err)))
+    const t = window.setInterval(() => {
+      api.engineJobs().then(setJobs).catch(() => undefined)
+    }, 2000)
+    return () => window.clearInterval(t)
+  }, [])
+
+  useEffect(() => {
+    if (!engine) return
+    const models = engine.models.filter((m) => m.modes.includes(mode))
+    if (!models.find((m) => m.id === modelId)) {
+      setModelId(models[0]?.id || '')
+    }
+  }, [mode, engine])
+
+  const modeMeta = engine?.modes.find((m) => m.id === mode)
+  const models = engine?.models.filter((m) => m.modes.includes(mode)) || []
+
+  const upload = async (file: File, kind: 'image' | 'reference') => {
+    const res = await api.engineUpload(file)
+    if (kind === 'image') {
+      setImagePath(res.path)
+      setImageUrl(res.url)
+    } else {
+      setRefPath(res.path)
+      setRefUrl(res.url)
+    }
+  }
+
+  const run = async () => {
+    if (!prompt.trim() && mode.startsWith('t')) {
+      notify('Add a prompt first.')
+      return
+    }
+    setBusy(true)
+    try {
+      const job = await api.engineGenerate({
+        mode,
+        model_id: modelId || undefined,
+        prompt,
+        negative_prompt: negative,
+        image_path: imagePath,
+        reference_path: refPath,
+        project_id: project.id,
+        shot_id: shotId || undefined,
+        cpu_offload: true,
+      })
+      notify(`Queued ${job.mode.toUpperCase()} · ${job.model_label}`)
+      await refresh()
+      if (shotId) {
+        const p = await api.getProject(project.id)
+        setProject(p)
+      }
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div>
+      <p className="hint">
+        Built-in generator (Wan2GP-style) — pick a mode, model, and run inside Framewright. No ComfyUI.
+        {health?.gpu
+          ? ` GPU: ${health.device_name}.`
+          : ' Running preview until ROCm PyTorch + weights are installed.'}
+      </p>
+
+      <div className="gen-layout">
+        <div className="panel gen-panel">
+          <h3>Mode</h3>
+          <div className="mode-grid">
+            {(engine?.modes || []).map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                className={`mode-chip ${mode === m.id ? 'active' : ''}`}
+                onClick={() => setMode(m.id)}
+              >
+                <strong>{m.label}</strong>
+                <span>{m.blurb}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="field" style={{ marginTop: 14 }}>
+            <label>Model</label>
+            <select value={modelId} onChange={(e) => setModelId(e.target.value)}>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label} (≥{m.min_vram_gb} GB)
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field">
+            <label>Prompt</label>
+            <textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Describe the image or shot…" />
+          </div>
+          <div className="field">
+            <label>Negative (optional)</label>
+            <input value={negative} onChange={(e) => setNegative(e.target.value)} />
+          </div>
+
+          {modeMeta?.needs_image && (
+            <div className="field">
+              <label>Input image (I2V)</label>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'image')}
+              />
+              {imageUrl && <img className="upload-preview" src={imageUrl} alt="input" />}
+            </div>
+          )}
+          {modeMeta?.needs_reference && (
+            <div className="field">
+              <label>Reference image</label>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'reference')}
+              />
+              {refUrl && <img className="upload-preview" src={refUrl} alt="reference" />}
+            </div>
+          )}
+
+          <div className="field">
+            <label>Attach to shot (optional)</label>
+            <select value={shotId} onChange={(e) => setShotId(e.target.value)}>
+              <option value="">— standalone —</option>
+              {project.shots.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.index + 1}. {s.title}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <button className="btn acid" type="button" disabled={busy} onClick={run}>
+            Generate {mode.toUpperCase()}
+          </button>
+        </div>
+
+        <div className="panel">
+          <h3>Queue</h3>
+          <div className="muted tiny" style={{ marginBottom: 10 }}>
+            Models folder: {engine?.models_path || '…'} · backend {engine?.backend}
+          </div>
+          <div className="job-list">
+            {jobs.length === 0 && <div className="empty">No jobs yet.</div>}
+            {jobs.map((job) => (
+              <div className="job-item" key={job.id}>
+                <header>
+                  <strong>
+                    {job.mode.toUpperCase()} · {job.model_label}
+                  </strong>
+                  <span className={`badge ${job.status}`}>{job.status}</span>
+                </header>
+                <div className="muted">{job.prompt || '(no prompt)'}</div>
+                <div className="progress">
+                  <div style={{ width: `${Math.round((job.progress || 0) * 100)}%` }} />
+                </div>
+                <div className="muted tiny">{job.message}</div>
+                {job.thumb_path && mediaUrl(job.thumb_path) && (
+                  <img src={mediaUrl(job.thumb_path)} alt="" className="job-thumb" />
+                )}
+                {job.preview && <div className="muted tiny">Preview output — not full model weights.</div>}
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -1168,8 +1389,8 @@ function SettingsTab({
   return (
     <div>
       <p className="hint">
-        Default is <strong>AMD Low VRAM</strong> so friends with smaller cards can use Framewright.
-        On your R9700 32GB, switch to the R9700 preset when you want longer / sharper clips.
+        Default is AMD Low VRAM so friends with smaller cards can use Framewright. On your R9700
+        32GB, switch to the R9700 preset. Generation is built-in (Diffusers / Wan) — not ComfyUI.
       </p>
       <div className="settings-grid panel">
         <div className="field">
@@ -1200,16 +1421,30 @@ function SettingsTab({
           />
         </div>
         <div className="field">
-          <label>ComfyUI URL (ROCm)</label>
-          <input
-            value={draft.comfyui_url}
-            onChange={(e) => setDraft({ ...draft, comfyui_url: e.target.value })}
-          />
+          <label>Default generate mode</label>
+          <select
+            value={draft.default_gen_mode}
+            onChange={(e) => setDraft({ ...draft, default_gen_mode: e.target.value })}
+          >
+            {['t2i', 't2v', 'i2v', 'ref2i', 'ref2v'].map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
         </div>
+        <label className="muted">
+          <input
+            type="checkbox"
+            checked={draft.cpu_offload}
+            onChange={(e) => setDraft({ ...draft, cpu_offload: e.target.checked })}
+          />{' '}
+          CPU offload (saves VRAM)
+        </label>
         <div className="muted">
-          Status now — Ollama: {health?.ollama ? 'connected' : 'offline (built-in planner)'} ·
-          ComfyUI: {health?.comfyui ? 'connected' : 'offline (preview media)'} · Data:{' '}
-          {health?.data_dir}
+          Engine: built-in · Torch: {health?.torch ? 'yes' : 'no'} · GPU:{' '}
+          {health?.gpu ? health.device_name : 'not ready'} · Ollama:{' '}
+          {health?.ollama ? 'connected' : 'offline'} · Data: {health?.data_dir}
         </div>
         <button className="btn acid" type="button" onClick={save}>
           Save settings

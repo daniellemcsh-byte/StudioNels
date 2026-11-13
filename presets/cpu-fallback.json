@@ -1,6 +1,6 @@
 {
   "id": "cpu-fallback",
-  "label": "CPU / UI only",
+  "label": "CPU / preview engine",
   "target_vram_gb": 0,
   "agent": {
     "provider": "builtin",
@@ -9,18 +9,20 @@
     "max_tokens": 800
   },
   "generation": {
-    "backend": "placeholder",
-    "comfyui_url": null,
+    "backend": "builtin",
     "max_concurrent_jobs": 1,
     "default_width": 640,
     "default_height": 360,
-    "default_frames": 24,
+    "default_frames": 16,
     "fps": 12,
-    "video_model": "none",
-    "image_model": "none",
+    "default_t2v": "wan21-t2v-1.3b",
+    "default_t2i": "sdxl-turbo",
+    "default_i2v": "ltx-video-0.9.7",
+    "default_ref2i": "sdxl-turbo",
+    "default_ref2v": "ltx-video-0.9.7",
     "cpu_offload": true,
     "attention_slicing": true,
     "sequential": true
   },
-  "notes": "Learn the studio without GPU services. Placeholders for media."
+  "notes": "UI + preview frames only until ROCm PyTorch is installed."
 }
