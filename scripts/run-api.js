@@ -1,23 +1,15 @@
 /**
  * Start StudioNels FastAPI with the local venv python (Windows + Unix).
- * Avoids Pinokio conda "python" shadowing the venv.
+ * Avoids Pinokio conda "python" shadowing the venv / breaking ROCm DLLs.
  */
 const { spawn } = require("child_process")
-const fs = require("fs")
 const path = require("path")
+const { assertVenv, cleanEnv } = require("./venv-env")
 
 const root = path.join(__dirname, "..")
 const backend = path.join(root, "backend")
-const py =
-  process.platform === "win32"
-    ? path.join(backend, ".venv", "Scripts", "python.exe")
-    : path.join(backend, ".venv", "bin", "python")
-
-if (!fs.existsSync(py)) {
-  console.error("Missing venv python at", py)
-  console.error("In Pinokio: run Install again for StudioNels.")
-  process.exit(1)
-}
+const py = assertVenv(root)
+const env = cleanEnv(py)
 
 console.log("Using", py)
 const child = spawn(
@@ -38,7 +30,7 @@ const child = spawn(
   {
     cwd: backend,
     stdio: "inherit",
-    env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    env,
     windowsHide: true,
   },
 )
