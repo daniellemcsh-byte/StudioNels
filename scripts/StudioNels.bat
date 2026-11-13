@@ -3,35 +3,40 @@ setlocal EnableExtensions
 title StudioNels
 cd /d "%~dp0.."
 
+REM Put common Node locations on PATH for this window (desktop shortcuts often miss them)
+set "PATH=%ProgramFiles%\nodejs;%ProgramFiles(x86)%\nodejs;%LOCALAPPDATA%\Programs\node;%APPDATA%\npm;%PATH%"
+
 if not exist "backend\.venv\Scripts\uvicorn.exe" (
   echo StudioNels is not set up yet.
-  echo.
-  echo 1^) Install Python 3.12 from python.org ^(Add to PATH^)
-  echo 2^) Install Node LTS from https://nodejs.org/
-  echo 3^) Open PowerShell here and run:
-  echo    powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
-  echo.
+  echo Run setup first, then try again.
   pause
   exit /b 1
 )
 
-REM Find npm (desktop shortcuts often miss PATH)
 set "NPM="
-where npm.cmd >nul 2>&1 && set "NPM=npm.cmd"
+where npm.cmd >nul 2>&1 && for /f "delims=" %%I in ('where npm.cmd') do if not defined NPM set "NPM=%%I"
 if not defined NPM if exist "%ProgramFiles%\nodejs\npm.cmd" set "NPM=%ProgramFiles%\nodejs\npm.cmd"
 if not defined NPM if exist "%ProgramFiles(x86)%\nodejs\npm.cmd" set "NPM=%ProgramFiles(x86)%\nodejs\npm.cmd"
 if not defined NPM if exist "%LOCALAPPDATA%\Programs\node\npm.cmd" set "NPM=%LOCALAPPDATA%\Programs\node\npm.cmd"
+if not defined NPM if exist "%LOCALAPPDATA%\Programs\nodejs\npm.cmd" set "NPM=%LOCALAPPDATA%\Programs\nodejs\npm.cmd"
+
 if not defined NPM (
-  echo Node.js / npm was not found.
-  echo Install Node LTS from https://nodejs.org/
-  echo Then close this window and try again.
+  echo Node.js / npm was not found in this window.
   echo.
+  echo In PowerShell run:
+  echo   where.exe npm
+  echo   where.exe node
+  echo Then paste those paths if you need help.
+  echo.
+  echo Or reinstall Node LTS from https://nodejs.org/ and reboot once.
   pause
   exit /b 1
 )
 
-if not exist "frontend\node_modules\" (
-  echo Installing UI packages ^(first run^)...
+echo Using npm: %NPM%
+
+if not exist "frontend\node_modules\vite\" (
+  echo Installing UI packages...
   pushd frontend
   call "%NPM%" install
   if errorlevel 1 (
@@ -49,8 +54,8 @@ start "StudioNels API" /min "backend\.venv\Scripts\uvicorn.exe" app.main:app --a
 timeout /t 2 /nobreak >nul
 
 echo Starting StudioNels UI...
-echo Browser will open at http://127.0.0.1:5173
-echo Close this window to stop the UI. Then close the minimized API window if needed.
+echo Browser: http://127.0.0.1:5173
+echo Keep this window open while using StudioNels.
 echo.
 
 start "" "http://127.0.0.1:5173"
