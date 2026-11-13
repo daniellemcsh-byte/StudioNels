@@ -1,19 +1,14 @@
 module.exports = {
   run: [
+    // venv is relative to `path` — use ".venv" inside backend (NOT "backend/.venv")
     {
       method: "shell.run",
       params: {
-        message: "python -m venv backend/.venv",
-      },
-    },
-    {
-      method: "shell.run",
-      params: {
-        venv: "backend/.venv",
         path: "backend",
+        venv: ".venv",
         message: [
           "python -m pip install --upgrade pip",
-          "pip install -r requirements.txt",
+          "python -m pip install -r requirements.txt",
         ],
       },
     },

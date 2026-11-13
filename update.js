@@ -9,9 +9,9 @@ module.exports = {
     {
       method: "shell.run",
       params: {
-        venv: "backend/.venv",
         path: "backend",
-        message: ["pip install -r requirements.txt"],
+        venv: ".venv",
+        message: ["python -m pip install -r requirements.txt"],
       },
     },
     {
@@ -24,7 +24,7 @@ module.exports = {
     {
       method: "notify",
       params: {
-        html: "StudioNels updated.",
+        html: "StudioNels updated. Click <b>Start</b> again if it was running.",
       },
     },
   ],

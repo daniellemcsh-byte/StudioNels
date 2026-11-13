@@ -3,10 +3,10 @@ module.exports = {
     {
       method: "shell.run",
       params: {
-        venv: "backend/.venv",
         path: "backend",
+        venv: ".venv",
         message: [
-          "pip install -r requirements-engine.txt",
+          "python -m pip install -r requirements-engine.txt",
         ],
       },
     },

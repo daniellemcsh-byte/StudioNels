@@ -4,13 +4,10 @@ module.exports = {
     {
       method: "shell.run",
       params: {
-        venv: "backend/.venv",
         path: "backend",
-        env: {
-          // Keep API on the Pinokio-local port StudioNels expects
-        },
+        venv: ".venv",
         message: [
-          "uvicorn app.main:app --app-dir . --host 127.0.0.1 --port 8787",
+          "python -m uvicorn app.main:app --app-dir . --host 127.0.0.1 --port 8787",
         ],
         on: [
           {
