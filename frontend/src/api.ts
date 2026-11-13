@@ -46,10 +46,17 @@ function errorMessageFromBody(text: string, status: number): string {
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
-    ...init,
-  })
+  let res: Response
+  try {
+    res = await fetch(path, {
+      headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+      ...init,
+    })
+  } catch {
+    throw new Error(
+      'API not running (port 8787). In Pinokio: Stop StudioNels → Update → Start, then retry.',
+    )
+  }
   if (!res.ok) {
     const text = await res.text()
     throw new Error(errorMessageFromBody(text, res.status))
