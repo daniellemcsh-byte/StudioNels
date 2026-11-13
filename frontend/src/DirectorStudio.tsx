@@ -78,9 +78,17 @@ export default function DirectorStudio({
   const [editingCaption, setEditingCaption] = useState(false)
   const [captionDraft, setCaptionDraft] = useState('')
   const [dragCaption, setDragCaption] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [stitchPreview, setStitchPreview] = useState<string | null>(null)
+  const [playlist, setPlaylist] = useState<
+    Array<{ media_path?: string | null; title?: string; duration?: number }>
+  >([])
+  const [playlistIdx, setPlaylistIdx] = useState(0)
+  const [showCutPlayer, setShowCutPlayer] = useState(false)
   const trackRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<HTMLDivElement>(null)
   const captionInputRef = useRef<HTMLTextAreaElement>(null)
+  const cutVideoRef = useRef<HTMLVideoElement>(null)
 
   const clips: TimelineClip[] = useMemo(() => {
     if (project.timeline.length > 0) {
@@ -454,6 +462,42 @@ export default function DirectorStudio({
     }
   }
 
+  const onDropFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files).filter(
+      (f) => f.type.startsWith('video/') || /\.(mp4|webm|mov|mkv|m4v|gif)$/i.test(f.name),
+    )
+    if (!list.length) {
+      notify('Drop video files (mp4, webm, mov…).')
+      return
+    }
+    for (const f of list) {
+      await addUploadedVideo(f)
+    }
+  }
+
+  const runStitchAndPlay = async () => {
+    setBusy(true)
+    try {
+      const res = await api.stitch(project.id)
+      notify(res.message || 'Stitch ready')
+      const pl = (res.playlist as { entries?: Array<{ media_path?: string; title?: string; duration?: number }> })
+        ?.entries || []
+      setPlaylist(pl.filter((e) => e.media_path))
+      setPlaylistIdx(0)
+      if (res.preview_url) {
+        setStitchPreview(res.preview_url)
+        setShowCutPlayer(true)
+      } else if (pl.length) {
+        setStitchPreview(null)
+        setShowCutPlayer(true)
+      }
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const onTrackClick = (e: { clientX: number; currentTarget: HTMLDivElement }) => {
     const el = trackRef.current
     if (!el) return
@@ -551,24 +595,8 @@ export default function DirectorStudio({
         >
           .srt
         </button>
-        <button
-          className="btn secondary"
-          type="button"
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true)
-            try {
-              const res = await api.stitch(project.id)
-              notify(res.message || 'Stitch ready')
-              if (res.preview_url) window.open(res.preview_url, '_blank')
-            } catch (err) {
-              notify(String((err as Error).message || err))
-            } finally {
-              setBusy(false)
-            }
-          }}
-        >
-          Stitch cut
+        <button className="btn secondary" type="button" disabled={busy} onClick={runStitchAndPlay}>
+          Stitch &amp; play cut
         </button>
         <button
           className="btn ghost"
@@ -655,7 +683,63 @@ export default function DirectorStudio({
       </div>
 
       <div className="tt-stage gen-layout">
-        <div className="panel tt-preview-wrap">
+        <div
+          className={`panel tt-preview-wrap ${dragOver ? 'drop-hot' : ''}`}
+          onDragEnter={(e) => {
+            e.preventDefault()
+            setDragOver(true)
+          }}
+          onDragOver={(e) => {
+            e.preventDefault()
+            setDragOver(true)
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault()
+            setDragOver(false)
+            if (e.dataTransfer.files?.length) onDropFiles(e.dataTransfer.files)
+          }}
+        >
+          {dragOver && <div className="drop-banner">Drop video clips to add to the cut</div>}
+          {showCutPlayer && (stitchPreview || playlist.length > 0) && (
+            <div className="cut-player panel" style={{ marginBottom: 12 }}>
+              <header className="inline-actions" style={{ justifyContent: 'space-between' }}>
+                <strong>Full cut</strong>
+                <button className="btn ghost tiny" type="button" onClick={() => setShowCutPlayer(false)}>
+                  Close
+                </button>
+              </header>
+              {stitchPreview ? (
+                <video
+                  ref={cutVideoRef}
+                  className="stitch-player"
+                  src={stitchPreview}
+                  controls
+                  autoPlay
+                  playsInline
+                />
+              ) : (
+                <video
+                  ref={cutVideoRef}
+                  className="stitch-player"
+                  key={playlist[playlistIdx]?.media_path || playlistIdx}
+                  src={mediaUrl(playlist[playlistIdx]?.media_path) || ''}
+                  controls
+                  autoPlay
+                  playsInline
+                  onEnded={() => {
+                    if (playlistIdx < playlist.length - 1) setPlaylistIdx((i) => i + 1)
+                  }}
+                />
+              )}
+              {!stitchPreview && playlist.length > 1 && (
+                <div className="muted tiny">
+                  Playlist {playlistIdx + 1}/{playlist.length}
+                  {playlist[playlistIdx]?.title ? ` · ${playlist[playlistIdx].title}` : ''}
+                </div>
+              )}
+            </div>
+          )}
           <div
             className="director-viewer tt-phone"
             ref={viewerRef}
@@ -1082,7 +1166,23 @@ export default function DirectorStudio({
         </div>
       </div>
 
-      <div className="panel tt-timeline">
+      <div
+        className={`panel tt-timeline ${dragOver ? 'drop-hot' : ''}`}
+        onDragEnter={(e) => {
+          e.preventDefault()
+          setDragOver(true)
+        }}
+        onDragOver={(e) => {
+          e.preventDefault()
+          setDragOver(true)
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDragOver(false)
+          if (e.dataTransfer.files?.length) onDropFiles(e.dataTransfer.files)
+        }}
+      >
         <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
           <h3 style={{ margin: 0 }}>Timeline</h3>
           <div className="inline-actions">

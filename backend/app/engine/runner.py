@@ -154,10 +154,11 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     is_rehearsal = bool(payload.get("is_rehearsal"))
     inject_continuity = payload.get("inject_continuity", True)
 
-    # Inject continuity locks when attached to a project shot
+    # Inject continuity + identity locks when attached to a project shot
     if inject_continuity and payload.get("project_id"):
         try:
             from ..continuity import continuity_prompt_prefix
+            from ..identity_lock import identity_prompt_suffix, primary_identity_ref
             from ..storage import load_project
 
             project = load_project(payload["project_id"])
@@ -167,8 +168,24 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
             prefix = continuity_prompt_prefix(project, shot)
             if prefix and prefix not in prompt:
                 prompt = f"{prefix} | {prompt}" if prompt else prefix
+            id_suffix = identity_prompt_suffix(
+                project, shot.character_ids if shot else None
+            )
+            if id_suffix and id_suffix not in prompt:
+                prompt = f"{prompt} | {id_suffix}" if prompt else id_suffix
             if project.visual_style and project.visual_style.lower() not in prompt.lower():
                 prompt = f"{prompt}, {project.visual_style}" if prompt else project.visual_style
+            # Prefer character ref still for IP-Adapter / ref2* style paths
+            if not payload.get("reference_path"):
+                ref = primary_identity_ref(
+                    project, shot.character_ids if shot else None
+                )
+                if ref:
+                    payload["reference_path"] = ref
+            # Harden negatives against face drift
+            drift = "different person, face swap, changed face, wrong identity, aged, younger"
+            if drift not in (negative or ""):
+                negative = f"{negative}, {drift}" if negative else drift
         except Exception:
             pass
 

@@ -3,6 +3,8 @@ import type { FormEvent, ReactNode } from 'react'
 import { api, mediaUrl } from './api'
 import { LEARN_TOPICS, type LearnSectionId } from './learning'
 import DirectorStudio from './DirectorStudio'
+import FilmNightTab from './FilmNightTab'
+import FirstRunWizard, { shouldShowFirstRun } from './FirstRunWizard'
 import { INSPIRATION_CLIPS, type InspirationClip } from './inspiration'
 import {
   DURATION_PRESETS,
@@ -47,43 +49,38 @@ import './styles.css'
 
 const NAV_GROUPS: { id: string; label: string; items: { id: TabId; label: string }[] }[] = [
   {
-    id: 'start',
-    label: 'Start',
+    id: 'cut',
+    label: 'Cut',
     items: [
-      { id: 'inspiration', label: 'Inspiration' },
+      { id: 'filmnight', label: 'Film night' },
+      { id: 'director', label: 'Director' },
+      { id: 'shots', label: 'Shots' },
+    ],
+  },
+  {
+    id: 'start',
+    label: 'Story',
+    items: [
       { id: 'agent', label: 'Agent' },
       { id: 'profiles', label: 'Profiles' },
       { id: 'time', label: 'Time & Style' },
-      { id: 'creator', label: 'Creator' },
+      { id: 'inspiration', label: 'Inspiration' },
     ],
   },
   {
-    id: 'story',
-    label: 'Story',
-    items: [
-      { id: 'shots', label: 'Shots' },
-      { id: 'storyboard', label: 'Storyboard' },
-      { id: 'characters', label: 'Characters' },
-    ],
-  },
-  {
-    id: 'make',
-    label: 'Make',
+    id: 'advanced',
+    label: 'Advanced',
     items: [
       { id: 'generate', label: 'Generate' },
-      { id: 'audio', label: 'Audio' },
-      { id: 'upsample', label: 'Upsample' },
-      { id: 'models', label: 'Models' },
-    ],
-  },
-  {
-    id: 'edit',
-    label: 'Edit',
-    items: [
-      { id: 'continuity', label: 'Continuity' },
       { id: 'rehearsal', label: 'Rehearsal' },
       { id: 'sampling', label: 'Sampling' },
-      { id: 'director', label: 'Director' },
+      { id: 'continuity', label: 'Continuity' },
+      { id: 'audio', label: 'Audio' },
+      { id: 'upsample', label: 'Upsample' },
+      { id: 'storyboard', label: 'Storyboard' },
+      { id: 'characters', label: 'Characters' },
+      { id: 'creator', label: 'Creator' },
+      { id: 'models', label: 'Models' },
     ],
   },
   {
@@ -144,14 +141,15 @@ export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [project, setProject] = useState<Project | null>(null)
-  const [tab, setTab] = useState<TabId>('inspiration')
+  const [tab, setTab] = useState<TabId>('filmnight')
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
+    cut: true,
     start: true,
-    story: false,
-    make: false,
-    edit: false,
+    advanced: false,
     system: false,
   })
+  const [showWizard, setShowWizard] = useState(false)
+  const [newFrameSize, setNewFrameSize] = useState('16:9-draft')
   const [navOpen, setNavOpen] = useState(true)
   const [inspirationSeed, setInspirationSeed] = useState<InspirationSeed | null>(null)
   const [busy, setBusy] = useState(false)
@@ -188,7 +186,12 @@ export default function App() {
   }
 
   useEffect(() => {
-    refreshHome().catch((e) => notify(String(e.message || e)))
+    refreshHome()
+      .then(async () => {
+        const h = await api.health()
+        if (shouldShowFirstRun(h)) setShowWizard(true)
+      })
+      .catch((e) => notify(String(e.message || e)))
   }, [])
 
   const openProject = async (id: string) => {
@@ -196,11 +199,11 @@ export default function App() {
     try {
       const p = await api.getProject(id)
       setProject(p)
-      // Director becomes home once there is anything to cut
+      // Film night + Director are the home path once work exists
       if ((p.takes && p.takes.length > 0) || (p.timeline && p.timeline.length > 0)) {
         goTab('director')
       } else if (p.shots.length > 0) {
-        goTab('shots')
+        goTab('filmnight')
       } else {
         goTab('agent')
       }
@@ -217,12 +220,13 @@ export default function App() {
         title,
         mode,
         preset_id: settings?.preset_id,
+        frame_size_id: newFrameSize,
       })
       setShowNew(false)
       setProject(p)
-      goTab('profiles')
+      goTab('filmnight')
       await refreshHome()
-      notify('Project created — add a character or jump to Agent.')
+      notify('Project created — Film night is ready when shots exist.')
     } catch (err) {
       notify(String((err as Error).message || err))
     } finally {
@@ -514,6 +518,19 @@ export default function App() {
             </form>
           </div>
         )}
+        {showWizard && (
+          <FirstRunWizard
+            health={health}
+            settings={settings}
+            setSettings={(s) => setSettings(s)}
+            notify={notify}
+            onDone={() => setShowWizard(false)}
+            onStartProject={(frameSizeId) => {
+              setNewFrameSize(frameSizeId)
+              setShowNew(true)
+            }}
+          />
+        )}
         {toast && <div className="toast">{toast}</div>}
       </div>
     )
@@ -716,6 +733,16 @@ export default function App() {
             busy={busy}
             setBusy={setBusy}
             notify={notify}
+          />
+        )}
+        {tab === 'filmnight' && (
+          <FilmNightTab
+            project={project}
+            setProject={setProject}
+            busy={busy}
+            setBusy={setBusy}
+            notify={notify}
+            onOpenDirector={() => goTab('director')}
           />
         )}
         {tab === 'director' && (

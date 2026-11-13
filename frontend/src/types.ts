@@ -17,6 +17,7 @@ export type TabId =
   | 'continuity'
   | 'rehearsal'
   | 'sampling'
+  | 'filmnight'
   | 'director'
   | 'learning'
   | 'sources'
