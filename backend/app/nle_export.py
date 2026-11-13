@@ -236,7 +236,7 @@ def export_nle_package(project: Project, fps: float = 24.0) -> dict[str, Any]:
     (out_root / f"{_safe(project.title)}.fcpxml").write_text(xml, encoding="utf-8")
     (out_root / "markers.json").write_text(json.dumps(markers, indent=2), encoding="utf-8")
     (out_root / "README.txt").write_text(
-        "Nellwright NLE export\n"
+        "StudioNels NLE export\n"
         "- .edl — CMX3600-style EDL for Premiere / Resolve\n"
         "- .fcpxml — Final Cut / Resolve XML\n"
         "- markers.json — continuity locks, flags, rehearsal markers, dialogue\n"

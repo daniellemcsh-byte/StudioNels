@@ -103,7 +103,7 @@ def _ensure_worker() -> None:
         if _WORKER_STARTED:
             return
         _WORKER_STARTED = True
-        t = threading.Thread(target=_worker_loop, name="nellwright-engine", daemon=True)
+        t = threading.Thread(target=_worker_loop, name="studionels-engine", daemon=True)
         t.start()
 
 

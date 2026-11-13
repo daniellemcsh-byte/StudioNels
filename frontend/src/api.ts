@@ -236,7 +236,7 @@ export const api = {
 export function mediaUrl(path?: string | null): string | undefined {
   if (!path) return undefined
   const normalized = path.replace(/\\/g, '/')
-  for (const marker of ['/outputs/', '/uploads/', '/.nellwright/media/']) {
+  for (const marker of ['/outputs/', '/uploads/', '/.studionels/media/']) {
     const idx = normalized.indexOf(marker)
     if (idx >= 0) {
       const rel = normalized.slice(idx + marker.length)

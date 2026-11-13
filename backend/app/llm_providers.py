@@ -160,8 +160,8 @@ async def _openai_compatible_chat(
         "Content-Type": "application/json",
     }
     if settings.agent_provider == "openrouter":
-        headers["HTTP-Referer"] = "https://nellwright.local"
-        headers["X-Title"] = "Nellwright by VIPNells"
+        headers["HTTP-Referer"] = "https://studionels.local"
+        headers["X-Title"] = "StudioNels"
     payload = {
         "model": model,
         "temperature": 0.4,

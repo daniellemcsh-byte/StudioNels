@@ -69,7 +69,7 @@ async def probe_ollama() -> bool:
     except Exception:
         return False
 
-app = FastAPI(title="Nellwright by VIPNells", version="0.1.0")
+app = FastAPI(title="StudioNels", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -236,7 +236,7 @@ async def create_project(body: CreateProjectRequest):
         AgentMessage(
             role="assistant",
             content=(
-                f"Welcome to Nellwright — VIPNells’s local film studio. Tell me your idea for this "
+                f"Welcome to StudioNels — your local film studio. Tell me your idea for this "
                 f"{body.mode.replace('_', ' ')} and I'll break it into editable shots. "
                 "Add characters and scenes in Profiles first if you already know them — "
                 "or we can invent as we go. Everything stays on your machine."

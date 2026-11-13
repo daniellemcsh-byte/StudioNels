@@ -1,6 +1,6 @@
 # AMD ROCm — built-in engine (no ComfyUI)
 
-Nellwright loads Diffusers / Wan pipelines **inside the app**, Wan2GP-style.
+StudioNels loads Diffusers / Wan pipelines **inside the app**, Wan2GP-style.
 
 ## 1. Install ROCm PyTorch
 
@@ -22,7 +22,7 @@ pip install -r requirements-engine.txt
 
 ## 3. Download a model
 
-First run will pull from Hugging Face into `~/.nellwright/models` (or the Hugging Face cache). Start with:
+First run will pull from Hugging Face into `~/.studionels/models` (or the Hugging Face cache). Start with:
 
 - **T2V:** `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` (low VRAM)
 - **T2I:** `stabilityai/sdxl-turbo`

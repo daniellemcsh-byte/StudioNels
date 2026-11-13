@@ -53,7 +53,7 @@ def _hf_cache_has(repo_id: str | None) -> bool:
                 return True
     except Exception:
         pass
-    # Also check Nellwright models mirror
+    # Also check StudioNels models mirror
     mirror = models_dir() / repo_id.replace("/", "__")
     if mirror.exists() and any(mirror.iterdir()):
         return True

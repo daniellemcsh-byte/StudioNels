@@ -1,6 +1,6 @@
-# Nellwright by VIPNells
+# StudioNels
 
-VIPNells’s fully local AI film studio for AMD Radeon GPUs — Wan2GP-style, no ComfyUI.
+Fully local AI film studio for AMD Radeon GPUs — Wan2GP-style, no ComfyUI.
 
 Describe an idea, keep character/scene profiles, plan editable shots, then generate with a **built-in engine** (no ComfyUI):
 
@@ -51,7 +51,7 @@ See `docs/AMD_ROCM.md` and `docs/MODELS.md`.
 
 ## Data
 
-`~/.nellwright/projects/`, `media/`, `models/`, `jobs.json`
+`~/.studionels/projects/`, `media/`, `models/`, `jobs.json`
 
 ## License
 

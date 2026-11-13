@@ -1,1 +1,1 @@
-"""Nellwright local studio API."""
+"""StudioNels local studio API."""

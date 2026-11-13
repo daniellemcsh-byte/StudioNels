@@ -1,6 +1,6 @@
 # Built-in models (in-app)
 
-Nellwright does **not** use ComfyUI graphs. Models load via Diffusers inside the process.
+StudioNels does **not** use ComfyUI graphs. Models load via Diffusers inside the process.
 
 ## By mode
 
@@ -19,4 +19,4 @@ Nellwright does **not** use ComfyUI graphs. Models load via Diffusers inside the
 | Low | `llama3.2:3b` |
 | Comfortable | `llama3.1:8b` |
 
-Weights come from Hugging Face into the local cache / `~/.nellwright/models`. You run them; Nellwright does not redistribute checkpoints.
+Weights come from Hugging Face into the local cache / `~/.studionels/models`. You run them; StudioNels does not redistribute checkpoints.

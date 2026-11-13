@@ -8,4 +8,4 @@
 6. **Sampling** — compare takes, pin favorites.
 7. **Characters** — create missing look refs anytime.
 8. **Director** — pin clips on the timeline, reorder, trim notes, export plan.
-9. **Save** — everything lands in `~/.nellwright/projects/`.
+9. **Save** — everything lands in `~/.studionels/projects/`.

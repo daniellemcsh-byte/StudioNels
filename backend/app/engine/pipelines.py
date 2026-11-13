@@ -394,7 +394,7 @@ def run_preview_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None =
         if job.get("image_path") or job.get("reference_path") or job.get("lora_path"):
             draw.ellipse([width - 70, 50, width - 30, 90], outline=(255, 61, 206), width=3)
         q = job.get("quality") or "balanced"
-        draw.text((20, 12), f"Nellwright · {mode.upper()} · {q}", fill=(57, 255, 199), font=font)
+        draw.text((20, 12), f"StudioNels · {mode.upper()} · {q}", fill=(57, 255, 199), font=font)
         draw.text((20, height // 2 + 20), prompt or job.get("model_id", ""), fill=(242, 247, 255), font=font)
         draw.text((20, height - 28), f"preview · seed {seed}", fill=(154, 168, 199), font=font)
         pulse = int(20 + 10 * math.sin(i / max(frames_n - 1, 1) * math.pi))

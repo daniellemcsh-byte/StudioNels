@@ -8,6 +8,7 @@ __pycache__/
 .env
 .framewright/
 .nellwright/
+.studionels/
 models/**
 !models/README.md
 loras/**
