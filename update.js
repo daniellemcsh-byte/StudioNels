@@ -24,7 +24,7 @@ module.exports = {
     {
       method: "notify",
       params: {
-        html: "StudioNels updated. Click <b>Start</b> again if it was running.",
+        html: "StudioNels updated. Click <b>Stop</b> if running, then <b>Start</b>. Open <b>http://127.0.0.1:5173</b> (not 5174).",
       },
     },
   ],

@@ -1,7 +1,5 @@
-const path = require("path")
-
 module.exports = {
-  version: "1.5",
+  version: "1.6",
   title: "StudioNels",
   description:
     "Local AI film studio for AMD — Agent, Film night, Director, upload clips. Wan2GP-style built-in engine (no ComfyUI).",
@@ -9,6 +7,9 @@ module.exports = {
   menu: async (kernel, info) => {
     const installed = info.exists("backend/.venv") || info.exists("frontend/node_modules")
     const running = info.running("start.js")
+    const local = running ? info.local("start.js") : null
+    const openUrl =
+      (local && (local.url || local["url"])) || "http://127.0.0.1:5173"
     let menu = []
 
     if (running) {
@@ -20,7 +21,7 @@ module.exports = {
       menu.push({
         icon: "fa-solid fa-house",
         text: "Open StudioNels",
-        href: "http://127.0.0.1:5173",
+        href: openUrl,
         target: "_blank",
       })
       menu.push({

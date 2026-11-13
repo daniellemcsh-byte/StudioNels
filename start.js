@@ -1,6 +1,13 @@
 module.exports = {
   daemon: true,
   run: [
+    // Kill zombie Vite/uvicorn from a previous Start (cause of 5173→5174 drift)
+    {
+      method: "shell.run",
+      params: {
+        message: ["node scripts/free-ports.js"],
+      },
+    },
     {
       method: "shell.run",
       params: {
@@ -11,7 +18,7 @@ module.exports = {
         ],
         on: [
           {
-            event: "/(Uvicorn running|Application startup complete)/i",
+            event: "/Uvicorn running on http:\\/\\/127\\.0\\.0\\.1:8787/i",
             done: true,
           },
         ],
@@ -21,10 +28,15 @@ module.exports = {
       method: "shell.run",
       params: {
         path: "frontend",
-        message: ["npm run dev -- --host 127.0.0.1 --port 5173"],
+        // strictPort: fail if 5173 busy instead of silently moving to 5174
+        message: [
+          "npm run dev -- --host 127.0.0.1 --port 5173 --strictPort",
+        ],
         on: [
           {
-            event: "/(Local:\\s+http:\\/\\/127\\.0\\.0\\.1:5173|ready in)/i",
+            // ONLY match the real StudioNels URL — do not match bare "ready in"
+            // (that falsely completed when Vite hopped to 5174)
+            event: "/Local:\\s+http:\\/\\/127\\.0\\.0\\.1:5173\\//i",
             done: true,
           },
         ],
@@ -34,6 +46,12 @@ module.exports = {
       method: "local.set",
       params: {
         url: "http://127.0.0.1:5173",
+      },
+    },
+    {
+      method: "notify",
+      params: {
+        html: "StudioNels is running. Open <b>http://127.0.0.1:5173</b> — keep Ollama running in the tray for the Agent LLM.",
       },
     },
   ],
