@@ -18,6 +18,33 @@ import type {
   TimelineClip,
 } from './types'
 
+function errorMessageFromBody(text: string, status: number): string {
+  const raw = (text || '').trim()
+  if (!raw) return status === 404 ? 'Not found' : `Request failed (${status})`
+  try {
+    const j = JSON.parse(raw) as { detail?: unknown }
+    if (typeof j.detail === 'string' && j.detail.trim()) return j.detail
+    if (Array.isArray(j.detail)) {
+      const parts = j.detail
+        .map((d) =>
+          typeof d === 'string'
+            ? d
+            : d && typeof d === 'object' && 'msg' in d
+              ? String((d as { msg: unknown }).msg)
+              : '',
+        )
+        .filter(Boolean)
+      if (parts.length) return parts.join('; ')
+    }
+  } catch {
+    /* plain text */
+  }
+  if (raw === '{"detail":"Not Found"}' || /"detail"\s*:\s*"Not Found"/i.test(raw)) {
+    return 'Not found — click Update in Pinokio, then Stop and Start again.'
+  }
+  return raw.length > 280 ? raw.slice(0, 280) + '…' : raw
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
@@ -25,7 +52,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(text || res.statusText)
+    throw new Error(errorMessageFromBody(text, res.status))
   }
   return res.json() as Promise<T>
 }
@@ -41,8 +68,44 @@ export const api = {
       providers: AgentProviderInfo[]
       status: AgentStatus
     }>('/api/agent/providers'),
-  agentTest: () =>
-    req<AgentStatus>('/api/agent/test', { method: 'POST', body: '{}' }),
+  agentTest: async () => {
+    try {
+      return await req<AgentStatus>('/api/agent/test', { method: 'POST', body: '{}' })
+    } catch (err) {
+      // Older Pinokio installs may not have /api/agent/test yet — fall back to probe.
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!/not found/i.test(msg)) throw err
+      try {
+        const r = await req<{
+          providers: AgentProviderInfo[]
+          status: AgentStatus
+        }>('/api/agent/providers')
+        return {
+          ...r.status,
+          ping_detail:
+            r.status.detail ||
+            'Status from providers probe — Update StudioNels in Pinokio for full chat test.',
+        }
+      } catch {
+        const h = await req<Health>('/api/health')
+        return {
+          provider: h.agent_provider || 'ollama',
+          label: h.agent_label || 'Ollama',
+          model: '',
+          needs_key: false,
+          key_set: false,
+          reachable: Boolean(h.agent_reachable || h.ollama),
+          detail:
+            h.agent_detail ||
+            (h.ollama
+              ? 'Ollama reachable via health check'
+              : 'Ollama offline — start the Ollama app, then try again'),
+          ok: Boolean(h.agent_reachable || h.ollama),
+          ping_ok: Boolean(h.agent_reachable || h.ollama),
+        }
+      }
+    }
+  },
   getPersonal: () => req<PersonalProfile>('/api/personal'),
   putPersonal: (body: {
     github_url?: string

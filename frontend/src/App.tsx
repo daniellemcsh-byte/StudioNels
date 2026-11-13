@@ -2707,9 +2707,18 @@ function SettingsTab({
       const status = await api.agentTest()
       setAgentStatus(status)
       onHealthRefresh?.()
-      notify(status.detail || (status.ok ? 'Connected.' : 'Not connected.'))
+      notify(
+        status.ping_detail ||
+          status.detail ||
+          (status.ok ? 'Connected to Ollama.' : 'Not connected — is Ollama running?'),
+      )
     } catch (e) {
-      notify(e instanceof Error ? e.message : 'Test failed')
+      const msg = e instanceof Error ? e.message : 'Test failed'
+      notify(
+        /not found/i.test(msg)
+          ? 'Update StudioNels in Pinokio, then Stop and Start, then Test again.'
+          : msg,
+      )
     } finally {
       setTesting(false)
     }
