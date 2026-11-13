@@ -16,6 +16,14 @@ Plus Agent, Profiles, Shots, Storyboard, Sampling, Director, and Save-to-disk.
 
 ## Quick start
 
+### Pinokio
+
+1. Open Pinokio → **Download** / git URL  
+2. Paste: `https://github.com/daniellemcsh-byte/StudioNels`  
+3. Click **Install**, then **Start**, then **Open StudioNels**
+
+### Manual (Windows / Mac / Linux)
+
 ```bash
 # API
 cd backend
@@ -29,7 +37,9 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 → **Generate** tab.
+Open http://localhost:5173 → **Film night** / **Director**.
+
+Windows desktop launcher: `scripts/StudioNels.bat` (see `INSTALL_WINDOWS.md`).
 
 ### Real GPU generation (AMD)
 
