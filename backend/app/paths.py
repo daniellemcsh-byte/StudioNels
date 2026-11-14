@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # Straight-forward drop folders next to backend/frontend — not hidden in ~/.something
 MODELS_DIR = ROOT / "models"
+CKPTS_DIR = ROOT / "ckpts"  # Wan2GP-compatible component packs (LTX-2.3, …)
 LORAS_DIR = ROOT / "loras"
 OUTPUTS_DIR = ROOT / "outputs"
 UPLOADS_DIR = ROOT / "uploads"
@@ -31,14 +32,24 @@ FOLDER_GUIDE = [
         "id": "models",
         "path": "models/",
         "title": "Models",
-        "put_here": "AI checkpoints downloaded in-app (Wan, SDXL, LTX, audio…). One folder per model.",
-        "examples": ["models/Wan-AI__Wan2.1-T2V-1.3B-Diffusers/", "models/stabilityai__sdxl-turbo/"],
+        "put_here": "Diffusers folders (model_index.json). Download in-app or from HF.",
+        "examples": ["models/diffusers__LTX-2.3-Distilled-Diffusers/", "models/Wan-AI__Wan2.1-T2V-1.3B-Diffusers/"],
+    },
+    {
+        "id": "ckpts",
+        "path": "ckpts/",
+        "title": "Wan2GP ckpts",
+        "put_here": "Wan2GP-style LTX component .safetensors (diffusion_model + vae + audio_vae…). Or point Settings → wan2gp_ckpts_path at your Wan2GP\\ckpts folder.",
+        "examples": [
+            "ckpts/ltx-2.3-22b-distilled-1.1_diffusion_model.safetensors",
+            "ckpts/ltx-2.3-22b_vae.safetensors",
+        ],
     },
     {
         "id": "loras",
         "path": "loras/",
         "title": "LoRAs",
-        "put_here": "Drop .safetensors / .pt LoRA files here. Optional — pick them in Generate.",
+        "put_here": "Drop LoRA .safetensors / .pt here — not full LTX diffusion models.",
         "examples": ["loras/my_style.safetensors", "loras/character_face.safetensors"],
     },
     {
@@ -82,6 +93,7 @@ FOLDER_GUIDE = [
 def ensure_dirs() -> None:
     for path in (
         MODELS_DIR,
+        CKPTS_DIR,
         LORAS_DIR,
         OUTPUTS_DIR,
         UPLOADS_DIR,
@@ -93,6 +105,17 @@ def ensure_dirs() -> None:
         OUTPUTS_DIR / "standalone",
     ):
         path.mkdir(parents=True, exist_ok=True)
+    try:
+        readme = CKPTS_DIR / "README.txt"
+        if not readme.exists():
+            readme.write_text(
+                "Wan2GP-compatible ckpts — drop LTX-2.3 component .safetensors here,\n"
+                "or set Settings → Wan2GP ckpts path to your existing Wan2GP\\ckpts folder.\n"
+                "Do not put full diffusion models in loras/.\n",
+                encoding="utf-8",
+            )
+    except Exception:
+        pass
 
 
 def folder_map() -> dict:
@@ -100,6 +123,7 @@ def folder_map() -> dict:
     return {
         "root": str(ROOT),
         "models": str(MODELS_DIR),
+        "ckpts": str(CKPTS_DIR),
         "loras": str(LORAS_DIR),
         "outputs": str(OUTPUTS_DIR),
         "uploads": str(UPLOADS_DIR),

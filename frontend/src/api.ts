@@ -336,6 +336,22 @@ export const api = {
       `/api/engine/models/custom/${encodeURIComponent(modelId)}`,
       { method: 'DELETE' },
     ),
+  engineWan2gpScan: () =>
+    req<{ packs: EngineModel[]; roots: string[]; ckpts_dir: string; count: number }>(
+      '/api/engine/wan2gp/scan',
+    ),
+  engineWan2gpImport: (path: string, activate = true) =>
+    req<{
+      ok: boolean
+      path: string
+      packs: EngineModel[]
+      models: EngineModel[]
+      hint: string
+      ckpts_dir: string
+    }>('/api/engine/wan2gp/import', {
+      method: 'POST',
+      body: JSON.stringify({ path, activate }),
+    }),
   engineJobs: () => req<EngineJob[]>('/api/engine/jobs'),
   engineJob: (id: string) => req<EngineJob>(`/api/engine/jobs/${id}`),
   engineCancelJob: (id: string) =>

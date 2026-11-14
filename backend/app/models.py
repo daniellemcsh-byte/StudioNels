@@ -233,6 +233,8 @@ class Settings(BaseModel):
     friendly_mode: bool = True
     default_gen_mode: str = "t2v"
     cpu_offload: bool = True
+    # Optional path to an existing Wan2GP ckpts folder (no copy of huge weights).
+    wan2gp_ckpts_path: str = ""
 
 
 class PersonalLinksRequest(BaseModel):

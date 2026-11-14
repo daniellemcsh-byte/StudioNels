@@ -72,11 +72,13 @@ def list_models_with_status(active_model_id: str | None = None) -> list[dict[str
         mid = m["id"]
         dl = status.get("downloads", {}).get(mid) or _DOWNLOADS.get(mid) or {}
         local = dl.get("local_path") or m.get("local_path")
+        wan2gp_ready = bool(m.get("wan2gp") and m.get("component_files", {}).get("diffusion_model"))
         installed = (
             bool(dl.get("installed"))
-            or bool(local and Path(str(local)).exists())
+            or bool(local and Path(str(local)).exists() and (m.get("format") != "wan2gp" or wan2gp_ready))
             or _hf_cache_has(m.get("hf_id"))
             or bool(m.get("discovered"))
+            or wan2gp_ready
         )
         if m.get("hf_id") is None:
             installed = True

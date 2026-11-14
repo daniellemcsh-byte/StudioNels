@@ -498,7 +498,7 @@ MODELS: list[dict[str, Any]] = [
 
 
 def _all_models() -> list[dict[str, Any]]:
-    """Built-in catalog + user-added customs + folders already in models/."""
+    """Built-in catalog + user-added customs + Diffusers mirrors + Wan2GP ckpts."""
     by_id = {m["id"]: dict(m) for m in MODELS}
     known_hf = {str(m.get("hf_id")) for m in MODELS if m.get("hf_id")}
     try:
@@ -509,7 +509,6 @@ def _all_models() -> list[dict[str, Any]]:
             if m.get("hf_id"):
                 known_hf.add(str(m["hf_id"]))
         for m in discover_local_models(known_hf):
-            # Don't hide a catalog twin — just attach local_path onto catalog entry when possible
             matched = next((x for x in by_id.values() if x.get("hf_id") == m.get("hf_id")), None)
             if matched:
                 matched["local_path"] = m.get("local_path")
@@ -517,6 +516,19 @@ def _all_models() -> list[dict[str, Any]]:
                 by_id[m["id"]] = m
                 if m.get("hf_id"):
                     known_hf.add(str(m["hf_id"]))
+    except Exception:
+        pass
+    try:
+        from .wan2gp_ckpts import scan_wan2gp_ckpts
+
+        for m in scan_wan2gp_ckpts():
+            existing = by_id.get(m["id"])
+            if existing:
+                existing.update({k: v for k, v in m.items() if v is not None})
+            else:
+                by_id[m["id"]] = m
+            if m.get("hf_id"):
+                known_hf.add(str(m["hf_id"]))
     except Exception:
         pass
     return list(by_id.values())

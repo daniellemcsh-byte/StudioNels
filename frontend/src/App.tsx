@@ -5619,11 +5619,14 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
   const [lorasPath, setLorasPath] = useState('')
   const [busyId, setBusyId] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'image' | 'video' | 'audio' | 'upsample' | 'big'>('all')
-  const [customHf, setCustomHf] = useState('rootonchair/LTX-2-19b-distilled')
-  const [customLabel, setCustomLabel] = useState('LTX-2 19B Distilled')
+  const [customHf, setCustomHf] = useState('rootonchair/LTX-2.3-Distilled-v1.1-Diffusers')
+  const [customLabel, setCustomLabel] = useState('LTX-2.3 22B Distilled v1.1')
   const [customKind, setCustomKind] = useState<'video' | 'image' | 'audio'>('video')
   const [customVram, setCustomVram] = useState(24)
   const [adding, setAdding] = useState(false)
+  const [wan2gpPath, setWan2gpPath] = useState('')
+  const [wan2gpBusy, setWan2gpBusy] = useState(false)
+  const [wan2gpHint, setWan2gpHint] = useState<string | null>(null)
 
   const load = async () => {
     const [pack, loraPack] = await Promise.all([api.engineModels(), api.engineLoras()])
@@ -5709,10 +5712,72 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
       </div>
 
       <div className="panel" style={{ marginTop: 16 }}>
-        <h3>Add Hugging Face model</h3>
+        <h3>Import Wan2GP ckpts</h3>
         <p className="muted tiny">
-          Paste owner/repo (e.g. <code>rootonchair/LTX-2-19b-distilled</code>). If it already sits in{' '}
-          <code>models/</code>, it marks Ready immediately.
+          Point at your Wan2GP <code>ckpts</code> folder (where{' '}
+          <code>ltx-2.3-22b-distilled-1.1_diffusion_model…</code> lives). No need to copy 19GB — or drop
+          those files into StudioNels <code>ckpts/</code>. Not <code>loras/</code>.
+        </p>
+        <div className="field" style={{ marginTop: 10 }}>
+          <label>Wan2GP ckpts folder path</label>
+          <input
+            value={wan2gpPath}
+            onChange={(e) => setWan2gpPath(e.target.value)}
+            placeholder="C:\pinokio\api\wan2gp\ckpts"
+          />
+        </div>
+        <div className="inline-actions" style={{ gap: 8, flexWrap: 'wrap' }}>
+          <button
+            className="btn acid"
+            type="button"
+            disabled={wan2gpBusy || !wan2gpPath.trim()}
+            onClick={async () => {
+              setWan2gpBusy(true)
+              setWan2gpHint(null)
+              try {
+                const r = await api.engineWan2gpImport(wan2gpPath.trim(), true)
+                setModels(r.models)
+                setWan2gpHint(r.hint)
+                notify(`Imported ${r.packs.length} Wan2GP pack(s)`)
+                await load()
+              } catch (err) {
+                notify(String((err as Error).message || err))
+              } finally {
+                setWan2gpBusy(false)
+              }
+            }}
+          >
+            {wan2gpBusy ? 'Importing…' : 'Import Wan2GP folder'}
+          </button>
+          <button
+            className="btn ghost"
+            type="button"
+            disabled={wan2gpBusy}
+            onClick={async () => {
+              try {
+                const r = await api.engineWan2gpScan()
+                setWan2gpHint(
+                  r.count
+                    ? `Found ${r.count} pack(s) in: ${r.roots.join(' · ')}`
+                    : `No packs yet. Roots: ${r.roots.join(' · ')}`,
+                )
+                await load()
+              } catch (err) {
+                notify(String((err as Error).message || err))
+              }
+            }}
+          >
+            Scan ckpts
+          </button>
+        </div>
+        {wan2gpHint && <p className="muted tiny" style={{ marginTop: 8 }}>{wan2gpHint}</p>}
+      </div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
+        <h3>Add Hugging Face Diffusers model</h3>
+        <p className="muted tiny">
+          For Generate, LTX needs a Diffusers folder under <code>models/</code>. After Wan2GP import,
+          download twin <code>rootonchair/LTX-2.3-Distilled-v1.1-Diffusers</code> once.
         </p>
         <div className="controls-grid" style={{ marginTop: 10 }}>
           <div className="field" style={{ gridColumn: '1 / -1' }}>
@@ -5759,6 +5824,7 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
                   {m.label}
                   {isActive ? ' · active' : ''}
                   {m.distilled ? ' · distilled' : ''}
+                  {m.wan2gp || m.format === 'wan2gp' ? ' · Wan2GP' : ''}
                   {m.custom ? ' · custom' : ''}
                   {m.discovered ? ' · local' : ''}
                 </strong>

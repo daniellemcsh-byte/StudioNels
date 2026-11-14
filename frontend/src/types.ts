@@ -62,6 +62,9 @@ export interface EngineModel {
   custom?: boolean
   discovered?: boolean
   distilled?: boolean
+  wan2gp?: boolean
+  format?: string
+  component_files?: Record<string, string>
 }
 
 export interface EngineModelsPack {

@@ -263,6 +263,39 @@ async def engine_model_add_custom(body: dict):
     return {"ok": True, "model": entry, "models": list_models_with_status()}
 
 
+@app.get("/api/engine/wan2gp/scan")
+async def engine_wan2gp_scan():
+    """List Wan2GP LTX packs in studionels/ckpts or Settings wan2gp_ckpts_path."""
+    from .engine.wan2gp_ckpts import CKPTS_DIR, ckpts_roots, scan_wan2gp_ckpts
+
+    packs = scan_wan2gp_ckpts()
+    return {
+        "packs": packs,
+        "roots": [str(r) for r in ckpts_roots()],
+        "ckpts_dir": str(CKPTS_DIR),
+        "count": len(packs),
+    }
+
+
+@app.post("/api/engine/wan2gp/import")
+async def engine_wan2gp_import(body: dict):
+    """Point StudioNels at a Wan2GP ckpts folder and register discovered LTX packs."""
+    from .engine.models_manager import list_models_with_status, set_active_model
+    from .engine.wan2gp_ckpts import import_wan2gp_path
+
+    path = str(body.get("path") or "").strip()
+    if not path:
+        raise HTTPException(400, "path is required (your Wan2GP\\ckpts folder)")
+    try:
+        result = import_wan2gp_path(path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if body.get("activate") and result.get("packs"):
+        set_active_model(result["packs"][0]["id"])
+    result["models"] = list_models_with_status()
+    return result
+
+
 @app.delete("/api/engine/models/custom/{model_id}")
 async def engine_model_remove_custom(model_id: str):
     from .engine.custom_models import remove_custom_model
