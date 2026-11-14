@@ -1,48 +1,37 @@
 /**
- * Block until StudioNels API answers (or fail with a clear message).
- * Uses /api/ready (instant) — NOT /api/health, which probes Ollama and can hang
- * long enough that Pinokio's waiter never succeeds and the UI keeps flashing.
+ * Wait until TCP :8787 accepts connections.
+ * Avoids /api/health — that endpoint probes Ollama and can hang, which made
+ * Pinokio flash forever even when uvicorn was already running.
  */
-const http = require("http")
+const net = require("net")
 
-const URLS = [
-  "http://127.0.0.1:8787/api/ready",
-  "http://127.0.0.1:8787/api/health", // fallback for older backends
-]
+const HOST = "127.0.0.1"
+const PORT = 8787
 const MAX_MS = Number(process.env.STUDIONELS_WAIT_API_MS || 180000)
-const EVERY_MS = 750
-const REQ_TIMEOUT_MS = 8000
+const EVERY_MS = 500
 const started = Date.now()
 
-function once(url) {
+function tcpOpen() {
   return new Promise((resolve) => {
-    const req = http.get(url, { timeout: REQ_TIMEOUT_MS }, (res) => {
-      res.resume()
-      resolve(res.statusCode === 200)
+    const sock = net.connect({ host: HOST, port: PORT }, () => {
+      sock.end()
+      resolve(true)
     })
-    req.on("error", () => resolve(false))
-    req.on("timeout", () => {
-      req.destroy()
+    sock.on("error", () => resolve(false))
+    sock.setTimeout(1500, () => {
+      sock.destroy()
       resolve(false)
     })
   })
 }
 
-async function anyReady() {
-  for (const url of URLS) {
-    if (await once(url)) return url
-  }
-  return null
-}
-
 ;(async () => {
-  console.log("Waiting for API ready on http://127.0.0.1:8787")
-  console.log(`(up to ${Math.round(MAX_MS / 1000)}s — ROCm first load can be slow)`)
+  console.log(`Waiting for API port ${HOST}:${PORT} (TCP, not /api/health)`)
+  console.log(`(up to ${Math.round(MAX_MS / 1000)}s — first ROCm load can be slow)`)
   let lastLog = 0
   while (Date.now() - started < MAX_MS) {
-    const hit = await anyReady()
-    if (hit) {
-      console.log("API is up —", hit)
+    if (await tcpOpen()) {
+      console.log(`API is listening on http://${HOST}:${PORT}`)
       process.exit(0)
     }
     const elapsed = Date.now() - started
@@ -53,8 +42,8 @@ async function anyReady() {
     await new Promise((r) => setTimeout(r, EVERY_MS))
   }
   console.error(
-    "API did not become ready on port 8787. Open the run-api Terminal in Pinokio. " +
-      "If uvicorn is already running, Stop → Start again after Update.",
+    `Nothing is listening on ${HOST}:${PORT}. Open the run-api Terminal in Pinokio.\n` +
+      `Or run: node scripts\\check-backend.js`,
   )
   process.exit(1)
 })()

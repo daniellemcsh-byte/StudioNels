@@ -1,9 +1,15 @@
 module.exports = {
   run: [
+    // Force latest main — Pinokio Update used to leave stale wait-api.js behind.
     {
       method: "shell.run",
       params: {
-        message: ["git pull"],
+        message: [
+          "git fetch origin",
+          "git checkout main",
+          "git reset --hard origin/main",
+          "git clean -fd scripts",
+        ],
       },
     },
     {
@@ -24,7 +30,7 @@ module.exports = {
     {
       method: "notify",
       params: {
-        html: "StudioNels updated. Click <b>Stop</b> if running, then <b>Start</b>. Open <b>http://127.0.0.1:5173</b> (not 5174).",
+        html: "StudioNels updated to latest main. Click <b>Stop</b>, then <b>Start</b>. Waiter now uses TCP :8787 (no Ollama health hang).",
       },
     },
   ],
