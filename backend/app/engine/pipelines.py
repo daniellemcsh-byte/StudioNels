@@ -153,31 +153,77 @@ def _heartbeat_while(
     start_frac: float,
     end_frac: float,
     fn: Callable[[], Any],
+    *,
+    max_sec: int = 360,
 ) -> Any:
-    """Keep job progress moving while a long blocking load runs (ROCm first load)."""
+    """Keep job progress moving while a long blocking load runs (ROCm first load).
+
+    Raises RuntimeError if fn has not returned within max_sec — otherwise a stuck
+    from_pretrained can sit at ~18% forever while the heartbeat keeps the UI alive.
+    """
     if not cb:
-        return fn()
+        box: dict[str, Any] = {}
+
+        def _run() -> None:
+            try:
+                box["value"] = fn()
+            except Exception as exc:  # noqa: BLE001
+                box["error"] = exc
+
+        t0 = threading.Thread(target=_run, name="studionels-load", daemon=True)
+        t0.start()
+        t0.join(timeout=max_sec)
+        if t0.is_alive():
+            raise RuntimeError(
+                f"{label} timed out after {max_sec // 60} min. "
+                "Weights never finished loading — Stop, pick Wan 1.3B / LTX Distilled "
+                "(or finish the model Download in Models), then retry."
+            )
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
+
     stop = threading.Event()
     started = time.time()
+    box: dict[str, Any] = {}
 
     def beat() -> None:
         frac = start_frac
         while not stop.wait(2.0):
             elapsed = int(time.time() - started)
-            frac = min(end_frac, frac + (end_frac - start_frac) / 40.0)
+            frac = min(end_frac, frac + (end_frac - start_frac) / 50.0)
+            hint = " · still in RAM (VRAM fills after this step)"
+            if elapsed >= 90:
+                hint = " · if this passes 5–6 min, Stop and use a smaller / already-downloaded model"
             _progress(
                 cb,
-                f"{label} ({elapsed}s — first load can take several minutes on AMD)…",
+                f"{label} ({elapsed}s — first AMD load){hint}…",
                 frac,
             )
 
-    t = threading.Thread(target=beat, name="studionels-load-beat", daemon=True)
-    t.start()
-    try:
-        return fn()
-    finally:
-        stop.set()
-        t.join(timeout=0.2)
+    def _run() -> None:
+        try:
+            box["value"] = fn()
+        except Exception as exc:  # noqa: BLE001
+            box["error"] = exc
+
+    beat_t = threading.Thread(target=beat, name="studionels-load-beat", daemon=True)
+    work_t = threading.Thread(target=_run, name="studionels-load", daemon=True)
+    beat_t.start()
+    work_t.start()
+    work_t.join(timeout=max_sec)
+    stop.set()
+    beat_t.join(timeout=0.2)
+    if work_t.is_alive():
+        raise RuntimeError(
+            f"{label} timed out after {max_sec // 60} min. "
+            "Diffusers never finished reading weights (often a huge HF download or incomplete "
+            "local folder). Stop → Models → ensure the model shows Ready, prefer Wan 1.3B / "
+            "LTX Distilled, then Generate again."
+        )
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 def _load_image(path: str | None):
@@ -599,7 +645,8 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         "Loading pipeline weights",
         0.05,
         0.18,
-        lambda: _build_pipeline(model, device, dtype, cpu_offload, mem),
+        lambda: _build_pipeline(model, device, dtype, cpu_offload, mem, cb=cb),
+        max_sec=6 * 60,
     )
     # When TE should stay on CPU for VRAM savings
     te_job = dict(job)
@@ -807,6 +854,7 @@ def _build_pipeline(
     dtype,
     cpu_offload: bool,
     memory: dict[str, Any] | None = None,
+    cb: ProgressCb | None = None,
 ):
     # mmgp redirects safetensors — import early when present
     try:
@@ -823,22 +871,49 @@ def _build_pipeline(
     from .memory import apply_memory_to_pipeline, memory_from_preset
 
     source, is_local = _resolve_model_source(model)
+    where = "local disk" if is_local else "Hugging Face (download if missing)"
+    short = source if len(str(source)) < 80 else ("…" + str(source)[-60:])
+    _progress(cb, f"Reading weights from {where}: {short}", 0.06)
+
     load_kwargs: dict[str, Any] = {"torch_dtype": dtype}
     if is_local:
         load_kwargs["local_files_only"] = True
+        # Incomplete local packs used to silently fall through to a multi-GB HF download
+        # and look "stuck at 18%" for ages — fail fast instead.
+        local_path = Path(str(source))
+        if local_path.exists() and not (
+            (local_path / "model_index.json").exists()
+            or any(local_path.glob("*.safetensors"))
+            or any(local_path.glob("**/*.safetensors"))
+        ):
+            raise RuntimeError(
+                f"Local model folder looks empty: {source}. "
+                "Open Models → Download until status is Ready, then retry."
+            )
+
     # Always materialize on CPU first so mmgp can own device placement
     try:
         pipe = DiffusionPipeline.from_pretrained(source, **load_kwargs)
-    except Exception:
+    except Exception as first_exc:
+        if is_local:
+            raise RuntimeError(
+                f"Could not load local weights from {source}: {first_exc}. "
+                "Re-download the model in Models (do not wait on a silent HF fetch)."
+            ) from first_exc
         import torch
 
-        # Retry without local-only / with float32 if dtype or partial cache fails
+        _progress(cb, f"Retrying load (float32)… {first_exc}", 0.08)
         retry_kwargs: dict[str, Any] = {"torch_dtype": torch.float32}
         try:
             pipe = DiffusionPipeline.from_pretrained(source, **retry_kwargs)
-        except Exception:
-            pipe = DiffusionPipeline.from_pretrained(model["hf_id"], torch_dtype=torch.float32)
+        except Exception as second_exc:
+            hf = model.get("hf_id")
+            if not hf:
+                raise RuntimeError(f"Pipeline load failed: {second_exc}") from second_exc
+            _progress(cb, f"Fetching from Hugging Face: {hf}", 0.09)
+            pipe = DiffusionPipeline.from_pretrained(hf, torch_dtype=torch.float32)
 
+    _progress(cb, "Weights in RAM — applying StudioNels mmgp / device placement…", 0.14)
     try:
         pipe.to("cpu")
     except Exception:
@@ -854,6 +929,7 @@ def _build_pipeline(
             }
         )
     placement = apply_memory_to_pipeline(pipe, device, mem)
+    _progress(cb, f"Device ready ({placement})", 0.17)
     # Prefer SDPA when available — faster than sliced attention on big AMD cards
     try:
         if hasattr(pipe, "set_attention_backend"):

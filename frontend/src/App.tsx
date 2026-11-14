@@ -209,7 +209,7 @@ function describeJobActivity(job: EngineJob, nowMs = Date.now()): {
             ? `Upsampling${stepBit}`
             : `Generating image${stepBit}`
     const detail = hung
-      ? `${job.message || `${pct}%`} · No denoise step yet. If Wan2GP is linked, Stop and retry; if using Diffusers fallback, set Memory to GPU VRAM.`
+      ? `${job.message || `${pct}%`} · Still before denoise. Stop if load exceeds ~6 min — use a Ready model (Wan 1.3B / LTX Distilled) and Max VRAM.`
       : job.message || `${pct}%`
     return pack(phase, detail, hung ? 'fail' : 'run', 3)
   }
@@ -268,8 +268,10 @@ function GenerationStageBar({
       </div>
       {noStepYet && jobElapsedSec(job, nowMs) >= 120 ? (
         <p className="fit-warn tiny gen-stall-hint">
-          Still before step 1 after {act.elapsedLabel}. Import Wan2GP in Models so Generate uses
-          the mmgp engine; or Stop and retry with Max VRAM + Wan 1.3B / LTX Distilled.
+          Still before step 1 after {act.elapsedLabel}
+          {pct < 20
+            ? ' — stuck loading weights (VRAM often stays 0 until RAM load finishes). Stop, confirm the model is Ready in Models, try Wan 1.3B / LTX Distilled.'
+            : ' — Stop and retry with Max VRAM + Wan 1.3B / LTX Distilled if this keeps climbing with no Step.'}
         </p>
       ) : null}
       <div className="gen-stage-track" role="list" aria-label="Generation stages">

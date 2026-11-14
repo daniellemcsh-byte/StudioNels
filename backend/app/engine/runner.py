@@ -39,12 +39,14 @@ _CURRENT_JOB_ID: str | None = None
 _CURRENT_PROC: Any = None
 _PROC_LOCK = threading.Lock()
 
-# If Diffusers/ROCm stops writing progress this long, treat as hung (Wan2GP ≈1min).
+# If Diffusers/ROCm stops writing progress this long, treat as hung.
 _STALL_SEC = 120
-# Hard cap — Diffusers Wan is slower than Wan2GP, but 40min stuck is never OK.
+# Hard cap for a whole job.
 _MAX_JOB_SEC = 20 * 60
 # First denoise step should arrive well before this on a healthy GPU path.
 _FIRST_STEP_SEC = 8 * 60
+# Weight load (from_pretrained / mmgp) — heartbeats used to keep this alive forever at ~18%.
+_LOAD_MAX_SEC = 6 * 60
 
 
 def _text_encoder_presets() -> list[dict[str, Any]]:
@@ -491,17 +493,33 @@ def _run_diffusers_isolated(
                 soft = min(0.55, 0.2 + child_silent / 600.0)
                 cb(
                     f"Waiting on GPU… {int(elapsed)}s elapsed · no new step — "
-                    f"built-in Diffusers ≠ Wan2GP (~1 min). Stop if past ~10 min",
+                    f"Stop if past ~10 min; prefer Wan 1.3B / LTX Distilled",
                     max(float(job.get("progress") or 0.2), soft),
                 )
                 last_parent_pulse = now
+
+            # Load-phase watchdog: heartbeats alone used to keep ~18% alive forever
+            last_msg = str((last_payload or {}).get("message") or job.get("message") or "")
+            last_frac = float((last_payload or {}).get("progress") or job.get("progress") or 0)
+            still_loading = (not saw_step) and (
+                last_frac < 0.2
+                or "loading pipeline" in last_msg.lower()
+                or "reading weights" in last_msg.lower()
+                or "first amd load" in last_msg.lower()
+            )
+            if still_loading and elapsed >= _LOAD_MAX_SEC:
+                proc.kill()
+                raise RuntimeError(
+                    f"Model load stuck for {_LOAD_MAX_SEC // 60}+ min (still before generate). "
+                    "VRAM often stays 0 until weights finish reading into RAM. "
+                    "Stop → Models → confirm Ready → try Wan 1.3B or LTX Distilled."
+                )
 
             if child_silent >= _STALL_SEC and not saw_step:
                 proc.kill()
                 raise RuntimeError(
                     "Generation stalled — GPU made no denoise progress for "
-                    f"{_STALL_SEC // 60} minutes. This Diffusers path is not Wan2GP "
-                    "(Wan2GP ~1 min). Switch Memory to GPU VRAM (amd-r9700), "
+                    f"{_STALL_SEC // 60} minutes. Switch Memory to GPU VRAM (amd-r9700), "
                     "use Wan 1.3B or LTX Distilled, fewer frames, then retry."
                 )
             if (
@@ -513,13 +531,13 @@ def _run_diffusers_isolated(
                 raise RuntimeError(
                     "First denoise step never started (8+ min). "
                     "Likely stuck in ROCm/offload — use preset Max VRAM (amd-r9700), "
-                    "or a lighter model. Wan2GP uses a different engine and will be faster."
+                    "or a lighter model."
                 )
             if elapsed >= _MAX_JOB_SEC:
                 proc.kill()
                 raise RuntimeError(
                     f"Job exceeded {_MAX_JOB_SEC // 60} minutes and was stopped. "
-                    "Use fewer frames / Draft quality / GPU-resident memory, or generate in Wan2GP."
+                    "Use fewer frames / Draft quality / GPU-resident memory."
                 )
             time.sleep(0.75)
 
