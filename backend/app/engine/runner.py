@@ -231,20 +231,29 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     if mode_meta.get("needs_video") and not payload.get("video_path"):
         raise ValueError("Upsample video needs a video/clip — add a file in Generate.")
 
-    quality = payload.get("quality") or "balanced"
-    qmeta = next((q for q in QUALITY_PRESETS if q["id"] == quality), QUALITY_PRESETS[1])
+    # Default Draft for video — matches how other local apps feel snappy
+    video_modes = {"t2v", "i2v", "ref2v", "upsample_video"}
+    quality = payload.get("quality") or ("draft" if mode in video_modes else "balanced")
+    qmeta = next((q for q in QUALITY_PRESETS if q["id"] == quality), QUALITY_PRESETS[0])
     base_steps = int(payload.get("steps") or model.get("default_steps") or 20)
     base_guidance = float(payload.get("guidance") or model.get("default_guidance") or 5)
     steps = max(1, int(base_steps * float(qmeta["steps_scale"])))
     guidance = float(base_guidance * float(qmeta["guidance_scale"]))
+    # Distilled models: keep step count low even on Balanced
+    if model.get("distilled") and not payload.get("steps"):
+        steps = min(steps, int(model.get("default_steps") or 8))
 
     duration_sec = payload.get("duration_sec")
     frames = payload.get("frames")
     fps = int(payload.get("fps") or gen.get("fps") or model.get("fps") or 16)
-    if duration_sec and not frames and mode in ("t2v", "i2v", "ref2v", "upsample_video"):
+    if duration_sec and not frames and mode in video_modes:
         frames = max(8, int(float(duration_sec) * fps))
     if not frames:
         frames = int(gen.get("default_frames") or model.get("default_frames") or 49)
+    # Soft frame cap from quality — 5s @ 24fps (=120f) is a common speed trap
+    max_frames = qmeta.get("max_frames")
+    if max_frames and not payload.get("frames") and mode in video_modes:
+        frames = min(int(frames), int(max_frames))
     if mode == "t2a" and not duration_sec:
         duration_sec = float(model.get("default_duration_sec") or 8)
 
@@ -390,12 +399,102 @@ def cancel_job(job_id: str) -> dict[str, Any]:
     return job
 
 
+def _daemon_paths() -> dict[str, Path]:
+    d = MEDIA_DIR / "_engine_daemon"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "requests").mkdir(parents=True, exist_ok=True)
+    return {
+        "root": d,
+        "pid": d / "daemon.pid",
+        "heartbeat": d / "heartbeat.json",
+        "requests": d / "requests",
+    }
+
+
+def _daemon_alive() -> bool:
+    paths = _daemon_paths()
+    if not paths["pid"].exists():
+        return False
+    try:
+        pid = int(paths["pid"].read_text(encoding="utf-8").strip())
+    except Exception:
+        return False
+    try:
+        os.kill(pid, 0)
+    except Exception:
+        return False
+    # Heartbeat should be recent when idle or busy
+    try:
+        hb = json.loads(paths["heartbeat"].read_text(encoding="utf-8"))
+        if time.time() - float(hb.get("ts") or 0) > 90:
+            return False
+    except Exception:
+        # pid lives; treat as starting up
+        pass
+    return True
+
+
+def _ensure_warm_daemon() -> bool:
+    """Start the warm engine daemon if needed. Returns True when a daemon is usable."""
+    if os.environ.get("STUDIONELS_COLD_WORKER", "").strip().lower() in {"1", "true", "yes"}:
+        return False
+    if _daemon_alive():
+        return True
+    backend_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env.setdefault("TORCHINDUCTOR_DISABLE", "1")
+    env.setdefault("TORCH_COMPILE_DISABLE", "1")
+    log_path = _daemon_paths()["root"] / "daemon.log"
+    try:
+        log_f = open(log_path, "a", encoding="utf-8")
+    except Exception:
+        log_f = subprocess.DEVNULL
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "app.engine.engine_daemon"],
+            cwd=str(backend_root),
+            env=env,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except Exception:
+        return False
+    # Wait briefly for heartbeat
+    for _ in range(40):
+        if _daemon_alive():
+            return True
+        time.sleep(0.25)
+    return _daemon_alive()
+
+
+def _kill_warm_daemon() -> None:
+    paths = _daemon_paths()
+    if not paths["pid"].exists():
+        return
+    try:
+        pid = int(paths["pid"].read_text(encoding="utf-8").strip())
+        os.kill(pid, 15)
+        time.sleep(0.5)
+        try:
+            os.kill(pid, 9)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        paths["pid"].unlink()
+    except Exception:
+        pass
+
+
 def _run_diffusers_isolated(
     job: dict[str, Any],
     out_path: Path,
     cb,
 ) -> dict[str, Any]:
-    """Run Diffusers in a child process so ROCm hangs can't freeze the API."""
+    """Run Diffusers out-of-process — prefer warm daemon (cached model) for speed."""
     global _CURRENT_PROC
     ensure_dirs()
     work = MEDIA_DIR / "_workers" / str(job["id"])
@@ -403,7 +502,8 @@ def _run_diffusers_isolated(
     job_file = work / "job.json"
     progress_file = work / "progress.json"
     result_file = work / "result.json"
-    for p in (progress_file, result_file):
+    cancel_file = work / "cancel.flag"
+    for p in (progress_file, result_file, cancel_file):
         if p.exists():
             try:
                 p.unlink()
@@ -411,36 +511,68 @@ def _run_diffusers_isolated(
                 pass
     job_file.write_text(json.dumps(job), encoding="utf-8")
 
-    # Launch as module from backend/ so `app.*` imports resolve
+    use_daemon = _ensure_warm_daemon()
     backend_root = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
-    # Avoid torch inductor hanging forever on first ROCm compile in some builds
     env.setdefault("TORCHINDUCTOR_DISABLE", "1")
     env.setdefault("TORCH_COMPILE_DISABLE", "1")
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "app.engine.gen_worker",
-        "--job-file",
-        str(job_file),
-        "--progress-file",
-        str(progress_file),
-        "--result-file",
-        str(result_file),
-        "--out-path",
-        str(out_path),
-    ]
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(backend_root),
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    with _PROC_LOCK:
-        _CURRENT_PROC = proc
+    proc: subprocess.Popen | None = None
+    if use_daemon:
+        # File-based IPC to the long-lived warm engine (model stays loaded)
+        req = {
+            "job": job,
+            "out_path": str(out_path),
+            "progress_file": str(progress_file),
+            "result_file": str(result_file),
+            "cancel_file": str(cancel_file),
+        }
+        req_path = _daemon_paths()["requests"] / f"{job['id']}.json"
+        req_path.write_text(json.dumps(req), encoding="utf-8")
+        cb("Queued on warm engine (model stays loaded between gens)…", 0.02)
+
+        class _DaemonHandle:
+            """Stop cancels the job; stall kill restarts the daemon."""
+
+            def terminate(self) -> None:
+                try:
+                    cancel_file.write_text("1", encoding="utf-8")
+                except Exception:
+                    pass
+
+            def kill(self) -> None:
+                try:
+                    cancel_file.write_text("1", encoding="utf-8")
+                except Exception:
+                    pass
+                _kill_warm_daemon()
+
+        with _PROC_LOCK:
+            _CURRENT_PROC = _DaemonHandle()
+    else:
+        cmd = [
+            sys.executable,
+            "-m",
+            "app.engine.gen_worker",
+            "--job-file",
+            str(job_file),
+            "--progress-file",
+            str(progress_file),
+            "--result-file",
+            str(result_file),
+            "--out-path",
+            str(out_path),
+        ]
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(backend_root),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        with _PROC_LOCK:
+            _CURRENT_PROC = proc
 
     started = time.time()
     last_child_touch = started
@@ -448,15 +580,36 @@ def _run_diffusers_isolated(
     last_payload: dict[str, Any] = {}
     saw_step = False
     gen_started_at: float | None = None
+    code: int | None = None
+
+    def _stop_worker(kill: bool = False) -> None:
+        handle = proc if proc is not None else _CURRENT_PROC
+        if handle is None:
+            return
+        try:
+            if kill:
+                handle.kill()
+            else:
+                handle.terminate()
+        except Exception:
+            pass
+        if proc is not None and not kill:
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
     try:
         while True:
             if _CANCEL.get(job["id"]):
-                proc.terminate()
                 try:
-                    proc.wait(timeout=5)
+                    cancel_file.write_text("1", encoding="utf-8")
                 except Exception:
-                    proc.kill()
+                    pass
+                _stop_worker(kill=False)
                 raise JobCancelled("Stopped by user")
 
             # Mirror child progress into the job store (API stays responsive)
@@ -474,14 +627,24 @@ def _run_diffusers_isolated(
                             frac >= 0.2
                             or "generating" in msg.lower()
                             or "denoise" in msg.lower()
+                            or "warm model" in msg.lower()
                         ):
                             gen_started_at = time.time()
                         cb(msg, frac)
                 except Exception:
                     pass
 
-            code = proc.poll()
-            if code is not None:
+            if result_file.exists():
+                code = 0
+                break
+
+            if proc is not None:
+                code = proc.poll()
+                if code is not None:
+                    break
+            elif use_daemon and not _daemon_alive() and not result_file.exists():
+                # Daemon died mid-job
+                code = 1
                 break
 
             now = time.time()
@@ -493,7 +656,7 @@ def _run_diffusers_isolated(
                 soft = min(0.55, 0.2 + child_silent / 600.0)
                 cb(
                     f"Waiting on GPU… {int(elapsed)}s elapsed · no new step — "
-                    f"Stop if past ~10 min; prefer Wan 1.3B / LTX Distilled",
+                    f"Draft + Wan 1.3B / LTX Distilled is the fast path",
                     max(float(job.get("progress") or 0.2), soft),
                 )
                 last_parent_pulse = now
@@ -508,7 +671,7 @@ def _run_diffusers_isolated(
                 or "first amd load" in last_msg.lower()
             )
             if still_loading and elapsed >= _LOAD_MAX_SEC:
-                proc.kill()
+                _stop_worker(kill=True)
                 raise RuntimeError(
                     f"Model load stuck for {_LOAD_MAX_SEC // 60}+ min (still before generate). "
                     "VRAM often stays 0 until weights finish reading into RAM. "
@@ -516,25 +679,25 @@ def _run_diffusers_isolated(
                 )
 
             if child_silent >= _STALL_SEC and not saw_step:
-                proc.kill()
+                _stop_worker(kill=True)
                 raise RuntimeError(
                     "Generation stalled — GPU made no denoise progress for "
-                    f"{_STALL_SEC // 60} minutes. Switch Memory to GPU VRAM (amd-r9700), "
-                    "use Wan 1.3B or LTX Distilled, fewer frames, then retry."
+                    f"{_STALL_SEC // 60} minutes. Use Draft quality, Wan 1.3B or LTX Distilled, "
+                    "fewer frames, Memory = GPU VRAM."
                 )
             if (
                 gen_started_at
                 and not saw_step
                 and (now - gen_started_at) >= _FIRST_STEP_SEC
             ):
-                proc.kill()
+                _stop_worker(kill=True)
                 raise RuntimeError(
                     "First denoise step never started (8+ min). "
                     "Likely stuck in ROCm/offload — use preset Max VRAM (amd-r9700), "
                     "or a lighter model."
                 )
             if elapsed >= _MAX_JOB_SEC:
-                proc.kill()
+                _stop_worker(kill=True)
                 raise RuntimeError(
                     f"Job exceeded {_MAX_JOB_SEC // 60} minutes and was stopped. "
                     "Use fewer frames / Draft quality / GPU-resident memory."
@@ -542,11 +705,12 @@ def _run_diffusers_isolated(
             time.sleep(0.75)
 
         stderr = ""
-        try:
-            err_bytes = proc.stderr.read() if proc.stderr else b""
-            stderr = (err_bytes or b"")[-2000:].decode("utf-8", errors="replace")
-        except Exception:
-            stderr = ""
+        if proc is not None:
+            try:
+                err_bytes = proc.stderr.read() if proc.stderr else b""
+                stderr = (err_bytes or b"")[-2000:].decode("utf-8", errors="replace")
+            except Exception:
+                stderr = ""
 
         if result_file.exists():
             data = json.loads(result_file.read_text(encoding="utf-8"))
@@ -563,13 +727,13 @@ def _run_diffusers_isolated(
         raise RuntimeError("Diffusers worker finished with no result file.")
     finally:
         with _PROC_LOCK:
-            if _CURRENT_PROC is proc:
-                _CURRENT_PROC = None
-        try:
-            if proc.poll() is None:
-                proc.kill()
-        except Exception:
-            pass
+            _CURRENT_PROC = None
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+            except Exception:
+                pass
 
 
 def cancel_all_jobs() -> dict[str, Any]:

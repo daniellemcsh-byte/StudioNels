@@ -92,13 +92,12 @@ def apply_mmgp_to_pipeline(
     )
     profile_name = getattr(profile, "name", str(profile))
 
+    # Quantize by default — same lever Wan2GP uses for ~1 min AMD runs.
+    # Opt out with mem.quantize_transformer=False (quality / Max preset).
     kwargs: dict[str, Any] = {
         "quantizeTransformer": bool(mem.get("quantize_transformer", True)),
         "verboseLevel": 1,
     }
-    # Big cards: keep more resident, skip aggressive quant if user wants quality
-    if placement == "gpu" and isinstance(vram_gb, (int, float)) and float(vram_gb) >= 24:
-        kwargs["quantizeTransformer"] = bool(mem.get("quantize_transformer", False))
 
     try:
         offload.profile(pipe, profile, **kwargs)

@@ -639,15 +639,38 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             media = _write_preview_wav(out_path, duration_sec, int(seed or 1))
             return {"media_path": media, "thumb_path": None, "frames": 0, "preview": True}
 
-    _progress(cb, "Loading pipeline weights…", 0.05)
-    pipe = _heartbeat_while(
-        cb,
-        "Loading pipeline weights",
-        0.05,
-        0.18,
-        lambda: _build_pipeline(model, device, dtype, cpu_offload, mem, cb=cb),
-        max_sec=6 * 60,
-    )
+    # Warm cache (engine daemon): skip multi-minute reload when model matches
+    pipe = None
+    if job.get("warm_cache"):
+        try:
+            from .pipe_cache import cache_key, get as cache_get
+
+            dtype_name = str(getattr(dtype, "__name__", None) or dtype)
+            key = cache_key(str(model.get("id") or job.get("model_id") or ""), mem, dtype_name)
+            pipe = cache_get(key)
+            if pipe is not None:
+                _progress(cb, "Warm model ready (skipped reload)…", 0.18)
+        except Exception:
+            pipe = None
+    if pipe is None:
+        _progress(cb, "Loading pipeline weights…", 0.05)
+        pipe = _heartbeat_while(
+            cb,
+            "Loading pipeline weights",
+            0.05,
+            0.18,
+            lambda: _build_pipeline(model, device, dtype, cpu_offload, mem, cb=cb),
+            max_sec=6 * 60,
+        )
+        if job.get("warm_cache") and pipe is not None:
+            try:
+                from .pipe_cache import cache_key, put as cache_put
+
+                dtype_name = str(getattr(dtype, "__name__", None) or dtype)
+                key = cache_key(str(model.get("id") or job.get("model_id") or ""), mem, dtype_name)
+                cache_put(key, pipe, label=str(model.get("label") or model.get("id") or key))
+            except Exception:
+                pass
     # When TE should stay on CPU for VRAM savings
     te_job = dict(job)
     if mem.get("text_encoder_on_cpu"):

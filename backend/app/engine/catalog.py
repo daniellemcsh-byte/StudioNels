@@ -104,8 +104,9 @@ def _frame_size_presets() -> list[dict]:
 SIZE_PRESETS = _frame_size_presets()
 
 QUALITY_PRESETS = [
-    {"id": "draft", "label": "Draft (fast)", "steps_scale": 0.6, "guidance_scale": 0.85},
-    {"id": "balanced", "label": "Balanced", "steps_scale": 1.0, "guidance_scale": 1.0},
+    # Draft is aggressive on purpose — other apps feel fast because first takes are short.
+    {"id": "draft", "label": "Draft (fast)", "steps_scale": 0.4, "guidance_scale": 0.8, "max_frames": 49},
+    {"id": "balanced", "label": "Balanced", "steps_scale": 1.0, "guidance_scale": 1.0, "max_frames": 81},
     {"id": "high", "label": "High", "steps_scale": 1.4, "guidance_scale": 1.1},
     {"id": "max", "label": "Max (slow)", "steps_scale": 1.8, "guidance_scale": 1.2},
 ]
@@ -1041,6 +1042,13 @@ def default_model_for_mode(mode: str, target_vram_gb: float = 8) -> dict[str, An
     candidates = list_models_for_mode(mode)
     fit = [m for m in candidates if m["min_vram_gb"] <= target_vram_gb]
     pool = fit or candidates
-    # Prefer smaller models when VRAM is limited
-    pool = sorted(pool, key=lambda m: float(m.get("min_vram_gb") or 0))
+    # Prefer fast distilled / 1.3B models — matches how other local apps feel snappy
+    def _speed_key(m: dict[str, Any]) -> tuple:
+        mid = str(m.get("id") or "").lower()
+        label = str(m.get("label") or "").lower()
+        distilled = 0 if (m.get("distilled") or "distill" in mid or "distill" in label) else 1
+        small = 0 if ("1.3" in mid or "1.3" in label or "schnell" in mid) else 1
+        return (distilled, small, float(m.get("min_vram_gb") or 0), mid)
+
+    pool = sorted(pool, key=_speed_key)
     return pool[0] if pool else None
