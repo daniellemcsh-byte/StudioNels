@@ -38,11 +38,12 @@ module.exports = {
       params: {
         path: "frontend",
         message: [
-          "npm run dev -- --host 127.0.0.1 --port 5173 --strictPort",
+          // 0.0.0.0 + allowedHosts in vite.config.ts = phone / Tailscale access
+          "npm run dev -- --host 0.0.0.0 --port 5173 --strictPort",
         ],
         on: [
           {
-            event: "/Local:\\s+http:\\/\\/127\\.0\\.0\\.1:5173\\//i",
+            event: "/(Local|Network):\\s+http:\\/\\/(127\\.0\\.0\\.1|0\\.0\\.0\\.0|localhost):5173\\//i",
             done: true,
           },
         ],
