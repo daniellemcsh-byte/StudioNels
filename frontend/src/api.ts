@@ -319,6 +319,27 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ path }),
     }),
+  engineLorasDownloadUrl: (url: string, force = false) =>
+    req<{
+      ok: boolean
+      hf_id: string
+      filename?: string | null
+      download: Record<string, unknown>
+    }>('/api/engine/loras/download-url', {
+      method: 'POST',
+      body: JSON.stringify({ url, force }),
+    }),
+  engineModelFamilies: (mode?: string) =>
+    req<{
+      families: {
+        id: string
+        label: string
+        variants: import('./types').EngineModel[]
+      }[]
+      configs: { id: string; label: string }[]
+      count: number
+      active_model_id?: string | null
+    }>(`/api/engine/model-families${mode ? `?mode=${encodeURIComponent(mode)}` : ''}`),
   engineModels: () => req<import('./types').EngineModelsPack>('/api/engine/models'),
   engineModelDownload: (modelId: string, force = false) =>
     req<Record<string, unknown>>(

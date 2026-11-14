@@ -2456,3 +2456,230 @@ a {
   box-shadow: 0 0 16px rgba(255, 61, 206, 0.2);
   background: rgba(255, 61, 206, 0.1);
 }
+
+/* Wan2GP-style Generate: family picker + advanced tabs */
+.wan-status-strip {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(57, 255, 199, 0.22);
+  border-radius: 12px;
+  background: rgba(6, 12, 24, 0.72);
+}
+
+.wan-family-bar {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.9fr) minmax(160px, 1.4fr) minmax(110px, 0.9fr);
+  gap: 8px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(120, 160, 220, 0.28);
+  background: rgba(10, 18, 36, 0.85);
+  margin-bottom: 10px;
+}
+
+.wan-family-slot {
+  display: grid;
+  gap: 4px;
+}
+
+.wan-family-slot select,
+.wan-box-inner select,
+.wan-box-inner input,
+.wan-box-inner textarea,
+.wan-lora-url-row input {
+  width: 100%;
+}
+
+.wan-variant-list-box {
+  margin-bottom: 10px;
+}
+
+.wan-variant-list {
+  display: grid;
+  gap: 2px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 4px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.wan-variant-item {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.wan-variant-item:hover,
+.wan-variant-item.active {
+  background: rgba(57, 255, 199, 0.1);
+}
+
+.wan-radio {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(160, 190, 255, 0.55);
+  display: grid;
+  place-items: center;
+  font-size: 0.65rem;
+  color: var(--neon);
+}
+
+.wan-radio[data-on='1'] {
+  background: rgba(57, 255, 199, 0.2);
+  border-color: var(--neon);
+}
+
+.wan-advanced {
+  margin: 14px 0;
+  display: grid;
+  gap: 10px;
+}
+
+.wan-advanced-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.wan-adv-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid rgba(120, 160, 220, 0.25);
+  padding-bottom: 6px;
+}
+
+.wan-adv-tab {
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  padding: 8px 10px;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+}
+
+.wan-adv-tab.active {
+  color: var(--ink);
+  background: rgba(40, 70, 120, 0.35);
+  box-shadow: inset 0 -2px 0 var(--neon);
+}
+
+.wan-adv-body {
+  display: grid;
+  gap: 10px;
+}
+
+.wan-box {
+  display: grid;
+  gap: 6px;
+}
+
+.wan-box-hint {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.wan-box-inner {
+  border: 1px solid rgba(120, 160, 220, 0.32);
+  border-radius: 10px;
+  background: rgba(8, 16, 32, 0.9);
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.wan-box-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.wan-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 900px) {
+  .wan-family-bar,
+  .wan-two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+.wan-slider-row {
+  display: grid;
+  grid-template-columns: 1fr 72px;
+  gap: 8px;
+  align-items: center;
+}
+
+.wan-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.wan-include-media {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin-left: auto;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.wan-load-settings {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  border: 1px dashed rgba(120, 160, 220, 0.4);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.wan-lora-url-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.wan-media-info-toggle {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(120, 160, 220, 0.28);
+  background: rgba(10, 18, 36, 0.7);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  margin: 10px 0;
+}
+
+.wan-generate-btn {
+  width: 100%;
+  font-size: 1.05rem;
+  padding: 14px 18px;
+}

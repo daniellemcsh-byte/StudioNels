@@ -67,6 +67,12 @@ export interface EngineModel {
   discovered?: boolean
   distilled?: boolean
   wan2gp?: boolean
+  wan2gp_only?: boolean
+  family?: string
+  variant?: string
+  fps?: number
+  default_frames?: number
+  default_steps?: number
   format?: string
   component_files?: Record<string, string>
 }
@@ -157,6 +163,8 @@ export interface ModelTemplate {
   id: string
   label: string
   kind: string
+  family?: string
+  variant?: string
   modes: GenMode[]
   min_vram_gb: number
   tier?: string

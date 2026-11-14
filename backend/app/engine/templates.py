@@ -983,6 +983,8 @@ def _sync_catalog_templates() -> None:
             {
                 "id": mid,
                 "label": m.get("label") or mid,
+                "family": m.get("family"),
+                "variant": m.get("variant"),
                 "kind": kind,
                 "modes": list(m.get("modes") or []),
                 "min_vram_gb": float(m.get("min_vram_gb") or 8),

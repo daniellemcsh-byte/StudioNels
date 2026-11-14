@@ -175,8 +175,17 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     settings = load_settings()
     preset = get_preset(payload.get("preset_id") or settings.preset_id)
     gen = preset.get("generation", {})
+    advanced = payload.get("advanced") if isinstance(payload.get("advanced"), dict) else {}
+    # Advanced Mode → Configs can override memory profile for this job only
+    mem_profile = payload.get("memory_profile") or advanced.get("memory_profile")
+    if mem_profile in (None, "", "default"):
+        mem_profile = None
     mem = resolve_memory_for_job(
-        {**payload, "preset_id": payload.get("preset_id") or settings.preset_id}
+        {
+            **payload,
+            "preset_id": payload.get("preset_id") or settings.preset_id,
+            **({"memory_profile": mem_profile} if mem_profile else {}),
+        }
     )
     mode = payload["mode"]
     model_id = payload.get("model_id")
@@ -316,6 +325,9 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         ),
         "memory": mem,
         "memory_placement": mem.get("placement"),
+        "memory_profile": mem_profile or mem.get("profile_id") or mem.get("id"),
+        "config_preset": payload.get("config_preset") or "default",
+        "advanced": advanced,
         "preset_id": mem.get("preset_id") or settings.preset_id,
         "image_path": payload.get("image_path"),
         "reference_path": payload.get("reference_path"),

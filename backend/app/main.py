@@ -210,11 +210,77 @@ async def engine_loras_import(body: dict):
 @app.get("/api/engine/models")
 async def engine_models():
     """Catalog + download status + which model is active."""
+    from .engine.model_families import _infer_family, _infer_variant
     from .engine.models_manager import get_active_model_id, list_models_with_status
 
     active = get_active_model_id()
     models = list_models_with_status(active)
+    for m in models:
+        m["family"] = m.get("family") or _infer_family(m)
+        m["variant"] = m.get("variant") or _infer_variant(m)
     return {"models": models, "active_model_id": active, "count": len(models)}
+
+
+@app.get("/api/engine/model-families")
+async def engine_model_families(mode: str | None = None):
+    """Wan2GP-style family → variant list for the Generate picker."""
+    from .engine.model_families import list_model_families
+    from .engine.models_manager import get_active_model_id, list_models_with_status
+
+    pack = list_model_families(mode)
+    active = get_active_model_id()
+    status = {m["id"]: m for m in list_models_with_status(active)}
+    for fam in pack["families"]:
+        for v in fam["variants"]:
+            extra = status.get(v["id"]) or {}
+            v["installed"] = extra.get("installed", False)
+            v["active"] = extra.get("active", False)
+            v["download_status"] = extra.get("download_status")
+            v["download_progress"] = extra.get("download_progress")
+    pack["active_model_id"] = active
+    return pack
+
+
+@app.post("/api/engine/loras/download-url")
+async def engine_loras_download_url(body: dict):
+    """Download a LoRA from a Hugging Face URL / repo id into loras/."""
+    from urllib.parse import urlparse
+
+    from .engine.models_manager import download_hf_asset
+
+    raw = str(body.get("url") or body.get("path") or "").strip()
+    if not raw:
+        raise HTTPException(400, "url is required (HF repo or file URL)")
+    hf_id = raw
+    filename = None
+    if "://" in raw or raw.startswith("www."):
+        u = urlparse(raw if "://" in raw else f"https://{raw}")
+        parts = [p for p in u.path.split("/") if p]
+        if "huggingface.co" in (u.netloc or "") and len(parts) >= 2:
+            hf_id = f"{parts[0]}/{parts[1]}"
+            if "resolve" in parts or "blob" in parts:
+                # .../owner/repo/resolve/main/file.safetensors
+                try:
+                    idx = parts.index("resolve") if "resolve" in parts else parts.index("blob")
+                    filename = "/".join(parts[idx + 2 :]) or None
+                except Exception:
+                    filename = parts[-1] if parts[-1].endswith((".safetensors", ".pt", ".bin")) else None
+        else:
+            raise HTTPException(400, "Only Hugging Face URLs are supported right now")
+    if "/" not in hf_id:
+        raise HTTPException(400, "Expected owner/repo or huggingface.co/owner/repo/…")
+    asset_id = f"lora-url-{(filename or hf_id).replace('/', '__')}"[:120]
+    try:
+        job = download_hf_asset(
+            asset_id=asset_id,
+            hf_id=hf_id,
+            dest="loras",
+            label=filename or hf_id,
+            force=bool(body.get("force")),
+        )
+        return {"ok": True, "hf_id": hf_id, "filename": filename, "download": job}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/api/engine/models/{model_id}/download")

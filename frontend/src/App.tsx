@@ -14,6 +14,13 @@ import {
 import { FRAME_SIZES, frameById, framesByOrientation } from './frameSizes'
 import type { RecipeInfo } from './types'
 import {
+  ModelFamilyPicker,
+  VariantListBox,
+  WanAdvancedPanel,
+  loadStoredAdvanced,
+  type WanAdvancedSettings,
+} from './WanGpAdvanced'
+import {
   AUDIO_KINDS,
   MUSIC_MOODS,
   VOICE_ACCENTS,
@@ -3013,6 +3020,11 @@ function GenerateTab({
   const [jobs, setJobs] = useState<EngineJob[]>([])
   const [mode, setMode] = useState<GenMode>('t2v')
   const [modelId, setModelId] = useState('')
+  const [configId, setConfigId] = useState('default')
+  const [advancedOpen, setAdvancedOpen] = useState(true)
+  const [adv, setAdv] = useState<WanAdvancedSettings>(() => loadStoredAdvanced())
+  const [mediaInfoOpen, setMediaInfoOpen] = useState(false)
+  const [queueOpen, setQueueOpen] = useState(true)
   const [prompt, setPrompt] = useState('')
   const [negative, setNegative] = useState('')
   const [shotId, setShotId] = useState('')
@@ -3270,8 +3282,41 @@ function GenerateTab({
   }, [continuePrev, shotId, project.id, project.takes.length])
 
   const modeMeta = engine?.modes.find((m) => m.id === mode)
-  const models = engine?.models.filter((m) => m.modes.includes(mode)) || []
+  const models = (engine?.models.filter((m) => m.modes.includes(mode)) || []).map((m) => ({
+    ...m,
+    family:
+      m.family ||
+      (m.id.startsWith('wan22')
+        ? 'Wan2.2'
+        : m.id.startsWith('wan21')
+          ? 'Wan2.1'
+          : m.id.includes('ltx')
+            ? 'LTX'
+            : m.id.includes('minimax')
+              ? 'MiniMax'
+              : m.kind === 'image'
+                ? 'Image'
+                : m.kind === 'audio'
+                  ? 'Audio'
+                  : 'Other'),
+    variant: m.variant || m.label.replace(/ \(big GPU\)/g, '').replace(/ \(Wan2GP ckpts\)/g, ''),
+  }))
+  const currentModel = models.find((m) => m.id === modelId)
+  const familyId = currentModel?.family || 'Wan2.2'
   const style = VISUAL_STYLES.find((s) => s.id === project.visual_style)
+
+  const selectModel = async (id: string) => {
+    setModelId(id)
+    const m = models.find((x) => x.id === id)
+    if (m?.fps) setFps(m.fps)
+    try {
+      await api.engineModelActivate(id)
+      notify(`Using ${m?.variant || m?.label || id}`)
+      await refresh()
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    }
+  }
 
   const upload = async (file: File, kind: 'image' | 'reference' | 'video', refIndex = 0) => {
     const res = await api.engineUpload(file, kind)
@@ -3341,6 +3386,10 @@ function GenerateTab({
           ? `${prompt.trim()}, ${style.prompt_suffix}`
           : prompt
       const useContinue = continuePrev && !!imagePath && (mode === 'i2v' || mode === 't2v')
+      const fpsOverride =
+        adv.override_fps && adv.override_fps !== 'model' ? Number(adv.override_fps) : fps
+      const qualityFromConfig =
+        configId === 'fast' ? 'draft' : configId === 'quality' ? 'high' : quality
       const job = await api.engineGenerate({
         mode: useContinue ? 'i2v' : mode,
         model_id: modelId || undefined,
@@ -3357,12 +3406,19 @@ function GenerateTab({
         cpu_offload: true,
         width,
         height,
-        quality,
+        quality: qualityFromConfig,
         duration_sec: durationSec,
-        fps,
+        fps: Number.isFinite(fpsOverride) ? fpsOverride : fps,
         frames: frames > 0 ? frames : effectiveFrames,
         seed: renderSeed,
-        steps: steps > 0 ? steps : undefined,
+        steps:
+          steps > 0
+            ? steps
+            : configId === 'fast'
+              ? 8
+              : configId === 'quality'
+                ? 30
+                : undefined,
         guidance: guidance >= 0 ? guidance : undefined,
         strength:
           mode === 'i2v' || mode === 'ref2v' || useContinue ? strength : undefined,
@@ -3370,6 +3426,10 @@ function GenerateTab({
         audio_path: audioPath || undefined,
         lora_path: loraPath || undefined,
         lora_scale: loraPath ? loraScale : undefined,
+        memory_profile:
+          adv.memory_profile !== 'default' ? adv.memory_profile : undefined,
+        config_preset: configId,
+        advanced: adv,
         image_format: project.image_format,
         video_format: project.video_format,
         audio_format: project.audio_format,
@@ -3424,39 +3484,53 @@ function GenerateTab({
             ))}
           </div>
 
+          <div className="wan-status-strip" role="status">
+            <div>
+              <strong>
+                Status{' '}
+                {health?.will_preview
+                  ? 'Preview'
+                  : health?.gpu
+                    ? 'Pro Ready'
+                    : 'Warming up'}
+              </strong>
+              <div className="muted tiny">
+                {jobs[0]
+                  ? `${describeJobActivity(jobs[0]).phase} · ${describeJobActivity(jobs[0]).timerLabel || describeJobActivity(jobs[0]).elapsedLabel} · ${Math.round((jobs[0].progress || 0) * 100)}%`
+                  : 'Ready to generate. Timing and step progress appear here while a job runs.'}
+              </div>
+            </div>
+            <span className="muted tiny">History {jobs.length}</span>
+          </div>
+
           <div className="field" style={{ marginTop: 14 }}>
-            <label>Model</label>
-            <select
-              value={modelId}
-              onChange={async (e) => {
-                const id = e.target.value
-                setModelId(id)
-                try {
-                  await api.engineModelActivate(id)
-                  notify(`Using ${models.find((m) => m.id === id)?.label || id}`)
-                  await refresh()
-                } catch (err) {
-                  notify(String((err as Error).message || err))
+            <label>Model family</label>
+            <ModelFamilyPicker
+              models={models}
+              modelId={modelId}
+              mode={mode}
+              configId={configId}
+              onSelectModel={(id) => void selectModel(id)}
+              onSelectConfig={(id) => {
+                setConfigId(id)
+                if (id === 'fast') {
+                  setQuality('draft')
+                  setSteps(8)
+                } else if (id === 'quality') {
+                  setQuality('high')
+                  setSteps(30)
+                } else if (id === 'low_vram') {
+                  setAdv((a) => ({ ...a, memory_profile: 'vram-12' }))
                 }
               }}
-            >
-              {models.map((m) => {
-                const st = m.download_status || (m.installed ? 'installed' : 'not_downloaded')
-                const tag =
-                  st === 'installed'
-                    ? 'ready'
-                    : st === 'downloading'
-                      ? `↓${Math.round((m.download_progress || 0) * 100)}%`
-                      : st === 'stalled' || st === 'cancelled' || st === 'failed'
-                        ? st
-                        : 'not downloaded'
-                return (
-                  <option key={m.id} value={m.id}>
-                    {m.label} · {tag} (≥{m.min_vram_gb} GB)
-                  </option>
-                )
-              })}
-            </select>
+            />
+            <VariantListBox
+              models={models}
+              modelId={modelId}
+              familyId={familyId}
+              mode={mode}
+              onSelectModel={(id) => void selectModel(id)}
+            />
             {(() => {
               const cur = models.find((m) => m.id === modelId)
               if (!cur) return null
@@ -3468,7 +3542,12 @@ function GenerateTab({
                     <button
                       className="btn acid tiny"
                       type="button"
-                      disabled={busy}
+                      disabled={busy || !!cur.wan2gp_only}
+                      title={
+                        cur.wan2gp_only
+                          ? 'Import this pack from Wan2GP ckpts in Models'
+                          : undefined
+                      }
                       onClick={async () => {
                         setBusy(true)
                         try {
@@ -3482,7 +3561,11 @@ function GenerateTab({
                         }
                       }}
                     >
-                      {st === 'stalled' ? 'Retry download' : 'Download model'}
+                      {cur.wan2gp_only
+                        ? 'Wan2GP import required'
+                        : st === 'stalled'
+                          ? 'Retry download'
+                          : 'Download model'}
                     </button>
                   )}
                   {(st === 'downloading' || st === 'stalled') && (
@@ -3524,7 +3607,9 @@ function GenerateTab({
                       Downloading… {pct}% {cur.download_message || ''}
                     </span>
                   )}
-                  {st === 'installed' && <span className="muted tiny">Ready on disk — selected for this mode.</span>}
+                  {st === 'installed' && (
+                    <span className="muted tiny">Ready on disk — {cur.variant || cur.label}</span>
+                  )}
                   {cur.notes && <span className="muted tiny">{cur.notes}</span>}
                 </div>
               )
@@ -4187,18 +4272,86 @@ function GenerateTab({
             </select>
           </div>
 
+          <WanAdvancedPanel
+            open={advancedOpen}
+            onToggle={() => setAdvancedOpen((v) => !v)}
+            settings={adv}
+            onChange={setAdv}
+            loras={loras}
+            notify={notify}
+            onRefreshLoras={async () => {
+              const pack = await api.engineLoras()
+              setLoras(pack.loras)
+              setLorasPath(pack.path)
+              if (pack.wan2gp_loras_path) setWan2gpLorasPath(pack.wan2gp_loras_path)
+            }}
+          />
+
           <button
-            className="btn acid"
+            className="wan-media-info-toggle"
+            type="button"
+            onClick={() => setMediaInfoOpen((v) => !v)}
+          >
+            <span>Media Info / Late Post Processing / Import Media</span>
+            <span aria-hidden>{mediaInfoOpen ? '▾' : '▸'}</span>
+          </button>
+          {mediaInfoOpen ? (
+            <div className="wan-box" style={{ marginBottom: 12 }}>
+              <div className="wan-box-inner">
+                <p className="muted tiny" style={{ marginTop: 0 }}>
+                  Upload start/ref media in the slots above. Post-process remux / voice options are in
+                  Advanced → Post Processing. Import Wan2GP assets from the Models tab.
+                </p>
+                <div className="inline-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
+                  <button
+                    type="button"
+                    className="btn ghost tiny"
+                    onClick={() => setAdvancedOpen(true)}
+                  >
+                    Open Post Processing
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost tiny"
+                    onClick={() => {
+                      try {
+                        window.sessionStorage.setItem('studionels_tab', 'models')
+                      } catch {
+                        /* ignore */
+                      }
+                      notify('Open Models tab to import Wan2GP / templates.')
+                    }}
+                  >
+                    Import media / models
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          <button
+            className="btn acid wan-generate-btn"
             type="button"
             disabled={busy || (estimate != null && !estimate.can_queue)}
             onClick={run}
           >
-            Generate {mode.toUpperCase()}
+            ▷ Generate {mode.toUpperCase()}
             {estimate?.eta_label ? ` · ${estimate.eta_label}` : ''}
           </button>
         </div>
 
         <div className="panel">
+          <button
+            className="wan-media-info-toggle"
+            type="button"
+            style={{ marginBottom: 10 }}
+            onClick={() => setQueueOpen((v) => !v)}
+          >
+            <span>Queue Management</span>
+            <span aria-hidden>{queueOpen ? '▾' : '▸'}</span>
+          </button>
+          {!queueOpen ? null : (
+          <>
           <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
             <h3 style={{ margin: 0 }}>Queue</h3>
             <div className="inline-actions" style={{ gap: 6 }}>
@@ -4330,6 +4483,8 @@ function GenerateTab({
               )
             })}
           </div>
+          </>
+          )}
         </div>
       </div>
     </div>
@@ -6022,6 +6177,7 @@ function ModelsTab({
   const [filter, setFilter] = useState<
     'all' | 'big' | 't2i' | 't2v' | 'i2v' | 'ref2i' | 'ref2v' | 't2a' | 'upsample_image' | 'upsample_video'
   >('all')
+  const [familyFilter, setFamilyFilter] = useState<string>('all')
   const [customHf, setCustomHf] = useState('rootonchair/LTX-2.3-Distilled-v1.1-Diffusers')
   const [customLabel, setCustomLabel] = useState('LTX-2.3 22B Distilled v1.1')
   const [customKind, setCustomKind] = useState<'video' | 'image' | 'audio' | 'upsample'>('video')
@@ -6073,10 +6229,40 @@ function ModelsTab({
   }, [focusTemplates])
 
   const shown = models.filter((m) => {
+    if (familyFilter !== 'all' && (m.family || 'Other') !== familyFilter) return false
     if (filter === 'big') return (m.min_vram_gb || 0) >= 16 || m.tier === 'big'
     if (filter === 'all') return true
     return (m.modes || []).includes(filter as GenMode)
   })
+  const familyOptions = useMemo(() => {
+    const prefer = [
+      'Wan2.2',
+      'Wan2.1',
+      'LTX',
+      'MiniMax',
+      'Hunyuan',
+      'CogVideoX',
+      'SkyReels',
+      'Kandinsky',
+      'LongCat',
+      'Mochi',
+      'Image',
+      'Audio',
+      'Upsample',
+      'Other',
+    ]
+    const set = new Set(models.map((m) => m.family || 'Other'))
+    return ['all', ...prefer.filter((f) => set.has(f)), ...[...set].filter((f) => !prefer.includes(f)).sort()]
+  }, [models])
+  const shownByFamily = useMemo(() => {
+    const map = new Map<string, EngineModel[]>()
+    for (const m of shown) {
+      const fam = m.family || 'Other'
+      if (!map.has(fam)) map.set(fam, [])
+      map.get(fam)!.push(m)
+    }
+    return [...map.entries()]
+  }, [shown])
 
   const kindDefaultModes = (kind: typeof customKind): string[] => {
     if (kind === 'audio') return ['t2a']
@@ -6249,6 +6435,23 @@ function ModelsTab({
             </button>
           ))}
         </div>
+        <div className="mode-grid" style={{ marginTop: 10 }}>
+          {familyOptions.map((f) => (
+            <button
+              key={f}
+              type="button"
+              className={`mode-chip ${familyFilter === f ? 'active' : ''}`}
+              onClick={() => setFamilyFilter(f)}
+            >
+              <strong>{f === 'all' ? 'All families' : f}</strong>
+              <span>
+                {f === 'all'
+                  ? `${models.length}`
+                  : `${models.filter((m) => (m.family || 'Other') === f).length}`}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="panel" style={{ marginTop: 16 }}>
@@ -6407,7 +6610,16 @@ function ModelsTab({
       </div>
 
       <div className="job-list" style={{ marginTop: 16 }}>
-        {shown.map((m) => {
+        {shown.length === 0 && <div className="empty">No models in this family / filter.</div>}
+        {shownByFamily.map(([fam, items]) => (
+          <div key={fam} style={{ marginBottom: 18 }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: '1rem' }}>
+              {fam}{' '}
+              <span className="muted tiny">
+                · {items.length} variant{items.length === 1 ? '' : 's'}
+              </span>
+            </h3>
+            {items.map((m) => {
           const st = m.download_status || (m.installed ? 'installed' : 'not_downloaded')
           const pct = Math.round((m.download_progress || 0) * 100)
           const isActive = activeId === m.id || m.active
@@ -6415,10 +6627,11 @@ function ModelsTab({
             <div className="job-item" key={m.id}>
               <header>
                 <strong>
-                  {m.label}
+                  {m.variant || m.label}
                   {isActive ? ' · active' : ''}
                   {m.distilled ? ' · distilled' : ''}
                   {m.wan2gp || m.format === 'wan2gp' ? ' · Wan2GP' : ''}
+                  {m.wan2gp_only ? ' · Wan2GP import' : ''}
                   {m.custom ? ' · custom' : ''}
                   {m.discovered ? ' · local' : ''}
                 </strong>
@@ -6427,9 +6640,9 @@ function ModelsTab({
                 </span>
               </header>
               <div className="muted tiny">
-                {m.kind} · ≥{m.min_vram_gb} GB
+                {m.family || fam} · {m.kind} · ≥{m.min_vram_gb} GB
                 {m.tier === 'big' ? ' · big GPU' : ''}
-                {m.hf_id ? ` · ${m.hf_id}` : ' · built-in'}
+                {m.hf_id ? ` · ${m.hf_id}` : ' · built-in / Wan2GP'}
                 {m.local_path ? ' · on disk' : ''}
                 {m.notes ? ` — ${m.notes}` : ''}
               </div>
@@ -6504,7 +6717,9 @@ function ModelsTab({
               </div>
             </div>
           )
-        })}
+            })}
+          </div>
+        ))}
       </div>
 
       <div className="panel" style={{ marginTop: 16 }}>
