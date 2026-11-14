@@ -17,6 +17,8 @@ import type {
   SceneProfile,
   Settings,
   TimelineClip,
+  ModelTemplate,
+  Wan2gpInventory,
 } from './types'
 
 function errorMessageFromBody(text: string, status: number): string {
@@ -337,20 +339,45 @@ export const api = {
       { method: 'DELETE' },
     ),
   engineWan2gpScan: () =>
-    req<{ packs: EngineModel[]; roots: string[]; ckpts_dir: string; count: number }>(
-      '/api/engine/wan2gp/scan',
-    ),
+    req<
+      Wan2gpInventory & {
+        packs: EngineModel[]
+        count: number
+        total: number
+      }
+    >('/api/engine/wan2gp/scan'),
   engineWan2gpImport: (path: string, activate = true) =>
     req<{
       ok: boolean
       path: string
       packs: EngineModel[]
       models: EngineModel[]
+      inventory: Wan2gpInventory
+      counts: Record<string, number>
       hint: string
-      ckpts_dir: string
     }>('/api/engine/wan2gp/import', {
       method: 'POST',
       body: JSON.stringify({ path, activate }),
+    }),
+  engineAssets: () => req<Wan2gpInventory>('/api/engine/assets'),
+  engineTemplates: () =>
+    req<{ templates: ModelTemplate[]; count: number }>('/api/engine/templates'),
+  engineTemplateInstall: (
+    templateId: string,
+    opts?: { include_optional?: boolean; activate?: boolean; force?: boolean },
+  ) =>
+    req<{
+      ok: boolean
+      template_id: string
+      label: string
+      started: unknown[]
+      count: number
+      hint: string
+      templates: ModelTemplate[]
+      models: EngineModel[]
+    }>(`/api/engine/templates/${encodeURIComponent(templateId)}/install`, {
+      method: 'POST',
+      body: JSON.stringify(opts || { include_optional: true, activate: true }),
     }),
   engineJobs: () => req<EngineJob[]>('/api/engine/jobs'),
   engineJob: (id: string) => req<EngineJob>(`/api/engine/jobs/${id}`),

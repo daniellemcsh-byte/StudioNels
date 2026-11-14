@@ -263,37 +263,84 @@ async def engine_model_add_custom(body: dict):
     return {"ok": True, "model": entry, "models": list_models_with_status()}
 
 
+@app.get("/api/engine/templates")
+async def engine_templates():
+    """Comfy-style model packs: one card = model + encoders / VAEs / LoRAs."""
+    from .engine.templates import list_templates
+
+    items = list_templates()
+    return {"templates": items, "count": len(items)}
+
+
+@app.post("/api/engine/templates/{template_id}/install")
+async def engine_template_install(template_id: str, body: dict | None = None):
+    """Click a template → queue downloads for every component in the pack."""
+    from .engine.templates import install_template
+
+    body = body or {}
+    try:
+        return install_template(
+            template_id,
+            include_optional=bool(body.get("include_optional", True)),
+            activate=bool(body.get("activate", True)),
+            force=bool(body.get("force", False)),
+        )
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @app.get("/api/engine/wan2gp/scan")
 async def engine_wan2gp_scan():
-    """List Wan2GP LTX packs in studionels/ckpts or Settings wan2gp_ckpts_path."""
-    from .engine.wan2gp_ckpts import CKPTS_DIR, ckpts_roots, scan_wan2gp_ckpts
+    """Full Wan2GP inventory: video, image, audio, upsample, LoRAs, TEs, VAEs."""
+    from .engine.wan2gp_assets import inventory
 
-    packs = scan_wan2gp_ckpts()
+    inv = inventory()
+    counts = inv.get("counts") or {}
     return {
-        "packs": packs,
-        "roots": [str(r) for r in ckpts_roots()],
-        "ckpts_dir": str(CKPTS_DIR),
-        "count": len(packs),
+        **inv,
+        "packs": inv.get("video_packs") or [],
+        "count": int(counts.get("video_packs") or 0),
+        "total": sum(int(v or 0) for v in counts.values()),
     }
 
 
 @app.post("/api/engine/wan2gp/import")
 async def engine_wan2gp_import(body: dict):
-    """Point StudioNels at a Wan2GP ckpts folder and register discovered LTX packs."""
-    from .engine.models_manager import list_models_with_status, set_active_model
-    from .engine.wan2gp_ckpts import import_wan2gp_path
+    """Import a Wan2GP root / ckpts / loras folder — all asset types in one place."""
+    from .engine.models_manager import list_models_with_status
+    from .engine.wan2gp_assets import import_wan2gp_root
 
     path = str(body.get("path") or "").strip()
     if not path:
-        raise HTTPException(400, "path is required (your Wan2GP\\ckpts folder)")
+        raise HTTPException(
+            400,
+            "path is required (Wan2GP root, ckpts, or loras folder)",
+        )
     try:
-        result = import_wan2gp_path(path)
+        result = import_wan2gp_root(path, activate=bool(body.get("activate", True)))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    if body.get("activate") and result.get("packs"):
-        set_active_model(result["packs"][0]["id"])
     result["models"] = list_models_with_status()
     return result
+
+
+@app.get("/api/engine/assets")
+async def engine_assets():
+    """One payload for the Generation assets panel."""
+    from .engine.wan2gp_assets import inventory
+    from .storage import load_settings
+
+    s = load_settings()
+    inv = inventory()
+    return {
+        **inv,
+        "settings": {
+            "wan2gp_ckpts_path": s.wan2gp_ckpts_path or "",
+            "wan2gp_loras_path": s.wan2gp_loras_path or "",
+            "wan2gp_text_encoders_path": s.wan2gp_text_encoders_path or "",
+            "wan2gp_assets_path": s.wan2gp_assets_path or "",
+        },
+    }
 
 
 @app.delete("/api/engine/models/custom/{model_id}")

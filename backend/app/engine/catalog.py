@@ -28,8 +28,9 @@ GENERATION_MODES: list[dict[str, Any]] = [
         "label": "Image → Video",
         "needs_image": True,
         "needs_reference": False,
+        "needs_video": False,
         "output": "video",
-        "blurb": "Animate a still into a short clip.",
+        "blurb": "Animate a still / photo into a short clip.",
         "supports_lora": True,
     },
     {
@@ -37,8 +38,9 @@ GENERATION_MODES: list[dict[str, Any]] = [
         "label": "Reference → Image",
         "needs_image": False,
         "needs_reference": True,
+        "needs_video": False,
         "output": "image",
-        "blurb": "Keep identity/look from a reference image.",
+        "blurb": "Keep identity/look from a reference photo.",
         "supports_lora": True,
     },
     {
@@ -46,8 +48,11 @@ GENERATION_MODES: list[dict[str, Any]] = [
         "label": "Reference → Video",
         "needs_image": False,
         "needs_reference": True,
+        "needs_video": False,
+        "accepts_ref_video": True,
+        "accepts_start_image": True,
         "output": "video",
-        "blurb": "Character/scene consistent video from a reference.",
+        "blurb": "Consistent video from a reference photo (optional start frame / ref clip).",
         "supports_lora": True,
     },
     {
@@ -387,7 +392,7 @@ MODELS: list[dict[str, Any]] = [
     {
         "id": "ltx2.3-22b-distilled-diffusers",
         "label": "LTX-2.3 22B Distilled (Diffusers)",
-        "modes": ["t2v", "i2v"],
+        "modes": ["t2v", "i2v", "ref2v"],
         "hf_id": "diffusers/LTX-2.3-Distilled-Diffusers",
         "pipeline": "LTX2Pipeline",
         "min_vram_gb": 24,
@@ -407,7 +412,7 @@ MODELS: list[dict[str, Any]] = [
     {
         "id": "ltx2.3-22b-distilled-v11-diffusers",
         "label": "LTX-2.3 22B Distilled v1.1 (Diffusers)",
-        "modes": ["t2v", "i2v"],
+        "modes": ["t2v", "i2v", "ref2v"],
         "hf_id": "rootonchair/LTX-2.3-Distilled-v1.1-Diffusers",
         "pipeline": "LTX2Pipeline",
         "min_vram_gb": 24,
@@ -522,6 +527,29 @@ def _all_models() -> list[dict[str, Any]]:
         from .wan2gp_ckpts import scan_wan2gp_ckpts
 
         for m in scan_wan2gp_ckpts():
+            existing = by_id.get(m["id"])
+            if existing:
+                existing.update({k: v for k, v in m.items() if v is not None})
+            else:
+                by_id[m["id"]] = m
+            if m.get("hf_id"):
+                known_hf.add(str(m["hf_id"]))
+    except Exception:
+        pass
+    try:
+        from .wan2gp_assets import (
+            scan_audio_models,
+            scan_image_models,
+            scan_upsample_models,
+            scan_video_models,
+        )
+
+        for m in (
+            scan_video_models()
+            + scan_image_models()
+            + scan_audio_models()
+            + scan_upsample_models()
+        ):
             existing = by_id.get(m["id"])
             if existing:
                 existing.update({k: v for k, v in m.items() if v is not None})

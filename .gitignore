@@ -11,6 +11,9 @@ __pycache__/
 .studionels/
 models/**
 !models/README.md
+ckpts/**
+!ckpts/README.txt
+!ckpts/README.md
 loras/**
 !loras/README.md
 outputs/**

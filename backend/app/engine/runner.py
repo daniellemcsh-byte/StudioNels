@@ -33,6 +33,15 @@ _CANCEL: dict[str, bool] = {}
 _CURRENT_JOB_ID: str | None = None
 
 
+def _text_encoder_presets() -> list[dict[str, Any]]:
+    try:
+        from .wan2gp_assets import list_text_encoder_presets
+
+        return list_text_encoder_presets()
+    except Exception:
+        return list(TEXT_ENCODER_PRESETS)
+
+
 class JobCancelled(Exception):
     """Raised when the user stops a generation job."""
 
@@ -112,7 +121,7 @@ def engine_status_public() -> dict[str, Any]:
         "loras_path": str(loras_dir()),
         "loras": loras,
         "lora_count": len(loras),
-        "text_encoders": TEXT_ENCODER_PRESETS,
+        "text_encoders": _text_encoder_presets(),
         "current_job_id": _CURRENT_JOB_ID,
     }
 
@@ -154,11 +163,17 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     if not mode_meta:
         raise ValueError(f"Unknown mode {mode}")
     if mode_meta.get("needs_image") and not payload.get("image_path"):
-        raise ValueError("This mode needs an input image.")
-    if mode_meta.get("needs_reference") and not payload.get("reference_path"):
-        raise ValueError("This mode needs a reference image.")
+        raise ValueError("Image → Video needs a start photo / still. Add a file in Generate.")
+    if mode_meta.get("needs_reference"):
+        has_ref = bool(payload.get("reference_path"))
+        has_ref_video = bool(payload.get("video_path")) and mode_meta.get("accepts_ref_video")
+        if not has_ref and not has_ref_video:
+            raise ValueError(
+                "Reference mode needs a reference photo"
+                + (" or reference video." if mode_meta.get("accepts_ref_video") else ".")
+            )
     if mode_meta.get("needs_video") and not payload.get("video_path"):
-        raise ValueError("Upsample video needs a video/clip path.")
+        raise ValueError("Upsample video needs a video/clip — add a file in Generate.")
 
     quality = payload.get("quality") or "balanced"
     qmeta = next((q for q in QUALITY_PRESETS if q["id"] == quality), QUALITY_PRESETS[1])

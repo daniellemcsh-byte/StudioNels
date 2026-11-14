@@ -47,6 +47,8 @@ import type {
   Shot,
   TabId,
   Take,
+  ModelTemplate,
+  Wan2gpInventory,
 } from './types'
 import './styles.css'
 
@@ -308,6 +310,7 @@ const NAV_GROUPS: { id: string; label: string; items: { id: TabId; label: string
       { id: 'storyboard', label: 'Storyboard' },
       { id: 'characters', label: 'Characters' },
       { id: 'creator', label: 'Creator' },
+      { id: 'templates', label: 'Templates' },
       { id: 'models', label: 'Models' },
     ],
   },
@@ -1054,7 +1057,9 @@ export default function App() {
         {tab === 'upsample' && (
           <UpsampleTab project={project} notify={notify} />
         )}
-        {tab === 'models' && <ModelsTab notify={notify} />}
+        {(tab === 'models' || tab === 'templates') && (
+          <ModelsTab notify={notify} focusTemplates={tab === 'templates'} />
+        )}
         {tab === 'learning' && <LearningTab onGo={goTab} />}
         {tab === 'sources' && <SourcesTab notify={notify} />}
         {tab === 'addons' && <AddonsTab notify={notify} />}
@@ -2913,8 +2918,11 @@ function GenerateTab({
   const [shotId, setShotId] = useState('')
   const [imagePath, setImagePath] = useState<string | null>(null)
   const [refPath, setRefPath] = useState<string | null>(null)
+  const [videoPath, setVideoPath] = useState<string | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [refUrl, setRefUrl] = useState<string | null>(null)
+  const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [videoLabel, setVideoLabel] = useState('')
   const [width, setWidth] = useState(project.width || 768)
   const [height, setHeight] = useState(project.height || 432)
   const [quality, setQuality] = useState('balanced')
@@ -2974,8 +2982,19 @@ function GenerateTab({
       setAudioPath(wf.audio_path)
       setAudioLabel(wf.audio_path.split(/[/\\]/).pop() || 'audio')
     }
-    if (typeof wf.image_path === 'string') setImagePath(wf.image_path)
-    if (typeof wf.reference_path === 'string') setRefPath(wf.reference_path)
+    if (typeof wf.image_path === 'string') {
+      setImagePath(wf.image_path)
+      setImageUrl(mediaUrl(wf.image_path) || null)
+    }
+    if (typeof wf.reference_path === 'string') {
+      setRefPath(wf.reference_path)
+      setRefUrl(mediaUrl(wf.reference_path) || null)
+    }
+    if (typeof wf.video_path === 'string') {
+      setVideoPath(wf.video_path)
+      setVideoUrl(mediaUrl(wf.video_path) || null)
+      setVideoLabel(wf.video_path.split(/[/\\]/).pop() || 'video')
+    }
     if (typeof wf.lora_path === 'string') setLoraPath(wf.lora_path)
     if (typeof wf.shot_id === 'string') setShotId(wf.shot_id)
     setShowAdvanced(true)
@@ -3121,20 +3140,49 @@ function GenerateTab({
   const models = engine?.models.filter((m) => m.modes.includes(mode)) || []
   const style = VISUAL_STYLES.find((s) => s.id === project.visual_style)
 
-  const upload = async (file: File, kind: 'image' | 'reference') => {
-    const res = await api.engineUpload(file)
+  const upload = async (file: File, kind: 'image' | 'reference' | 'video') => {
+    const res = await api.engineUpload(file, kind)
     if (kind === 'image') {
       setImagePath(res.path)
       setImageUrl(res.url)
-    } else {
+    } else if (kind === 'reference') {
       setRefPath(res.path)
       setRefUrl(res.url)
+    } else {
+      setVideoPath(res.path)
+      setVideoUrl(res.url)
+      setVideoLabel(file.name)
     }
   }
+
+  const showStartImage =
+    !!modeMeta?.needs_image ||
+    !!modeMeta?.accepts_start_image ||
+    mode === 'i2v' ||
+    mode === 'upsample_image' ||
+    (continuePrev && mode === 't2v')
+  const showRefImage = !!modeMeta?.needs_reference || mode === 'ref2i' || mode === 'ref2v'
+  const showRefVideo =
+    !!modeMeta?.needs_video ||
+    !!modeMeta?.accepts_ref_video ||
+    mode === 'upsample_video' ||
+    mode === 'ref2v'
 
   const run = async () => {
     if (!prompt.trim() && mode.startsWith('t')) {
       notify('Add a prompt first.')
+      return
+    }
+    if ((mode === 'i2v' || mode === 'upsample_image') && !imagePath) {
+      notify('Add a photo / still first — use the Image box below.')
+      return
+    }
+    if ((mode === 'ref2i' || mode === 'ref2v') && !refPath && !videoPath) {
+      notify('Add a reference photo or reference video first.')
+      return
+    }
+    if (mode === 'upsample_video' && !videoPath) {
+      notify('Add a video / clip to upsample first.')
       return
     }
     if (estimate && !estimate.can_queue) {
@@ -3157,6 +3205,7 @@ function GenerateTab({
         negative_prompt: negative || (useContinue ? 'cut, hard edit, flash, jump cut' : ''),
         image_path: imagePath,
         reference_path: refPath,
+        video_path: videoPath,
         project_id: project.id,
         shot_id: shotId || undefined,
         cpu_offload: true,
@@ -3707,26 +3756,129 @@ function GenerateTab({
             </div>
           </div>
 
-          {modeMeta?.needs_image && (
-            <div className="field">
-              <label>Input image (I2V)</label>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'image')}
-              />
-              {imageUrl && <img className="upload-preview" src={imageUrl} alt="input" />}
-            </div>
-          )}
-          {modeMeta?.needs_reference && (
-            <div className="field">
-              <label>Reference image</label>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'reference')}
-              />
-              {refUrl && <img className="upload-preview" src={refUrl} alt="reference" />}
+          {(showStartImage || showRefImage || showRefVideo) && (
+            <div className="media-slots" style={{ display: 'grid', gap: 12, marginBottom: 12 }}>
+              {showStartImage && (
+                <div className="field media-slot">
+                  <label>
+                    {mode === 'upsample_image'
+                      ? 'Image to upsample'
+                      : mode === 'i2v' || continuePrev
+                        ? 'Start photo / still (Image → Video)'
+                        : mode === 'ref2v'
+                          ? 'Optional start frame (photo)'
+                          : 'Input image'}
+                    {(mode === 'i2v' || mode === 'upsample_image') && (
+                      <span className="tiny"> · required</span>
+                    )}
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/*,.png,.jpg,.jpeg,.webp,.bmp"
+                    onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'image')}
+                  />
+                  <div className="muted tiny" style={{ marginTop: 4 }}>
+                    Add a photo or still frame to animate / upscale.
+                  </div>
+                  {imageUrl && (
+                    <div style={{ marginTop: 8 }}>
+                      <img className="upload-preview" src={imageUrl} alt="start" />
+                      <button
+                        type="button"
+                        className="btn ghost tiny"
+                        style={{ marginTop: 6 }}
+                        onClick={() => {
+                          setImagePath(null)
+                          setImageUrl(null)
+                        }}
+                      >
+                        Remove photo
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              {showRefImage && (
+                <div className="field media-slot">
+                  <label>
+                    {mode === 'ref2i' ? 'Reference photo (look / identity)' : 'Reference photo'}
+                    {(mode === 'ref2i' || mode === 'ref2v') && !videoPath && (
+                      <span className="tiny"> · required unless you add a ref video</span>
+                    )}
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/*,.png,.jpg,.jpeg,.webp,.bmp"
+                    onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'reference')}
+                  />
+                  <div className="muted tiny" style={{ marginTop: 4 }}>
+                    Character or scene reference still for consistency.
+                  </div>
+                  {refUrl && (
+                    <div style={{ marginTop: 8 }}>
+                      <img className="upload-preview" src={refUrl} alt="reference" />
+                      <button
+                        type="button"
+                        className="btn ghost tiny"
+                        style={{ marginTop: 6 }}
+                        onClick={() => {
+                          setRefPath(null)
+                          setRefUrl(null)
+                        }}
+                      >
+                        Remove reference
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              {showRefVideo && (
+                <div className="field media-slot">
+                  <label>
+                    {mode === 'upsample_video'
+                      ? 'Video / clip to upsample'
+                      : 'Reference video / clip'}
+                    {mode === 'upsample_video' && <span className="tiny"> · required</span>}
+                  </label>
+                  <input
+                    type="file"
+                    accept="video/*,.mp4,.webm,.mov,.mkv,.avi"
+                    onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'video')}
+                  />
+                  <div className="muted tiny" style={{ marginTop: 4 }}>
+                    {mode === 'upsample_video'
+                      ? 'Drop the clip you want enlarged or frame-boosted.'
+                      : 'Optional motion / identity clip for Reference → Video.'}
+                  </div>
+                  {videoPath && (
+                    <div style={{ marginTop: 8 }}>
+                      {videoUrl && (
+                        <video
+                          className="upload-preview"
+                          src={videoUrl}
+                          controls
+                          muted
+                          playsInline
+                          style={{ maxHeight: 180 }}
+                        />
+                      )}
+                      <div className="muted tiny">{videoLabel || videoPath}</div>
+                      <button
+                        type="button"
+                        className="btn ghost tiny"
+                        style={{ marginTop: 6 }}
+                        onClick={() => {
+                          setVideoPath(null)
+                          setVideoUrl(null)
+                          setVideoLabel('')
+                        }}
+                      >
+                        Remove video
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -5612,45 +5764,83 @@ function UpsampleTab({ project, notify }: { project: Project; notify: (m: string
   )
 }
 
-function ModelsTab({ notify }: { notify: (m: string) => void }) {
+function ModelsTab({
+  notify,
+  focusTemplates = false,
+}: {
+  notify: (m: string) => void
+  focusTemplates?: boolean
+}) {
   const [models, setModels] = useState<EngineModel[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [loras, setLoras] = useState<LoraFile[]>([])
   const [lorasPath, setLorasPath] = useState('')
   const [busyId, setBusyId] = useState<string | null>(null)
-  const [filter, setFilter] = useState<'all' | 'image' | 'video' | 'audio' | 'upsample' | 'big'>('all')
+  const [filter, setFilter] = useState<
+    'all' | 'big' | 't2i' | 't2v' | 'i2v' | 'ref2i' | 'ref2v' | 't2a' | 'upsample_image' | 'upsample_video'
+  >('all')
   const [customHf, setCustomHf] = useState('rootonchair/LTX-2.3-Distilled-v1.1-Diffusers')
   const [customLabel, setCustomLabel] = useState('LTX-2.3 22B Distilled v1.1')
-  const [customKind, setCustomKind] = useState<'video' | 'image' | 'audio'>('video')
+  const [customKind, setCustomKind] = useState<'video' | 'image' | 'audio' | 'upsample'>('video')
+  const [customModes, setCustomModes] = useState<string[]>(['t2v', 'i2v', 'ref2v'])
   const [customVram, setCustomVram] = useState(24)
   const [adding, setAdding] = useState(false)
   const [wan2gpPath, setWan2gpPath] = useState('')
   const [wan2gpBusy, setWan2gpBusy] = useState(false)
   const [wan2gpHint, setWan2gpHint] = useState<string | null>(null)
+  const [assets, setAssets] = useState<Wan2gpInventory | null>(null)
+  const [templates, setTemplates] = useState<ModelTemplate[]>([])
+  const [templateKind, setTemplateKind] = useState<'all' | 'video' | 'image' | 'audio' | 'upsample'>('all')
+  const [installingId, setInstallingId] = useState<string | null>(null)
+  const templatesRef = useRef<HTMLDivElement | null>(null)
 
   const load = async () => {
-    const [pack, loraPack] = await Promise.all([api.engineModels(), api.engineLoras()])
+    const [pack, loraPack, inv, tpl] = await Promise.all([
+      api.engineModels(),
+      api.engineLoras(),
+      api.engineAssets().catch(() => null),
+      api.engineTemplates().catch(() => null),
+    ])
     setModels(pack.models)
     setActiveId(pack.active_model_id || null)
     setLoras(loraPack.loras)
     setLorasPath(loraPack.path)
+    if (inv) setAssets(inv)
+    if (tpl) setTemplates(tpl.templates)
   }
 
   useEffect(() => {
     load().catch((e) => notify(String(e.message || e)))
     const t = window.setInterval(() => {
-      api.engineModels().then((pack) => {
-        setModels(pack.models)
-        setActiveId(pack.active_model_id || null)
-      }).catch(() => undefined)
+      Promise.all([api.engineModels(), api.engineTemplates().catch(() => null)])
+        .then(([pack, tpl]) => {
+          setModels(pack.models)
+          setActiveId(pack.active_model_id || null)
+          if (tpl) setTemplates(tpl.templates)
+        })
+        .catch(() => undefined)
     }, 2000)
     return () => window.clearInterval(t)
   }, [])
 
+  useEffect(() => {
+    if (focusTemplates) {
+      window.setTimeout(() => templatesRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+    }
+  }, [focusTemplates])
+
   const shown = models.filter((m) => {
     if (filter === 'big') return (m.min_vram_gb || 0) >= 16 || m.tier === 'big'
-    return filter === 'all' || m.kind === filter
+    if (filter === 'all') return true
+    return (m.modes || []).includes(filter as GenMode)
   })
+
+  const kindDefaultModes = (kind: typeof customKind): string[] => {
+    if (kind === 'audio') return ['t2a']
+    if (kind === 'image') return ['t2i', 'ref2i']
+    if (kind === 'upsample') return ['upsample_image', 'upsample_video']
+    return ['t2v', 'i2v', 'ref2v']
+  }
 
   const act = async (modelId: string, fn: () => Promise<unknown>, okMsg: string) => {
     setBusyId(modelId)
@@ -5672,7 +5862,7 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
         hf_id: customHf.trim(),
         label: customLabel.trim() || undefined,
         kind: customKind,
-        modes: customKind === 'video' ? ['t2v', 'i2v'] : customKind === 'audio' ? ['t2a'] : ['t2i'],
+        modes: customModes.length ? customModes : kindDefaultModes(customKind),
         min_vram_gb: customVram,
         default_steps: customKind === 'video' && /distill/i.test(customHf) ? 8 : 20,
         default_guidance: /distill/i.test(customHf) ? 1 : 5,
@@ -5689,41 +5879,148 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
     }
   }
 
+  const shownTemplates = templates.filter(
+    (t) => templateKind === 'all' || t.kind === templateKind,
+  )
+
+  const installTemplate = async (t: ModelTemplate) => {
+    setInstallingId(t.id)
+    try {
+      const r = await api.engineTemplateInstall(t.id, {
+        include_optional: true,
+        activate: true,
+      })
+      setTemplates(r.templates)
+      setModels(r.models)
+      notify(r.hint || `Downloading ${t.label}…`)
+      await load()
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setInstallingId(null)
+    }
+  }
+
   return (
     <div>
-      <div className="panel">
-        <h3>Choose a model</h3>
+      <div className="panel" ref={templatesRef}>
+        <h3>Model templates</h3>
         <p className="hint">
-          Includes big-GPU packs (LTX-2 Distilled, Wan 14B, FLUX Dev…). Folders already in{' '}
-          <code>models/</code> show as Ready — no re-download. Add any Hugging Face Diffusers id below.
+          Comfy-style packs — click one card to download the Diffusers model plus any listed text
+          encoders, VAEs, LoRAs, or upscalers. Progress updates live below.
         </p>
         <div className="mode-grid" style={{ marginTop: 10 }}>
-          {(['all', 'big', 'image', 'video', 'audio', 'upsample'] as const).map((f) => (
+          {(['all', 'video', 'image', 'audio', 'upsample'] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              className={`mode-chip ${templateKind === k ? 'active' : ''}`}
+              onClick={() => setTemplateKind(k)}
+            >
+              <strong>{k === 'all' ? 'All packs' : k}</strong>
+            </button>
+          ))}
+        </div>
+        <div className="template-grid" style={{ marginTop: 14 }}>
+          {shownTemplates.map((t) => {
+            const pct = Math.round((t.progress || 0) * 100)
+            const busy = installingId === t.id || t.download_status === 'downloading'
+            return (
+              <button
+                key={t.id}
+                type="button"
+                className={`template-card ${t.ready ? 'ready' : ''} ${busy ? 'busy' : ''}`}
+                disabled={busy && !t.ready}
+                onClick={() => installTemplate(t)}
+              >
+                <header>
+                  <strong>{t.label}</strong>
+                  <span className={`badge ${t.ready ? 'done' : busy ? 'queued' : 'queued'}`}>
+                    {t.ready ? 'Ready' : busy ? `${pct}%` : 'Install pack'}
+                  </span>
+                </header>
+                <p className="muted tiny">{t.blurb}</p>
+                <div className="muted tiny">
+                  {t.kind} · ≥{t.min_vram_gb} GB · {(t.modes || []).join(' · ')}
+                </div>
+                <ul className="template-deps">
+                  {(t.components || []).map((c) => (
+                    <li key={c.id}>
+                      <span>{c.role}</span> {c.label}
+                      {c.installed ? ' ✓' : c.required === false ? ' (optional)' : ''}
+                    </li>
+                  ))}
+                </ul>
+                {(busy || (t.progress || 0) > 0) && !t.ready && (
+                  <div className="progress" style={{ marginTop: 8 }}>
+                    <div style={{ width: `${pct}%` }} />
+                  </div>
+                )}
+              </button>
+            )
+          })}
+          {shownTemplates.length === 0 && (
+            <div className="empty">No templates in this filter.</div>
+          )}
+        </div>
+      </div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
+        <h3>Choose a model</h3>
+        <p className="hint">
+          Filter by Generate tab (t2v, i2v, ref2v…). Folders already in <code>models/</code> show as Ready.
+          Import Wan2GP once below — video, image, audio, upsample, LoRAs, TEs, VAEs.
+        </p>
+        <div className="mode-grid" style={{ marginTop: 10 }}>
+          {(
+            [
+              'all',
+              'big',
+              't2i',
+              't2v',
+              'i2v',
+              'ref2i',
+              'ref2v',
+              't2a',
+              'upsample_image',
+              'upsample_video',
+            ] as const
+          ).map((f) => (
             <button
               key={f}
               type="button"
               className={`mode-chip ${filter === f ? 'active' : ''}`}
               onClick={() => setFilter(f)}
             >
-              <strong>{f === 'all' ? 'All' : f === 'big' ? 'Big GPU' : f}</strong>
+              <strong>
+                {f === 'all'
+                  ? 'All'
+                  : f === 'big'
+                    ? 'Big GPU'
+                    : f === 'upsample_image'
+                      ? 'Upsample img'
+                      : f === 'upsample_video'
+                        ? 'Upsample vid'
+                        : f}
+              </strong>
             </button>
           ))}
         </div>
       </div>
 
       <div className="panel" style={{ marginTop: 16 }}>
-        <h3>Import Wan2GP ckpts</h3>
+        <h3>Generation assets (Wan2GP)</h3>
         <p className="muted tiny">
-          Point at your Wan2GP <code>ckpts</code> folder (where{' '}
-          <code>ltx-2.3-22b-distilled-1.1_diffusion_model…</code> lives). No need to copy 19GB — or drop
-          those files into StudioNels <code>ckpts/</code>. Not <code>loras/</code>.
+          Point at your Wan2GP <strong>root</strong> (has <code>ckpts/</code> + <code>loras/</code>) or just{' '}
+          <code>ckpts</code>. Imports models for every Generate tab — t2v, i2v, ref2v, t2i, t2a, upsample —
+          plus LoRAs, text encoders, VAEs, and upscalers. No need to copy huge weights.
         </p>
         <div className="field" style={{ marginTop: 10 }}>
-          <label>Wan2GP ckpts folder path</label>
+          <label>Wan2GP folder path</label>
           <input
             value={wan2gpPath}
             onChange={(e) => setWan2gpPath(e.target.value)}
-            placeholder="C:\pinokio\api\wan2gp\ckpts"
+            placeholder="C:\pinokio\api\wan2gp   or   …\wan2gp\ckpts"
           />
         </div>
         <div className="inline-actions" style={{ gap: 8, flexWrap: 'wrap' }}>
@@ -5737,8 +6034,12 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
               try {
                 const r = await api.engineWan2gpImport(wan2gpPath.trim(), true)
                 setModels(r.models)
+                setAssets(r.inventory)
+                const c = r.counts || {}
                 setWan2gpHint(r.hint)
-                notify(`Imported ${r.packs.length} Wan2GP pack(s)`)
+                notify(
+                  `Imported — video ${c.video_packs || 0} · image ${c.image_models || 0} · audio ${c.audio_models || 0} · upsample ${c.upsample_models || 0} · LoRAs ${c.loras || 0}`,
+                )
                 await load()
               } catch (err) {
                 notify(String((err as Error).message || err))
@@ -5747,7 +6048,7 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
               }
             }}
           >
-            {wan2gpBusy ? 'Importing…' : 'Import Wan2GP folder'}
+            {wan2gpBusy ? 'Importing…' : 'Import all assets'}
           </button>
           <button
             className="btn ghost"
@@ -5756,10 +6057,10 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
             onClick={async () => {
               try {
                 const r = await api.engineWan2gpScan()
+                setAssets(r)
+                const by = r.by_mode || {}
                 setWan2gpHint(
-                  r.count
-                    ? `Found ${r.count} pack(s) in: ${r.roots.join(' · ')}`
-                    : `No packs yet. Roots: ${r.roots.join(' · ')}`,
+                  `Per tab: t2v ${by.t2v || 0} · i2v ${by.i2v || 0} · ref2v ${by.ref2v || 0} · t2i ${by.t2i || 0} · t2a ${by.t2a || 0} · upsample ${(by.upsample_image || 0) + (by.upsample_video || 0)} · LoRAs ${r.counts?.loras || 0}`,
                 )
                 await load()
               } catch (err) {
@@ -5767,17 +6068,26 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
               }
             }}
           >
-            Scan ckpts
+            Scan assets
           </button>
         </div>
         {wan2gpHint && <p className="muted tiny" style={{ marginTop: 8 }}>{wan2gpHint}</p>}
+        {assets?.counts && (
+          <div className="muted tiny" style={{ marginTop: 8 }}>
+            On disk: video {assets.counts.video_packs || 0} · image {assets.counts.image_models || 0} ·
+            audio {assets.counts.audio_models || 0} · upsample {assets.counts.upsample_models || 0} ·
+            LoRAs {assets.counts.loras || 0} · TEs {assets.counts.text_encoders || 0} · VAEs{' '}
+            {(assets.counts.video_vaes || 0) + (assets.counts.audio_vaes || 0)} · upscalers{' '}
+            {assets.counts.upscalers || 0}
+          </div>
+        )}
       </div>
 
       <div className="panel" style={{ marginTop: 16 }}>
         <h3>Add Hugging Face Diffusers model</h3>
         <p className="muted tiny">
-          For Generate, LTX needs a Diffusers folder under <code>models/</code>. After Wan2GP import,
-          download twin <code>rootonchair/LTX-2.3-Distilled-v1.1-Diffusers</code> once.
+          Register any Diffusers repo for any Generate tab. After Wan2GP import, download the LTX twin{' '}
+          <code>rootonchair/LTX-2.3-Distilled-v1.1-Diffusers</code> once under <code>models/</code>.
         </p>
         <div className="controls-grid" style={{ marginTop: 10 }}>
           <div className="field" style={{ gridColumn: '1 / -1' }}>
@@ -5790,10 +6100,18 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
           </div>
           <div className="field">
             <label>Kind</label>
-            <select value={customKind} onChange={(e) => setCustomKind(e.target.value as typeof customKind)}>
-              <option value="video">Video</option>
-              <option value="image">Image</option>
-              <option value="audio">Audio</option>
+            <select
+              value={customKind}
+              onChange={(e) => {
+                const k = e.target.value as typeof customKind
+                setCustomKind(k)
+                setCustomModes(kindDefaultModes(k))
+              }}
+            >
+              <option value="video">Video (t2v / i2v / ref2v)</option>
+              <option value="image">Image (t2i / ref2i)</option>
+              <option value="audio">Audio (t2a)</option>
+              <option value="upsample">Upsample</option>
             </select>
           </div>
           <div className="field">
@@ -5805,6 +6123,39 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
               value={customVram}
               onChange={(e) => setCustomVram(Number(e.target.value) || 0)}
             />
+          </div>
+          <div className="field" style={{ gridColumn: '1 / -1' }}>
+            <label>Generate tabs this model appears in</label>
+            <div className="mode-grid" style={{ marginTop: 6 }}>
+              {(
+                [
+                  't2i',
+                  't2v',
+                  'i2v',
+                  'ref2i',
+                  'ref2v',
+                  't2a',
+                  'upsample_image',
+                  'upsample_video',
+                ] as const
+              ).map((m) => {
+                const on = customModes.includes(m)
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    className={`mode-chip ${on ? 'active' : ''}`}
+                    onClick={() =>
+                      setCustomModes((prev) =>
+                        on ? prev.filter((x) => x !== m) : [...prev, m],
+                      )
+                    }
+                  >
+                    <strong>{m}</strong>
+                  </button>
+                )
+              })}
+            </div>
           </div>
         </div>
         <button className="btn acid" type="button" disabled={adding || !customHf.includes('/')} onClick={addCustom}>
@@ -5915,21 +6266,22 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
 
       <div className="panel" style={{ marginTop: 16 }}>
         <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
-          <h3 style={{ margin: 0 }}>LoRAs in folder</h3>
+          <h3 style={{ margin: 0 }}>LoRAs</h3>
           <button
             className="btn ghost tiny"
             type="button"
             onClick={async () => {
               await load()
-              notify(loras.length ? `Scanned ${lorasPath}` : 'Folder empty — drop files into loras/.')
+              notify(loras.length ? `Scanned ${loras.length} LoRA(s)` : 'No LoRAs — drop into loras/ or import Wan2GP.')
             }}
           >
             Rescan
           </button>
         </div>
         <p className="muted tiny">
-          Drop <code>.safetensors</code> / <code>.pt</code> into <code>loras/</code>
-          {lorasPath ? ` → ${lorasPath}` : ''}. They appear in Generate’s LoRA dropdown.
+          StudioNels <code>loras/</code>
+          {lorasPath ? ` → ${lorasPath}` : ''} plus any Wan2GP <code>loras/</code> from Import.
+          They show in Generate’s LoRA dropdown.
         </p>
         {loras.length === 0 ? (
           <div className="empty">No LoRAs found yet.</div>

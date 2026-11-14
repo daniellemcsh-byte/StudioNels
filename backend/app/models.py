@@ -233,8 +233,11 @@ class Settings(BaseModel):
     friendly_mode: bool = True
     default_gen_mode: str = "t2v"
     cpu_offload: bool = True
-    # Optional path to an existing Wan2GP ckpts folder (no copy of huge weights).
+    # Wan2GP paths — point at existing install; no need to copy huge weights.
     wan2gp_ckpts_path: str = ""
+    wan2gp_loras_path: str = ""
+    wan2gp_text_encoders_path: str = ""
+    wan2gp_assets_path: str = ""  # Wan2GP root (contains ckpts/ + loras/)
 
 
 class PersonalLinksRequest(BaseModel):

@@ -64,21 +64,31 @@ def add_custom_model(
     hf_id = (hf_id or "").strip().strip("/")
     if not hf_id or "/" not in hf_id:
         raise ValueError("hf_id must look like owner/repo (Hugging Face id)")
-    modes = modes or (["t2v", "i2v"] if kind == "video" else ["t2i"])
+    kind = (kind or "video").lower()
+    if modes:
+        modes = [str(m) for m in modes]
+    elif kind == "audio":
+        modes = ["t2a"]
+    elif kind == "image":
+        modes = ["t2i", "ref2i"]
+    elif kind == "upsample":
+        modes = ["upsample_image", "upsample_video"]
+    else:
+        modes = ["t2v", "i2v", "ref2v"]
     mid = _slug_id(hf_id)
     entry = {
         "id": mid,
         "label": label or hf_id.split("/")[-1],
         "modes": modes,
         "hf_id": hf_id,
-        "pipeline": "DiffusionPipeline",
+        "pipeline": "DiffusionPipeline" if kind != "upsample" else "realesrgan",
         "min_vram_gb": float(min_vram_gb),
         "default_steps": int(default_steps),
         "default_guidance": float(default_guidance),
         "kind": kind,
         "default_frames": 49 if kind == "video" else None,
         "fps": 24 if kind == "video" else None,
-        "supports_lora": True,
+        "supports_lora": kind in {"video", "image"},
         "tier": "big" if min_vram_gb >= 20 else "mid",
         "custom": True,
         "notes": notes or f"Custom Hugging Face model · {hf_id}",
@@ -118,13 +128,17 @@ def discover_local_models(known_hf_ids: set[str] | None = None) -> list[dict[str
         if hf_id in known:
             continue
         kind = "video"
-        modes = ["t2v", "i2v"]
+        modes = ["t2v", "i2v", "ref2v"]
         try:
             meta = json.loads(index.read_text(encoding="utf-8"))
             pipe_class = str(meta.get("_class_name") or "")
+            low_name = path.name.lower()
             if "Audio" in pipe_class:
                 kind = "audio"
                 modes = ["t2a"]
+            elif "Upscale" in pipe_class or "esrgan" in low_name or "upscal" in low_name:
+                kind = "upsample"
+                modes = ["upsample_image", "upsample_video"]
             elif "Image" in pipe_class and "Video" not in pipe_class:
                 kind = "image"
                 modes = ["t2i", "ref2i"]

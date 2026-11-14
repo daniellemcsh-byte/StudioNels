@@ -327,18 +327,173 @@ def download_model(model_id: str, *, force: bool = False) -> dict[str, Any]:
 
 
 def list_loras() -> list[dict[str, Any]]:
-    root = loras_dir()
-    items = []
-    for path in sorted(root.rglob("*")):
-        if path.name.upper().startswith("README"):
-            continue
-        if path.suffix.lower() in {".safetensors", ".pt", ".bin", ".gguf"}:
-            items.append(
-                {
-                    "id": path.stem,
-                    "name": path.name,
-                    "path": str(path),
-                    "size_mb": round(path.stat().st_size / (1024 * 1024), 1),
-                }
+    """StudioNels loras/ plus optional Wan2GP loras folders from Settings."""
+    try:
+        from .wan2gp_assets import scan_loras
+
+        return scan_loras()
+    except Exception:
+        root = loras_dir()
+        items = []
+        for path in sorted(root.rglob("*")):
+            if path.name.upper().startswith("README"):
+                continue
+            if path.suffix.lower() in {".safetensors", ".pt", ".bin", ".gguf"}:
+                items.append(
+                    {
+                        "id": path.stem,
+                        "name": path.name,
+                        "path": str(path),
+                        "size_mb": round(path.stat().st_size / (1024 * 1024), 1),
+                    }
+                )
+        return items
+
+
+def get_asset_download(asset_id: str) -> dict[str, Any] | None:
+    """Status for a non-catalog HF asset (TE / VAE / LoRA / upscaler)."""
+    key = f"asset:{asset_id}"
+    return _DOWNLOADS.get(key) or _load_status().get("downloads", {}).get(key)
+
+
+def download_hf_asset(
+    *,
+    asset_id: str,
+    hf_id: str,
+    dest: str = "models",
+    label: str | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Download any Hugging Face repo into models/ or loras/ (template extras)."""
+    hf_id = (hf_id or "").strip().strip("/")
+    if not hf_id or "/" not in hf_id:
+        raise ValueError("hf_id must look like owner/repo")
+    key = f"asset:{asset_id}"
+    existing = get_asset_download(asset_id) or {}
+    live = _THREADS.get(key)
+    if existing.get("status") == "downloading" and live and live.is_alive() and not force:
+        return existing
+    if existing.get("status") == "installed" and not force:
+        return existing
+
+    if force:
+        _CANCEL[key] = True
+        time.sleep(0.05)
+    _CANCEL[key] = False
+
+    root = loras_dir() if dest == "loras" else models_dir()
+    folder = root / hf_id.replace("/", "__")
+    job = _set_download(
+        key,
+        status="downloading",
+        progress=0.05,
+        installed=False,
+        error=None,
+        started_at=utc_now(),
+        hf_id=hf_id,
+        label=label or hf_id,
+        dest=dest,
+        message=f"Starting {label or hf_id}…",
+    )
+
+    def worker() -> None:
+        try:
+            from huggingface_hub import snapshot_download
+
+            folder.mkdir(parents=True, exist_ok=True)
+            _set_download(key, progress=0.08, message=f"Connecting… {hf_id}")
+            if _is_cancelled(key):
+                raise RuntimeError("cancelled")
+
+            stop_beat = threading.Event()
+            started = time.time()
+
+            def _dir_bytes(p: Path) -> int:
+                total = 0
+                try:
+                    for f in p.rglob("*"):
+                        if f.is_file():
+                            try:
+                                total += f.stat().st_size
+                            except OSError:
+                                pass
+                except OSError:
+                    pass
+                return total
+
+            def heartbeat() -> None:
+                while not stop_beat.wait(2.0):
+                    if _is_cancelled(key):
+                        return
+                    cur = _DOWNLOADS.get(key) or {}
+                    if cur.get("status") != "downloading":
+                        return
+                    have = _dir_bytes(folder)
+                    elapsed = int(time.time() - started)
+                    tick = min(0.92, max(float(cur.get("progress") or 0.05), 0.08 + min(0.8, have / (8 * 1024**3))))
+                    _set_download(
+                        key,
+                        progress=tick,
+                        message=f"{label or hf_id}: {have / (1024 * 1024):.0f} MB · {elapsed}s",
+                    )
+
+            beat = threading.Thread(target=heartbeat, name=f"dl-beat-{key}", daemon=True)
+            beat.start()
+            try:
+                path = snapshot_download(
+                    repo_id=hf_id,
+                    local_dir=str(folder),
+                    local_dir_use_symlinks=False,
+                    resume_download=True,
+                )
+            finally:
+                stop_beat.set()
+
+            if _is_cancelled(key):
+                _set_download(
+                    key,
+                    status="cancelled",
+                    progress=0.0,
+                    installed=False,
+                    message="Cancelled",
+                    finished_at=utc_now(),
+                )
+                return
+
+            _set_download(
+                key,
+                status="installed",
+                progress=1.0,
+                installed=True,
+                local_path=str(path),
+                finished_at=utc_now(),
+                message="Ready",
+                error=None,
             )
-    return items
+        except Exception as exc:  # noqa: BLE001
+            if _is_cancelled(key) or "cancelled" in str(exc).lower():
+                _set_download(
+                    key,
+                    status="cancelled",
+                    progress=0.0,
+                    installed=False,
+                    message="Cancelled",
+                    finished_at=utc_now(),
+                )
+            else:
+                _set_download(
+                    key,
+                    status="failed",
+                    progress=0.0,
+                    installed=False,
+                    error=str(exc),
+                    message=str(exc),
+                    finished_at=utc_now(),
+                )
+        finally:
+            _THREADS.pop(key, None)
+
+    t = threading.Thread(target=worker, name=f"dl-{key}", daemon=True)
+    _THREADS[key] = t
+    t.start()
+    return job

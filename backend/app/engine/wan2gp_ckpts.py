@@ -105,7 +105,7 @@ def _pack_from_dit(
     return {
         "id": f"wan2gp-{pack_key}",
         "label": f"{label} (Wan2GP ckpts)",
-        "modes": ["t2v", "i2v"],
+        "modes": ["t2v", "i2v", "ref2v"],
         "hf_id": twin,
         "pipeline": "LTX2Pipeline",
         "min_vram_gb": 24,

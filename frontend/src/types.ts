@@ -13,6 +13,7 @@ export type TabId =
   | 'audio'
   | 'upsample'
   | 'models'
+  | 'templates'
   | 'addons'
   | 'continuity'
   | 'rehearsal'
@@ -39,6 +40,9 @@ export interface EngineMode {
   label: string
   needs_image: boolean
   needs_reference: boolean
+  needs_video?: boolean
+  accepts_ref_video?: boolean
+  accepts_start_image?: boolean
   output: string
   blurb: string
 }
@@ -97,8 +101,11 @@ export interface TextEncoderPreset {
   id: string
   label: string
   hf_id?: string | null
+  local_path?: string | null
   slot?: string
   notes?: string
+  source?: string
+  kind?: string
 }
 
 export interface LoraFile {
@@ -106,6 +113,74 @@ export interface LoraFile {
   name: string
   path: string
   size_mb: number
+  family?: string
+  source?: string
+  root?: string
+}
+
+export interface Wan2gpComponent {
+  id: string
+  name: string
+  path: string
+  kind: string
+  label: string
+  size_mb: number
+  source?: string
+  root?: string
+}
+
+export interface ModelTemplateComponent {
+  id: string
+  role: string
+  label: string
+  hf_id: string
+  dest?: string
+  required?: boolean
+  notes?: string
+  download_status?: string
+  download_progress?: number
+  download_message?: string
+  installed?: boolean
+  local_path?: string | null
+}
+
+export interface ModelTemplate {
+  id: string
+  label: string
+  kind: string
+  modes: GenMode[]
+  min_vram_gb: number
+  tier?: string
+  blurb: string
+  primary_model_id?: string
+  primary_label?: string
+  primary_hf_id?: string | null
+  components: ModelTemplateComponent[]
+  ready?: boolean
+  progress?: number
+  download_status?: string
+}
+
+export interface Wan2gpInventory {
+  ckpts_dir: string
+  roots: { ckpts: string[]; loras: string[] }
+  modes?: string[]
+  by_mode?: Record<string, number>
+  video_packs: EngineModel[]
+  image_models: EngineModel[]
+  audio_models: EngineModel[]
+  upsample_models: EngineModel[]
+  loras: LoraFile[]
+  text_encoders: TextEncoderPreset[]
+  local_text_encoders: TextEncoderPreset[]
+  components: Wan2gpComponent[]
+  counts: Record<string, number>
+  settings?: {
+    wan2gp_ckpts_path?: string
+    wan2gp_loras_path?: string
+    wan2gp_text_encoders_path?: string
+    wan2gp_assets_path?: string
+  }
 }
 
 export interface EngineStatus {
@@ -376,6 +451,10 @@ export interface Settings {
   friendly_mode: boolean
   default_gen_mode: string
   cpu_offload: boolean
+  wan2gp_ckpts_path?: string
+  wan2gp_loras_path?: string
+  wan2gp_text_encoders_path?: string
+  wan2gp_assets_path?: string
 }
 
 export interface PersonalProfile {

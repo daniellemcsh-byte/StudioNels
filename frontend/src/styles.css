@@ -1359,6 +1359,75 @@ a {
   border: 1px solid var(--line);
 }
 
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.template-card {
+  text-align: left;
+  border: 1px solid var(--line);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.18));
+  border-radius: 14px;
+  padding: 14px;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.template-card:hover:not(:disabled) {
+  border-color: var(--acid, #b6ff3b);
+  transform: translateY(-1px);
+}
+
+.template-card.ready {
+  border-color: rgba(120, 220, 140, 0.45);
+}
+
+.template-card.busy {
+  opacity: 0.92;
+}
+
+.template-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 6px;
+}
+
+.template-card p {
+  margin: 0 0 8px;
+}
+
+.template-deps {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.template-deps li {
+  font-size: 0.78rem;
+  color: var(--muted, #9aa3b2);
+}
+
+.template-deps li span {
+  display: inline-block;
+  min-width: 5.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+
+.media-slots .media-slot {
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
 .job-list {
   display: grid;
   gap: 10px;
