@@ -37,6 +37,10 @@ module.exports = {
       method: "shell.run",
       params: {
         path: "frontend",
+        // Extra allow for Tailscale MagicDNS if Vite ignores allowedHosts: true
+        env: {
+          __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: ".ts.net",
+        },
         message: [
           // 0.0.0.0 + allowedHosts in vite.config.ts = phone / Tailscale access
           "npm run dev -- --host 0.0.0.0 --port 5173 --strictPort",
