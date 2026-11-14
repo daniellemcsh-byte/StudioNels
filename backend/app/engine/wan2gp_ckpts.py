@@ -120,6 +120,11 @@ def _pack_from_dit(
         "custom": True,
         "format": "wan2gp",
         "wan2gp": True,
+        "wan2gp_model_type": (
+            "ltx2_22B_distilled_1_1"
+            if "1.1" in pack_key
+            else "ltx2_22B_distilled"
+        ),
         "local_path": str(root),
         "component_files": files,
         "notes": (
@@ -129,9 +134,8 @@ def _pack_from_dit(
                 if missing
                 else "Core components present. "
             )
-            + f"StudioNels Generate loads the Diffusers twin ({twin}) — "
-            "Download that once in Models, or place the Diffusers folder under models/. "
-            "Your Wan2GP files stay here for Wan2GP; no need to move them into loras/."
+            + "Generate prefers the Wan2GP engine (mmgp) when Wan2GP is linked — "
+            f"Diffusers twin ({twin}) is only a fallback."
         ),
     }
 

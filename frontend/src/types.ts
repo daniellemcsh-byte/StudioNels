@@ -191,6 +191,12 @@ export interface Wan2gpInventory {
 
 export interface EngineStatus {
   backend: string
+  wan2gp?: {
+    available?: boolean
+    root?: string
+    python?: string
+    reason?: string
+  }
   device: {
     torch_available: boolean
     ready_for_inference: boolean
@@ -210,6 +216,7 @@ export interface EngineStatus {
   loras?: LoraFile[]
   lora_count?: number
   text_encoders?: TextEncoderPreset[]
+  memory_profiles?: unknown[]
   current_job_id?: string | null
 }
 

@@ -209,7 +209,7 @@ function describeJobActivity(job: EngineJob, nowMs = Date.now()): {
             ? `Upsampling${stepBit}`
             : `Generating image${stepBit}`
     const detail = hung
-      ? `${job.message || `${pct}%`} · Built-in Diffusers is not Wan2GP (~1 min). Stop, set Memory to GPU VRAM / amd-r9700, fewer frames, then retry.`
+      ? `${job.message || `${pct}%`} · No denoise step yet. If Wan2GP is linked, Stop and retry; if using Diffusers fallback, set Memory to GPU VRAM.`
       : job.message || `${pct}%`
     return pack(phase, detail, hung ? 'fail' : 'run', 3)
   }
@@ -268,9 +268,8 @@ function GenerationStageBar({
       </div>
       {noStepYet && jobElapsedSec(job, nowMs) >= 120 ? (
         <p className="fit-warn tiny gen-stall-hint">
-          Still before step 1 after {act.elapsedLabel}. StudioNels uses Diffusers (not Wan2GP’s
-          ~1‑min path). Hit Stop, set preset/Memory to <strong>Max VRAM / GPU</strong>, try Wan
-          1.3B or LTX Distilled with fewer frames.
+          Still before step 1 after {act.elapsedLabel}. Import Wan2GP in Models so Generate uses
+          the mmgp engine; or Stop and retry with Max VRAM + Wan 1.3B / LTX Distilled.
         </p>
       ) : null}
       <div className="gen-stage-track" role="list" aria-label="Generation stages">
@@ -3369,7 +3368,9 @@ function GenerateTab({
   return (
     <div>
       <p className="hint">
-        Built-in generator (Wan2GP-style) — pick a mode, model, and run inside StudioNels. No ComfyUI.
+        {engine?.wan2gp?.available
+          ? `Wan2GP engine linked (${engine.wan2gp.root || 'ready'}) — Generate uses mmgp like Wan2GP (~1 min path).`
+          : 'Import your Wan2GP folder in Models to use the real mmgp engine. Until then Diffusers is the slower fallback.'}
         {health?.gpu
           ? ` GPU: ${health.device_name}.`
           : ' Running preview until ROCm PyTorch + weights are installed.'}
@@ -6278,7 +6279,9 @@ function ModelsTab({
       <div className="panel" style={{ marginTop: 16 }}>
         <h3>Generation assets (Wan2GP)</h3>
         <p className="muted tiny">
-          Point at your Wan2GP <strong>root</strong> (has <code>ckpts/</code> + <code>loras/</code>) or just{' '}
+          Point at your Wan2GP <strong>root</strong> (folder with <code>wgp.py</code>,{' '}
+          <code>ckpts/</code>, <code>loras/</code>). After import, Generate runs through Wan2GP’s
+          mmgp engine — same ~1‑min path — not slow Diffusers. You can also paste just{' '}
           <code>ckpts</code>. Imports models for every Generate tab — t2v, i2v, ref2v, t2i, t2a, upsample —
           plus LoRAs, text encoders, VAEs, and upscalers. No need to copy huge weights.
         </p>

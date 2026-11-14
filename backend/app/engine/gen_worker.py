@@ -54,10 +54,17 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     try:
+        # Wan2GP / ROCm defaults (same as wgp.py) even on Diffusers fallback
+        import os
+
+        os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+        os.environ.setdefault("OPENBLAS_NUM_THREADS", str(min(8, os.cpu_count() or 8)))
+        os.environ.setdefault("TRITON_DEFAULT_FP_FUSION", "1")
+
         # Ensure imports resolve when launched as `python -m app.engine.gen_worker`
         from .pipelines import run_diffusers_job
 
-        cb("Worker started — loading engine…", 0.02)
+        cb("Worker started — loading Diffusers engine…", 0.02)
         result = run_diffusers_job(job, out_path, cb)
         _atomic_write(
             result_path,

@@ -714,14 +714,20 @@ def import_wan2gp_root(path: str, *, activate: bool = True) -> dict[str, Any]:
 
     settings = load_settings()
     # Detect whether user pasted Wan2GP root, ckpts, or loras
-    if (p / "ckpts").is_dir() and (p / "loras").is_dir():
+    if (p / "wgp.py").is_file() or ((p / "ckpts").is_dir() and (p / "loras").is_dir()):
         settings.wan2gp_assets_path = str(p.resolve())
-        settings.wan2gp_ckpts_path = str((p / "ckpts").resolve())
-        settings.wan2gp_loras_path = str((p / "loras").resolve())
-        settings.wan2gp_text_encoders_path = str((p / "ckpts").resolve())
-        ckpts_path = p / "ckpts"
+        settings.wan2gp_ckpts_path = str((p / "ckpts").resolve()) if (p / "ckpts").is_dir() else str(p.resolve())
+        if (p / "loras").is_dir():
+            settings.wan2gp_loras_path = str((p / "loras").resolve())
+        settings.wan2gp_text_encoders_path = str(
+            (p / "ckpts").resolve() if (p / "ckpts").is_dir() else p.resolve()
+        )
+        ckpts_path = p / "ckpts" if (p / "ckpts").is_dir() else p
     elif p.name.lower() == "loras" or any((p / s).is_dir() for s in _LORA_HINTS):
         settings.wan2gp_loras_path = str(p.resolve())
+        # Parent may be Wan2GP root
+        if (p.parent / "wgp.py").is_file():
+            settings.wan2gp_assets_path = str(p.parent.resolve())
         ckpts_path = None
     else:
         # Treat as ckpts (or flat dump of safetensors)
@@ -730,6 +736,11 @@ def import_wan2gp_root(path: str, *, activate: bool = True) -> dict[str, Any]:
         sibling = p.parent / "loras"
         if sibling.is_dir():
             settings.wan2gp_loras_path = str(sibling.resolve())
+        # Prefer the install that has wgp.py so Generate can use mmgp
+        if (p.parent / "wgp.py").is_file():
+            settings.wan2gp_assets_path = str(p.parent.resolve())
+        elif (p / "wgp.py").is_file():
+            settings.wan2gp_assets_path = str(p.resolve())
         ckpts_path = p
     save_settings(settings)
 
@@ -771,15 +782,29 @@ def import_wan2gp_root(path: str, *, activate: bool = True) -> dict[str, Any]:
                 pass
 
     counts = inv.get("counts") or {}
+    try:
+        from .wan2gp_runtime import wan2gp_available
+
+        engine_info = wan2gp_available()
+    except Exception:
+        engine_info = {"available": False}
+    root_hint = settings.wan2gp_assets_path or str(p.resolve())
     return {
         "ok": True,
         "path": str(p.resolve()),
         "packs": packs_result.get("packs") or [],
         "inventory": inv,
         "counts": counts,
+        "wan2gp_engine": engine_info,
         "hint": (
-            "Imported Wan2GP assets: video, image, audio, upsampling, LoRAs, "
-            "text encoders, video/audio VAEs. For Diffusers Generate, download matching "
-            "twins under models/ when a pack notes it."
+            "Imported Wan2GP assets. "
+            + (
+                f"Generate will use the Wan2GP mmgp engine at {engine_info.get('root')}."
+                if engine_info.get("available")
+                else (
+                    f"Linked {root_hint}. For ~1‑min gens, point at the folder that contains "
+                    "wgp.py (and its venv), then Generate again."
+                )
+            )
         ),
     }

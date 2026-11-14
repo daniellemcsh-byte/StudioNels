@@ -184,7 +184,7 @@ export const LEARN_TOPICS: LearnTopic[] = [
       'Loading once is slow; generating after the model is warm is much faster.',
       'Preview mode is instant but fake — install ROCm + Diffusers for real frames.',
     ],
-    tip: 'Stuck near 20% with no Step count? Built-in Diffusers is not Wan2GP (~1 min). Stop, switch Memory/preset to Max VRAM (GPU), use Wan 1.3B or LTX Distilled + fewer frames, then retry. Jobs now auto-fail if the first denoise step never starts.',
+    tip: 'For Wan2GP-speed gens: Models → Import your Wan2GP root (folder with wgp.py). Generate then uses mmgp. Without that link, Diffusers is the slow fallback — Stop, Max VRAM, Wan 1.3B / LTX Distilled.',
   },
   {
     id: 'characters',

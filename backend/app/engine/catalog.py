@@ -206,6 +206,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v"],
         "hf_id": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
         "pipeline": "WanPipeline",
+        "wan2gp_model_type": "t2v_1.3B",
         "min_vram_gb": 6,
         "default_steps": 20,
         "default_guidance": 5.0,
@@ -213,7 +214,7 @@ MODELS: list[dict[str, Any]] = [
         "default_frames": 49,
         "fps": 16,
         "supports_lora": True,
-        "notes": "Wan2GP-style default text-to-video.",
+        "notes": "Uses Wan2GP engine when linked (t2v_1.3B).",
     },
     {
         "id": "wan21-i2v-14b-480p",
@@ -221,6 +222,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["i2v", "ref2v"],
         "hf_id": "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers",
         "pipeline": "WanImageToVideoPipeline",
+        "wan2gp_model_type": "i2v",
         "min_vram_gb": 16,
         "default_steps": 20,
         "default_guidance": 5.0,
@@ -229,7 +231,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 16,
         "supports_lora": True,
         "tier": "mid",
-        "notes": "Image/reference driven video.",
+        "notes": "Wan2GP engine: i2v when linked.",
     },
     {
         "id": "wan21-t2v-14b",
@@ -237,6 +239,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v"],
         "hf_id": "Wan-AI/Wan2.1-T2V-14B-Diffusers",
         "pipeline": "WanPipeline",
+        "wan2gp_model_type": "t2v",
         "min_vram_gb": 24,
         "default_steps": 20,
         "default_guidance": 5.0,
@@ -245,7 +248,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 16,
         "supports_lora": True,
         "tier": "big",
-        "notes": "Full Wan text-to-video — aimed at 24GB+ (R9700 32GB OK).",
+        "notes": "Wan2GP engine: t2v when linked.",
     },
     {
         "id": "wan21-i2v-14b-720p",
@@ -253,6 +256,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["i2v", "ref2v"],
         "hf_id": "Wan-AI/Wan2.1-I2V-14B-720P-Diffusers",
         "pipeline": "WanImageToVideoPipeline",
+        "wan2gp_model_type": "i2v_720p",
         "min_vram_gb": 24,
         "default_steps": 20,
         "default_guidance": 5.0,
@@ -261,7 +265,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 16,
         "supports_lora": True,
         "tier": "big",
-        "notes": "Higher-res image→video. Needs ~24GB+ VRAM.",
+        "notes": "Wan2GP engine: i2v_720p when linked.",
     },
     {
         "id": "wan21-flf2v-14b-720p",
@@ -269,6 +273,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["i2v", "ref2v"],
         "hf_id": "Wan-AI/Wan2.1-FLF2V-14B-720P-diffusers",
         "pipeline": "WanPipeline",
+        "wan2gp_model_type": "flf2v_720p",
         "min_vram_gb": 24,
         "default_steps": 20,
         "default_guidance": 5.0,
@@ -277,7 +282,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 16,
         "supports_lora": True,
         "tier": "big",
-        "notes": "First/last-frame → video (Wan 2.1). Needs ~24GB+.",
+        "notes": "Wan2GP engine: flf2v_720p when linked.",
     },
     {
         "id": "wan22-t2v-a14b",
@@ -285,6 +290,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v"],
         "hf_id": "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
         "pipeline": "WanPipeline",
+        "wan2gp_model_type": "t2v_2_2",
         "min_vram_gb": 24,
         "default_steps": 20,
         "default_guidance": 5.0,
@@ -293,7 +299,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 16,
         "supports_lora": True,
         "tier": "big",
-        "notes": "Wan 2.2 MoE text→video (480p/720p). Large download — R9700 32GB OK with offload.",
+        "notes": "Wan2GP engine: t2v_2_2 when linked.",
     },
     {
         "id": "wan22-i2v-a14b",
@@ -301,6 +307,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["i2v", "ref2v"],
         "hf_id": "Wan-AI/Wan2.2-I2V-A14B-Diffusers",
         "pipeline": "WanImageToVideoPipeline",
+        "wan2gp_model_type": "i2v_2_2",
         "min_vram_gb": 24,
         "default_steps": 20,
         "default_guidance": 5.0,
@@ -309,7 +316,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 16,
         "supports_lora": True,
         "tier": "big",
-        "notes": "Wan 2.2 MoE image→video. Prefer this for i2v / ref2v on big GPUs.",
+        "notes": "Wan2GP engine: i2v_2_2 when linked.",
     },
     {
         "id": "wan22-ti2v-5b",
@@ -317,6 +324,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v", "i2v"],
         "hf_id": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
         "pipeline": "WanPipeline",
+        "wan2gp_model_type": "ti2v_2_2",
         "min_vram_gb": 12,
         "default_steps": 20,
         "default_guidance": 5.0,
@@ -325,7 +333,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 24,
         "supports_lora": True,
         "tier": "mid",
-        "notes": "Hybrid text/image→video at 720p@24fps — lighter Wan 2.2 option.",
+        "notes": "Wan2GP engine: ti2v_2_2 when linked.",
     },
     {
         "id": "minimax-h3",
@@ -478,6 +486,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v", "i2v", "ref2v"],
         "hf_id": "diffusers/LTX-2.3-Distilled-Diffusers",
         "pipeline": "LTX2Pipeline",
+        "wan2gp_model_type": "ltx2_22B_distilled",
         "min_vram_gb": 24,
         "default_steps": 8,
         "default_guidance": 1.0,
@@ -488,8 +497,8 @@ MODELS: list[dict[str, Any]] = [
         "tier": "big",
         "distilled": True,
         "notes": (
-            "Use this Diffusers folder — not the single ltx-2.3-22b-distilled.safetensors file. "
-            "Put the full pack under models/diffusers__LTX-2.3-Distilled-Diffusers/."
+            "Prefers Wan2GP engine (ltx2_22B_distilled) when linked. "
+            "Diffusers twin fallback: models/diffusers__LTX-2.3-Distilled-Diffusers/."
         ),
     },
     {
@@ -498,6 +507,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v", "i2v", "ref2v"],
         "hf_id": "rootonchair/LTX-2.3-Distilled-v1.1-Diffusers",
         "pipeline": "LTX2Pipeline",
+        "wan2gp_model_type": "ltx2_22B_distilled_1_1",
         "min_vram_gb": 24,
         "default_steps": 8,
         "default_guidance": 1.0,
@@ -507,7 +517,7 @@ MODELS: list[dict[str, Any]] = [
         "supports_lora": True,
         "tier": "big",
         "distilled": True,
-        "notes": "Newer distilled v1.1 Diffusers conversion (audio/aesthetic updates).",
+        "notes": "Wan2GP engine: ltx2_22B_distilled_1_1 when linked.",
     },
     {
         "id": "stable-audio-open",

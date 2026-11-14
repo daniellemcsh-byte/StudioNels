@@ -36,7 +36,7 @@ _QUEUE: list[str] = []
 _CV = threading.Condition()
 _CANCEL: dict[str, bool] = {}
 _CURRENT_JOB_ID: str | None = None
-_CURRENT_PROC: subprocess.Popen | None = None
+_CURRENT_PROC: Any = None
 _PROC_LOCK = threading.Lock()
 
 # If Diffusers/ROCm stops writing progress this long, treat as hung (Wan2GP ≈1min).
@@ -140,6 +140,12 @@ def engine_status_public() -> dict[str, Any]:
                 "download_message": extra.get("download_message"),
             }
         )
+    try:
+        from .wan2gp_runtime import wan2gp_available
+
+        wan_info = wan2gp_available()
+    except Exception:
+        wan_info = {"available": False}
     return {
         "device": st.device,
         "modes": st.modes,
@@ -148,7 +154,8 @@ def engine_status_public() -> dict[str, Any]:
         "queue_length": st.queue_length,
         "preset_id": st.preset_id,
         "models_path": st.models_path,
-        "backend": "builtin",  # never ComfyUI
+        "backend": "wan2gp" if wan_info.get("available") else "builtin",
+        "wan2gp": wan_info,
         "size_presets": SIZE_PRESETS,
         "quality_presets": QUALITY_PRESETS,
         "loras_path": str(loras_dir()),
@@ -661,14 +668,78 @@ def _run_one(job: dict[str, Any]) -> None:
     out_path = out_dir / job["id"]
     device = detect_device()
     force_preview = bool(job.get("force_preview"))
-    use_real = (
+    from .wan2gp_runtime import wan2gp_available, run_wan2gp_job
+
+    wan = wan2gp_available()
+    use_wan2gp = not force_preview and bool(wan.get("available"))
+    use_diffusers = (
         not force_preview
         and device.get("ready_for_inference")
         and device.get("diffusers_available")
     )
+    use_real = use_wan2gp or use_diffusers
 
     try:
-        if use_real:
+        if use_wan2gp:
+            # Prefer Wan2GP's mmgp path (~1 min) over stock Diffusers
+            job["engine"] = "wan2gp"
+            job["message"] = "Starting Wan2GP engine…"
+            upsert_job(job)
+            holder: dict[str, Any] = {}
+            with _PROC_LOCK:
+                # Reuse cancel hook via holder; cancel_job kills _CURRENT_PROC
+                pass
+
+            def _cancel() -> bool:
+                return bool(_CANCEL.get(job["id"]))
+
+            # Track child for Stop
+            def _run_wan() -> dict[str, Any] | None:
+                global _CURRENT_PROC
+                result_w = run_wan2gp_job(
+                    job,
+                    out_path,
+                    cb,
+                    cancel_check=_cancel,
+                    proc_holder=holder,
+                )
+                return result_w
+
+            # Wrap so Stop can terminate the wgp.py process
+            class _HolderProc:
+                def terminate(self) -> None:
+                    p = holder.get("proc")
+                    if p:
+                        p.terminate()
+
+                def kill(self) -> None:
+                    p = holder.get("proc")
+                    if p:
+                        p.kill()
+
+            with _PROC_LOCK:
+                _CURRENT_PROC = _HolderProc()  # type: ignore[assignment]
+            try:
+                result = _run_wan()
+            finally:
+                with _PROC_LOCK:
+                    if _CURRENT_PROC is not None:
+                        _CURRENT_PROC = None
+
+            if result is None and use_diffusers:
+                job["engine"] = "diffusers"
+                cb("Wan2GP unavailable for this model — falling back to Diffusers…", 0.05)
+                result = _run_diffusers_isolated(job, out_path, cb)
+            elif result is None:
+                raise RuntimeError(
+                    "Wan2GP is linked but cannot run this model. "
+                    "Pick a Wan/LTX model mapped to Wan2GP, or install Diffusers extras."
+                )
+            job["preview"] = bool(result.get("preview"))
+            if result.get("engine") == "wan2gp":
+                job["engine"] = "wan2gp"
+        elif use_diffusers:
+            job["engine"] = "diffusers"
             # Isolated process: API/polling keep working; Stop can kill a hung GPU call.
             result = _run_diffusers_isolated(job, out_path, cb)
             job["preview"] = bool(result.get("preview"))
