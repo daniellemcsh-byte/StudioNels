@@ -184,7 +184,7 @@ export const LEARN_TOPICS: LearnTopic[] = [
       'Loading once is slow; generating after the model is warm is much faster.',
       'Preview mode is instant but fake — install ROCm + Diffusers for real frames.',
     ],
-    tip: 'StudioNels runs mmgp natively after engine extras install — no Wan2GP link required. Import Wan2GP only if you want its extra architectures. Stuck gens: Stop, Max VRAM, fewer frames.',
+    tip: 'Link Wan2GP once in Models — Generate uses that ~1 min AMD path for Wan/LTX automatically. Without it, StudioNels mmgp is the fallback. Stuck gens: Stop, Update, retry.',
   },
   {
     id: 'characters',

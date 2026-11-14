@@ -93,6 +93,34 @@ _KEYWORD_PREFER: list[tuple[tuple[str, ...], str]] = [
 ]
 
 
+def _pinokio_sibling_wan2gp_roots() -> list[Path]:
+    """Find Wan2GP next to StudioNels under Pinokio (…/pinokio/api/*/wgp.py)."""
+    found: list[Path] = []
+    try:
+        # backend/app/engine/this.py → repo root is parents[3]
+        repo = Path(__file__).resolve().parents[3]
+        api_dir = repo.parent
+        if not api_dir.is_dir():
+            return found
+        for child in sorted(api_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            name = child.name.lower()
+            if "studio" in name and "nel" in name:
+                continue
+            if (child / "wgp.py").is_file():
+                found.append(child)
+                continue
+            # Pinokio sometimes nests the clone one level deeper
+            for nested in child.glob("*/wgp.py"):
+                found.append(nested.parent)
+            for nested in child.glob("*/*/wgp.py"):
+                found.append(nested.parent)
+    except Exception:
+        return found
+    return found
+
+
 def wan2gp_root() -> Path | None:
     settings = load_settings()
     candidates: list[Path] = []
@@ -109,6 +137,8 @@ def wan2gp_root() -> Path | None:
     env = (os.environ.get("STUDIONELS_WAN2GP_ROOT") or "").strip()
     if env:
         candidates.insert(0, Path(env).expanduser())
+    # Prefer an explicit link, then auto-discover a sibling Pinokio Wan2GP install
+    candidates.extend(_pinokio_sibling_wan2gp_roots())
 
     seen: set[str] = set()
     for c in candidates:

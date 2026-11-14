@@ -194,7 +194,7 @@ def _heartbeat_while(
             frac = min(end_frac, frac + (end_frac - start_frac) / 50.0)
             hint = " · still in RAM (VRAM fills after this step)"
             if elapsed >= 90:
-                hint = " · if this passes 5–6 min, Stop and use a smaller / already-downloaded model"
+                hint = " · if this passes 5–6 min, Stop and use a smaller Ready model (or link Wan2GP)"
             _progress(
                 cb,
                 f"{label} ({elapsed}s — first AMD load){hint}…",

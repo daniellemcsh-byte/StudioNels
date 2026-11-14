@@ -164,11 +164,19 @@ function describeJobActivity(job: EngineJob, nowMs = Date.now()): {
     )
   }
 
-  if (/download|hugging face|fetch|hub/.test(msg)) {
+  // Avoid matching "already-downloaded" / similar advice text as a real download.
+  if (
+    /download(?:ing)?\s+(?:model|weights|files)|from hugging face|fetching from|hf hub/.test(msg)
+  ) {
     return pack('Downloading model files', job.message || `${pct}%`, 'load', 1)
   }
-  if (/loading pipeline|loading.*weights|loading.*model|first load/.test(msg)) {
+  if (
+    /loading pipeline|loading.*weights|loading.*model|first amd load|reading weights/.test(msg)
+  ) {
     return pack('Loading model weights', job.message || `${pct}%`, 'load', 1)
+  }
+  if (/wan2gp engine|starting linked wan2gp/.test(msg)) {
+    return pack('Wan2GP engine', job.message || `${pct}%`, 'run', 2)
   }
   if (/text encoder/.test(msg)) {
     return pack('Loading text encoder', job.message || `${pct}%`, 'load', 2)
@@ -270,7 +278,7 @@ function GenerationStageBar({
         <p className="fit-warn tiny gen-stall-hint">
           Still before step 1 after {act.elapsedLabel}
           {pct < 20
-            ? ' — stuck loading weights (VRAM often stays 0 until RAM load finishes). Stop, confirm the model is Ready in Models, try Wan 1.3B / LTX Distilled.'
+            ? ' — Diffusers is still loading (VRAM stays 0). Stop, Update, and retry — linked Wan2GP is used automatically for Wan/LTX when available.'
             : ' — Stop and retry with Max VRAM + Wan 1.3B / LTX Distilled if this keeps climbing with no Step.'}
         </p>
       ) : null}
