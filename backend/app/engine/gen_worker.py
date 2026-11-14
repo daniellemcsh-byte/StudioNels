@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import traceback
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,19 @@ def main(argv: list[str] | None = None) -> int:
     result_path = Path(args.result_file)
     out_path = Path(args.out_path)
 
+    def cb(message: str, frac: float) -> None:
+        _atomic_write(
+            progress_path,
+            {
+                "message": message,
+                "progress": float(frac),
+                "ts": time.time(),
+            },
+        )
+
+    # Progress BEFORE heavy imports — first torch/diffusers import can take minutes on AMD
+    cb("Worker boot — importing PyTorch / Diffusers (first time can take 1–2 min)…", 0.03)
+
     try:
         job = json.loads(job_path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
@@ -43,29 +57,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    def cb(message: str, frac: float) -> None:
-        _atomic_write(
-            progress_path,
-            {
-                "message": message,
-                "progress": float(frac),
-                "ts": __import__("time").time(),
-            },
-        )
-
     try:
-        # Native StudioNels accel (mmgp) — import early so safetensors is patched
         from .mmgp_accel import apply_runtime_env, mmgp_available
 
         apply_runtime_env()
+        cb(
+            (
+                "Imports… mmgp ready — loading pipeline code…"
+                if mmgp_available()
+                else "Imports… mmgp missing — Pinokio Update or Install AMD engine, then retry…"
+            ),
+            0.04,
+        )
         if mmgp_available():
             from mmgp import offload as _mmgp_offload  # noqa: F401
 
-        # Ensure imports resolve when launched as `python -m app.engine.gen_worker`
         from .pipelines import run_diffusers_job
 
         label = "mmgp" if mmgp_available() else "Diffusers"
-        cb(f"Worker started — StudioNels {label} engine…", 0.02)
+        cb(f"Worker started — StudioNels {label} engine…", 0.05)
         result = run_diffusers_job(job, out_path, cb)
         _atomic_write(
             result_path,
@@ -86,12 +96,11 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
         try:
-            cb(f"Failed: {exc}", float(job.get("progress") or 0.2))
+            cb(f"Failed: {exc}", 0.2)
         except Exception:
             pass
         return 1
 
 
 if __name__ == "__main__":
-    # Allow `python -m app.engine.gen_worker` from backend/
     sys.exit(main())

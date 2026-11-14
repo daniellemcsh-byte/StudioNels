@@ -511,6 +511,7 @@ def _run_diffusers_isolated(
                 pass
     job_file.write_text(json.dumps(job), encoding="utf-8")
 
+    cb("Starting GPU worker…", 0.031)
     use_daemon = _ensure_warm_daemon()
     backend_root = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
@@ -530,7 +531,7 @@ def _run_diffusers_isolated(
         }
         req_path = _daemon_paths()["requests"] / f"{job['id']}.json"
         req_path.write_text(json.dumps(req), encoding="utf-8")
-        cb("Queued on warm engine (model stays loaded between gens)…", 0.02)
+        cb("Queued on warm engine — waiting for first worker progress…", 0.035)
 
         class _DaemonHandle:
             """Stop cancels the job; stall kill restarts the daemon."""
@@ -937,14 +938,14 @@ def _run_one(job: dict[str, Any]) -> None:
         if use_diffusers:
             mm = mmgp_status()
             job["engine"] = "studionels-mmgp" if mm.get("available") else "diffusers"
-            cb(
-                (
-                    "StudioNels engine · downloading/loading your models"
-                    if mm.get("available")
-                    else "StudioNels Diffusers · install requirements-engine.txt for mmgp speed"
-                ),
-                0.03,
-            )
+            if mm.get("available"):
+                cb("StudioNels engine · starting warm worker…", 0.03)
+            else:
+                cb(
+                    "Starting worker — mmgp not installed yet (Pinokio: Update, or Install AMD engine). "
+                    "First PyTorch import can take 1–2 min with no step yet…",
+                    0.03,
+                )
             result = _run_diffusers_isolated(job, out_path, cb)
             job["preview"] = bool(result.get("preview"))
         elif use_wan2gp:

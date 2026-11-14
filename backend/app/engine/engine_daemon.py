@@ -76,6 +76,7 @@ def _handle_request(req_path: Path) -> None:
         if cancel_path.exists():
             raise RuntimeError("Stopped by user")
 
+    cb("Warm engine picked up job — importing pipeline (first AMD import can take 1–2 min)…", 0.04)
     try:
         from .mmgp_accel import apply_runtime_env, mmgp_available
         from .pipelines import run_diffusers_job
@@ -93,7 +94,7 @@ def _handle_request(req_path: Path) -> None:
                 if warm
                 else f"Warm engine · first load this session ({label})…"
             ),
-            0.03 if warm else 0.02,
+            0.06 if warm else 0.05,
         )
         # Mark job so pipelines.py prefers the resident cache
         job = dict(job)
@@ -136,14 +137,26 @@ def _handle_request(req_path: Path) -> None:
 
 
 def main() -> int:
-    from .mmgp_accel import apply_runtime_env
-
-    apply_runtime_env()
     d = _daemon_dir()
     pid_path = d / "daemon.pid"
+    # Write pid + heartbeat BEFORE importing torch — parent must not wait blindly
     pid_path.write_text(str(os.getpid()), encoding="utf-8")
-    _heartbeat({"status": "ready"})
-    print(f"StudioNels warm engine ready pid={os.getpid()}", flush=True)
+    _heartbeat({"status": "booting"})
+    print(f"StudioNels warm engine booting pid={os.getpid()}", flush=True)
+
+    from .mmgp_accel import apply_runtime_env, mmgp_available
+
+    apply_runtime_env()
+    _heartbeat(
+        {
+            "status": "ready",
+            "mmgp": bool(mmgp_available()),
+        }
+    )
+    print(
+        f"StudioNels warm engine ready pid={os.getpid()} mmgp={mmgp_available()}",
+        flush=True,
+    )
 
     req_dir = d / "requests"
     try:

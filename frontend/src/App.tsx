@@ -3376,8 +3376,8 @@ function GenerateTab({
     <div>
       <p className="hint">
         {engine?.mmgp?.available
-          ? 'Fast path: Draft quality · Wan 1.3B / LTX Distilled · Download once — warm engine keeps the model loaded for the next gens.'
-          : 'Pinokio Update installs the StudioNels engine (mmgp). Then Download a model in Models until Ready.'}
+          ? 'Fast path: Draft · Wan 1.3B / LTX Distilled · same model stays warm after the first load.'
+          : 'mmgp missing — in Pinokio run Update (or Install AMD engine), then Stop → Start. Until then Generate looks stuck at ~3% while PyTorch imports.'}
         {health?.gpu
           ? ` GPU: ${health.device_name}.`
           : ' Running preview until ROCm PyTorch + weights are installed.'}

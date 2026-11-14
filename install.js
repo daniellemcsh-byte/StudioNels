@@ -9,6 +9,7 @@ module.exports = {
         message: [
           "python -m pip install --upgrade pip",
           "python -m pip install -r requirements.txt",
+          "python -m pip install -r requirements-engine.txt",
         ],
       },
     },
@@ -22,7 +23,8 @@ module.exports = {
     {
       method: "notify",
       params: {
-        html: "StudioNels installed. Click <b>Start</b>, then Open StudioNels.",
+        html:
+          "StudioNels installed. On AMD: run <b>Install AMD engine</b> next (ROCm PyTorch), then <b>Start</b>.",
       },
     },
   ],

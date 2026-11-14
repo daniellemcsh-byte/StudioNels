@@ -17,7 +17,11 @@ module.exports = {
       params: {
         path: "backend",
         venv: ".venv",
-        message: ["python -m pip install -r requirements.txt"],
+        message: [
+          "python -m pip install -r requirements.txt",
+          // Diffusers + mmgp — without this, Generate sits at 3% and says install requirements-engine.txt
+          "python -m pip install -r requirements-engine.txt",
+        ],
       },
     },
     {
@@ -31,7 +35,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels updated. If it is not running, click <b>Start</b> (or <b>Stop</b> then <b>Start</b>). Then open <b>Web UI</b>.",
+          "StudioNels updated (engine extras + mmgp). If GPU PyTorch is missing, run <b>Install AMD engine</b>. Then <b>Stop</b> → <b>Start</b> → Web UI.",
       },
     },
   ],
