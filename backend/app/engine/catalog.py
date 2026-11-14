@@ -223,7 +223,100 @@ MODELS: list[dict[str, Any]] = [
         "default_frames": 49,
         "fps": 16,
         "supports_lora": True,
+        "tier": "mid",
         "notes": "Image/reference driven video.",
+    },
+    {
+        "id": "wan21-t2v-14b",
+        "label": "Wan 2.1 T2V 14B (big GPU)",
+        "modes": ["t2v"],
+        "hf_id": "Wan-AI/Wan2.1-T2V-14B-Diffusers",
+        "pipeline": "WanPipeline",
+        "min_vram_gb": 24,
+        "default_steps": 20,
+        "default_guidance": 5.0,
+        "kind": "video",
+        "default_frames": 49,
+        "fps": 16,
+        "supports_lora": True,
+        "tier": "big",
+        "notes": "Full Wan text-to-video — aimed at 24GB+ (R9700 32GB OK).",
+    },
+    {
+        "id": "wan21-i2v-14b-720p",
+        "label": "Wan 2.1 I2V 14B 720p (big GPU)",
+        "modes": ["i2v", "ref2v"],
+        "hf_id": "Wan-AI/Wan2.1-I2V-14B-720P-Diffusers",
+        "pipeline": "WanImageToVideoPipeline",
+        "min_vram_gb": 24,
+        "default_steps": 20,
+        "default_guidance": 5.0,
+        "kind": "video",
+        "default_frames": 49,
+        "fps": 16,
+        "supports_lora": True,
+        "tier": "big",
+        "notes": "Higher-res image→video. Needs ~24GB+ VRAM.",
+    },
+    {
+        "id": "flux-dev",
+        "label": "FLUX.1 Dev (big GPU)",
+        "modes": ["t2i"],
+        "hf_id": "black-forest-labs/FLUX.1-dev",
+        "pipeline": "FluxPipeline",
+        "min_vram_gb": 24,
+        "default_steps": 28,
+        "default_guidance": 3.5,
+        "kind": "image",
+        "supports_lora": True,
+        "tier": "big",
+        "notes": "High-quality FLUX stills. Prefer Schnell on smaller cards.",
+    },
+    {
+        "id": "sd3.5-large",
+        "label": "SD 3.5 Large (big GPU)",
+        "modes": ["t2i", "ref2i"],
+        "hf_id": "stabilityai/stable-diffusion-3.5-large",
+        "pipeline": "StableDiffusion3Pipeline",
+        "min_vram_gb": 16,
+        "default_steps": 28,
+        "default_guidance": 4.5,
+        "kind": "image",
+        "supports_lora": True,
+        "tier": "mid",
+        "notes": "SD3.5 large — strong stills when you have headroom.",
+    },
+    {
+        "id": "cogvideox-5b",
+        "label": "CogVideoX-5B (big GPU)",
+        "modes": ["t2v"],
+        "hf_id": "THUDM/CogVideoX-5b",
+        "pipeline": "CogVideoXPipeline",
+        "min_vram_gb": 20,
+        "default_steps": 50,
+        "default_guidance": 6.0,
+        "kind": "video",
+        "default_frames": 49,
+        "fps": 8,
+        "supports_lora": True,
+        "tier": "big",
+        "notes": "5B text-to-video — happier on 24GB+ with offload.",
+    },
+    {
+        "id": "cogvideox-2b",
+        "label": "CogVideoX-2B",
+        "modes": ["t2v"],
+        "hf_id": "THUDM/CogVideoX-2b",
+        "pipeline": "CogVideoXPipeline",
+        "min_vram_gb": 12,
+        "default_steps": 50,
+        "default_guidance": 6.0,
+        "kind": "video",
+        "default_frames": 49,
+        "fps": 8,
+        "supports_lora": True,
+        "tier": "mid",
+        "notes": "Lighter CogVideoX for mid-range GPUs.",
     },
     {
         "id": "ltx-video-0.9.7",
@@ -238,7 +331,58 @@ MODELS: list[dict[str, Any]] = [
         "default_frames": 49,
         "fps": 24,
         "supports_lora": True,
+        "tier": "mid",
         "notes": "Strong alternative for drafts on AMD.",
+    },
+    {
+        "id": "ltx2-19b-distilled",
+        "label": "LTX-2 19B Distilled (big GPU)",
+        "modes": ["t2v", "i2v"],
+        "hf_id": "rootonchair/LTX-2-19b-distilled",
+        "pipeline": "LTX2Pipeline",
+        "min_vram_gb": 24,
+        "default_steps": 8,
+        "default_guidance": 1.0,
+        "kind": "video",
+        "default_frames": 121,
+        "fps": 24,
+        "supports_lora": True,
+        "tier": "big",
+        "distilled": True,
+        "notes": "LTX-2 distilled — fast 8-step A/V video. Needs ~24GB+; use if you already downloaded it.",
+    },
+    {
+        "id": "ltx2-official",
+        "label": "LTX-2 (Lightricks / Diffusers)",
+        "modes": ["t2v", "i2v"],
+        "hf_id": "Lightricks/LTX-2",
+        "pipeline": "LTX2Pipeline",
+        "min_vram_gb": 24,
+        "default_steps": 20,
+        "default_guidance": 3.0,
+        "kind": "video",
+        "default_frames": 97,
+        "fps": 24,
+        "supports_lora": True,
+        "tier": "big",
+        "notes": "Official LTX-2 weights hub. Prefer Distilled for speed on R9700-class GPUs.",
+    },
+    {
+        "id": "ltx2.5-diffusers",
+        "label": "LTX-2.5 Diffusers (big GPU)",
+        "modes": ["t2v", "i2v"],
+        "hf_id": "Lightricks/LTX-2.5-Diffusers",
+        "pipeline": "LTX2Pipeline",
+        "min_vram_gb": 24,
+        "default_steps": 8,
+        "default_guidance": 1.0,
+        "kind": "video",
+        "default_frames": 121,
+        "fps": 24,
+        "supports_lora": True,
+        "tier": "big",
+        "distilled": True,
+        "notes": "LTX-2.5 Diffusers pack (distilled transformer + upsampler). Large download.",
     },
     {
         "id": "stable-audio-open",
@@ -316,12 +460,37 @@ MODELS: list[dict[str, Any]] = [
 ]
 
 
+def _all_models() -> list[dict[str, Any]]:
+    """Built-in catalog + user-added customs + folders already in models/."""
+    by_id = {m["id"]: dict(m) for m in MODELS}
+    known_hf = {str(m.get("hf_id")) for m in MODELS if m.get("hf_id")}
+    try:
+        from .custom_models import discover_local_models, list_custom_models
+
+        for m in list_custom_models():
+            by_id[m["id"]] = m
+            if m.get("hf_id"):
+                known_hf.add(str(m["hf_id"]))
+        for m in discover_local_models(known_hf):
+            # Don't hide a catalog twin — just attach local_path onto catalog entry when possible
+            matched = next((x for x in by_id.values() if x.get("hf_id") == m.get("hf_id")), None)
+            if matched:
+                matched["local_path"] = m.get("local_path")
+            else:
+                by_id[m["id"]] = m
+                if m.get("hf_id"):
+                    known_hf.add(str(m["hf_id"]))
+    except Exception:
+        pass
+    return list(by_id.values())
+
+
 def list_models_for_mode(mode: str) -> list[dict[str, Any]]:
-    return [m for m in MODELS if mode in m["modes"]]
+    return [m for m in _all_models() if mode in m["modes"]]
 
 
 def get_model(model_id: str) -> dict[str, Any] | None:
-    for m in MODELS:
+    for m in _all_models():
         if m["id"] == model_id:
             return m
     return None
@@ -331,4 +500,6 @@ def default_model_for_mode(mode: str, target_vram_gb: float = 8) -> dict[str, An
     candidates = list_models_for_mode(mode)
     fit = [m for m in candidates if m["min_vram_gb"] <= target_vram_gb]
     pool = fit or candidates
+    # Prefer smaller models when VRAM is limited
+    pool = sorted(pool, key=lambda m: float(m.get("min_vram_gb") or 0))
     return pool[0] if pool else None

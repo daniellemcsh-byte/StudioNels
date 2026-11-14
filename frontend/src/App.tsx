@@ -50,6 +50,231 @@ import type {
 } from './types'
 import './styles.css'
 
+const GEN_STAGES = ['Queue', 'Load', 'Setup', 'Generate', 'Finish'] as const
+
+/** Human-readable what a job is doing right now (queue / dock / status bar). */
+function describeJobActivity(job: EngineJob): {
+  phase: string
+  detail: string
+  tone: 'idle' | 'wait' | 'load' | 'run' | 'done' | 'fail' | 'stop'
+  stageIndex: number
+  stages: readonly string[]
+} {
+  const msg = (job.message || '').toLowerCase()
+  const pct = Math.round((job.progress || 0) * 100)
+  const stages = GEN_STAGES
+  const modeLabel =
+    job.mode === 't2v' || job.mode === 'i2v' || job.mode === 'ref2v'
+      ? 'video'
+      : job.mode === 't2a'
+        ? 'audio'
+        : job.mode === 'upsample_image' || job.mode === 'upsample_video'
+          ? 'upsample'
+          : 'image'
+
+  const pack = (
+    phase: string,
+    detail: string,
+    tone: 'idle' | 'wait' | 'load' | 'run' | 'done' | 'fail' | 'stop',
+    stageIndex: number,
+  ) => ({ phase, detail, tone, stageIndex, stages })
+
+  if (job.status === 'queued') {
+    return pack('Waiting in queue', `Next up · ${job.model_label}`, 'wait', 0)
+  }
+  if (job.status === 'cancelled') {
+    return pack('Stopped', job.message || 'Cancelled — workflow kept', 'stop', 0)
+  }
+  if (job.status === 'failed') {
+    return pack('Failed', job.error || job.message || 'See error', 'fail', 0)
+  }
+  if (job.status === 'done') {
+    const out =
+      modeLabel === 'video'
+        ? 'Video ready'
+        : modeLabel === 'audio'
+          ? 'Audio ready'
+          : modeLabel === 'upsample'
+            ? 'Upsample ready'
+            : 'Image ready'
+    return pack(
+      job.preview ? `Preview ${out.toLowerCase()}` : out,
+      job.message || `${pct}%`,
+      'done',
+      4,
+    )
+  }
+
+  if (/download|hugging face|fetch|hub/.test(msg)) {
+    return pack('Downloading model files', job.message || `${pct}%`, 'load', 1)
+  }
+  if (/loading pipeline|loading.*weights|loading.*model|first load/.test(msg)) {
+    return pack('Loading model weights', job.message || `${pct}%`, 'load', 1)
+  }
+  if (/text encoder/.test(msg)) {
+    return pack('Loading text encoder', job.message || `${pct}%`, 'load', 2)
+  }
+  if (/lora/.test(msg)) {
+    return pack('Applying LoRA', job.message || `${pct}%`, 'load', 2)
+  }
+  if (/mux|attach.*audio|audio attached/.test(msg)) {
+    return pack('Attaching audio to video', job.message || `${pct}%`, 'run', 3)
+  }
+  if (/upsample|upsampling/.test(msg)) {
+    return pack('Upsampling', job.message || `${pct}%`, 'run', 3)
+  }
+  if (/preview/.test(msg)) {
+    return pack(`Creating preview ${modeLabel}`, job.message || `${pct}%`, 'run', 3)
+  }
+  if (/generat/.test(msg) || (job.progress || 0) >= 0.2) {
+    const phase =
+      modeLabel === 'video'
+        ? 'Generating video'
+        : modeLabel === 'audio'
+          ? 'Generating audio'
+          : modeLabel === 'upsample'
+            ? 'Upsampling'
+            : 'Generating image'
+    return pack(phase, job.message || `${pct}%`, 'run', 3)
+  }
+  if (/start/.test(msg)) {
+    return pack('Starting job', `${job.model_label} · ${pct}%`, 'wait', 0)
+  }
+  return pack(
+    job.status === 'running' ? `Working on ${modeLabel}` : job.status,
+    job.message || job.prompt || `${pct}%`,
+    'run',
+    3,
+  )
+}
+
+function GenerationStageBar({
+  job,
+  showTipsLink,
+  onOpenTips,
+}: {
+  job: EngineJob
+  showTipsLink?: boolean
+  onOpenTips?: () => void
+}) {
+  const act = describeJobActivity(job)
+  const pct = Math.round((job.progress || 0) * 100)
+  const slowLoad =
+    (job.status === 'running' || job.status === 'queued') &&
+    act.stageIndex <= 2 &&
+    (job.progress || 0) < 0.25
+
+  return (
+    <div className="gen-stage-bar">
+      <div className="gen-stage-track" role="list" aria-label="Generation stages">
+        {act.stages.map((label, i) => {
+          const state = i < act.stageIndex ? 'done' : i === act.stageIndex ? 'active' : 'todo'
+          return (
+            <div key={label} className={`gen-stage ${state}`} role="listitem">
+              <span className="gen-stage-dot" />
+              <span className="gen-stage-label">{label}</span>
+            </div>
+          )
+        })}
+      </div>
+      <div className="gen-stage-meta">
+        <strong className={`job-phase tone-${act.tone}`}>{act.phase}</strong>
+        <span className="muted tiny">
+          {pct}% · {act.detail}
+        </span>
+      </div>
+      <div className="progress">
+        <div style={{ width: `${pct}%` }} />
+      </div>
+      {slowLoad && showTipsLink && onOpenTips ? (
+        <div className="gen-speed-tips">
+          <p className="muted tiny">
+            First AMD load can take several minutes while weights move into VRAM. Want it faster next
+            time?
+          </p>
+          <button type="button" className="btn acid tiny" onClick={onOpenTips}>
+            Speed-up tips
+          </button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function SpeedTipsPanel({
+  open,
+  onClose,
+  onOpenLearning,
+}: {
+  open: boolean
+  onClose: () => void
+  onOpenLearning?: () => void
+}) {
+  if (!open) return null
+  return (
+    <div className="panel speed-tips-panel">
+      <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+        <h3 style={{ margin: 0 }}>Speed up generation</h3>
+        <button type="button" className="btn ghost tiny" onClick={onClose}>
+          Close
+        </button>
+      </div>
+      <ol className="speed-tips-list">
+        <li>
+          <strong>Draft quality</strong> — fewer steps; use High only after the look works.
+        </li>
+        <li>
+          <strong>Shorter clips</strong> — 2–3s, 8–16 fps, or lower frame count.
+        </li>
+        <li>
+          <strong>Smaller size</strong> — start at 768×432 before going 1080p.
+        </li>
+        <li>
+          <strong>Smaller model</strong> — Wan 1.3B before 14B; skip LoRA / custom text encoder for tests.
+        </li>
+        <li>
+          <strong>One job at a time</strong> — and finish model download (Ready) before generating.
+        </li>
+        <li>
+          <strong>First load is slow</strong> — ROCm compiles kernels once; later runs are quicker.
+        </li>
+      </ol>
+      {onOpenLearning ? (
+        <button type="button" className="btn secondary tiny" onClick={onOpenLearning}>
+          Open full Speed tips guide
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+function describeDownloadActivity(m: EngineModel): {
+  phase: string
+  detail: string
+  tone: 'load' | 'fail' | 'stop'
+} {
+  const pct = Math.round((m.download_progress || 0) * 100)
+  const st = m.download_status || ''
+  if (st === 'stalled') {
+    return {
+      phase: 'Download stalled',
+      detail: m.download_message || `${m.label} · ${pct}% — Cancel / Clear / Retry`,
+      tone: 'fail',
+    }
+  }
+  if (st === 'failed') {
+    return { phase: 'Download failed', detail: m.download_error || m.download_message || m.label, tone: 'fail' }
+  }
+  if (st === 'cancelled') {
+    return { phase: 'Download cancelled', detail: m.download_message || m.label, tone: 'stop' }
+  }
+  return {
+    phase: 'Downloading model',
+    detail: m.download_message || `${m.label} · ${pct}%`,
+    tone: 'load',
+  }
+}
+
 const NAV_GROUPS: { id: string; label: string; items: { id: TabId; label: string }[] }[] = [
   {
     id: 'cut',
@@ -813,6 +1038,14 @@ export default function App() {
             health={health}
             seed={inspirationSeed}
             onSeedConsumed={() => setInspirationSeed(null)}
+            onOpenSpeedGuide={() => {
+              try {
+                window.sessionStorage.setItem('studionels_learn_section', 'speed')
+              } catch {
+                /* ignore */
+              }
+              goTab('learning')
+            }}
           />
         )}
         {tab === 'audio' && (
@@ -997,6 +1230,8 @@ function GenerationDock({
   const hasRestorable = jobs.some(
     (j) => j.workflow && (j.status === 'cancelled' || j.status === 'failed'),
   )
+  const topJob = active[0] || recent[0]
+  const topAct = topJob ? describeJobActivity(topJob) : null
   const topProgress = active.length
     ? Math.round(Math.max(...active.map((j) => j.progress || 0)) * 100)
     : recent[0]
@@ -1016,9 +1251,9 @@ function GenerationDock({
           <span className="gen-dock-mini-dot" data-active={active.length > 0 ? '1' : '0'} />
           <span className="gen-dock-mini-label">
             {active.length > 0
-              ? `Gen · ${active.length} · ${topProgress}%`
-              : recent.length
-                ? 'Generation'
+              ? `${topAct?.phase || 'Generating'} · ${topProgress}%`
+              : topAct
+                ? topAct.phase
                 : 'Engine'}
           </span>
           {active.length > 0 ? (
@@ -1065,15 +1300,15 @@ function GenerationDock({
         >
           <strong>
             {active.length > 0
-              ? `Generating · ${active.length} active`
-              : recent.length
-                ? 'Generation'
-                : 'Engine'}
+              ? `${topAct?.phase || 'Generating'} · ${active.length} active`
+              : topAct?.phase || (recent.length ? 'Generation' : 'Engine')}
           </strong>
           <span className="muted tiny">
-            {health?.will_preview
-              ? 'Preview mode (placeholders until ROCm PyTorch)'
-              : health?.device_name || 'built-in'}
+            {topAct && active.length > 0
+              ? topAct.detail
+              : health?.will_preview
+                ? 'Preview mode (placeholders until ROCm PyTorch)'
+                : health?.device_name || 'built-in'}
           </span>
         </button>
         <button
@@ -1096,11 +1331,13 @@ function GenerationDock({
           <p className="muted tiny">No jobs yet. Film night / Generate will show progress here.</p>
         ) : (
           <div className="gen-dock-list">
-            {recent.map((job) => (
+            {recent.map((job) => {
+              const act = describeJobActivity(job)
+              return (
               <div className="gen-dock-row" key={job.id}>
                 <div className="gen-dock-meta">
-                  <span>
-                    {job.mode.toUpperCase()} · {job.status}
+                  <span className={`job-phase tone-${act.tone}`}>
+                    {act.phase}
                     {job.preview ? ' · preview' : ''}
                   </span>
                   <div className="gen-dock-meta-actions">
@@ -1127,10 +1364,10 @@ function GenerationDock({
                     </button>
                   </div>
                 </div>
-                <div className="progress">
-                  <div style={{ width: `${Math.round((job.progress || 0) * 100)}%` }} />
+                <div className="muted tiny truncate">
+                  {job.mode.toUpperCase()} · {job.model_label} · {job.status}
                 </div>
-                <div className="muted tiny truncate">{job.message || job.prompt || job.id}</div>
+                <GenerationStageBar job={job} />
                 {job.error ? <div className="fit-warn tiny">{job.error.slice(0, 160)}</div> : null}
                 {(job.status === 'queued' || job.status === 'running') && (
                   <button
@@ -1154,7 +1391,8 @@ function GenerationDock({
                   </button>
                 )}
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
         <div className="cta-row" style={{ marginTop: 8, flexWrap: 'wrap', gap: 6 }}>
@@ -2656,6 +2894,7 @@ function GenerateTab({
   health,
   seed,
   onSeedConsumed,
+  onOpenSpeedGuide,
 }: {
   project: Project
   setProject: (p: Project) => void
@@ -2663,6 +2902,7 @@ function GenerateTab({
   health: Health | null
   seed?: InspirationSeed | null
   onSeedConsumed?: () => void
+  onOpenSpeedGuide?: () => void
 }) {
   const [engine, setEngine] = useState<EngineStatus | null>(null)
   const [jobs, setJobs] = useState<EngineJob[]>([])
@@ -2700,6 +2940,7 @@ function GenerateTab({
   const [continuePrev, setContinuePrev] = useState(project.continue_from_previous !== false)
   const [continueInfo, setContinueInfo] = useState<string | null>(null)
   const [restorable, setRestorable] = useState<EngineJob[]>([])
+  const [showSpeedTips, setShowSpeedTips] = useState(false)
 
   const effectiveFrames =
     frames > 0 ? frames : Math.max(8, Math.round(Math.max(0.5, durationSec) * Math.max(1, fps)))
@@ -2784,7 +3025,12 @@ function GenerateTab({
       })
       .catch((err) => notify(String(err.message || err)))
     const t = window.setInterval(() => {
-      api.engineJobs().then(setJobs).catch(() => undefined)
+      Promise.all([api.engineJobs(), api.engine()])
+        .then(([j, e]) => {
+          setJobs(j)
+          setEngine(e)
+        })
+        .catch(() => undefined)
     }, 2000)
     return () => window.clearInterval(t)
   }, [])
@@ -3511,38 +3757,100 @@ function GenerateTab({
         </div>
 
         <div className="panel">
-          <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+          <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
             <h3 style={{ margin: 0 }}>Queue</h3>
-            {jobs.some((j) => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') && (
+            <div className="inline-actions" style={{ gap: 6 }}>
               <button
                 className="btn ghost tiny"
                 type="button"
-                onClick={async () => {
-                  try {
-                    const r = await api.engineClearFinishedJobs()
-                    notify(`Removed ${r.removed} finished job(s) from queue`)
-                    setJobs(await api.engineJobs())
-                  } catch (err) {
-                    notify(String((err as Error).message || err))
-                  }
-                }}
+                onClick={() => setShowSpeedTips((v) => !v)}
               >
-                Clear finished
+                {showSpeedTips ? 'Hide tips' : 'Speed tips'}
               </button>
-            )}
+              {jobs.some((j) => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') && (
+                <button
+                  className="btn ghost tiny"
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const r = await api.engineClearFinishedJobs()
+                      notify(`Removed ${r.removed} finished job(s) from queue`)
+                      setJobs(await api.engineJobs())
+                    } catch (err) {
+                      notify(String((err as Error).message || err))
+                    }
+                  }}
+                >
+                  Clear finished
+                </button>
+              )}
+            </div>
           </div>
           <div className="muted tiny" style={{ marginBottom: 10 }}>
-            Models folder: {engine?.models_path || '…'} · backend {engine?.backend}. × removes from
-            queue (does not delete Sampling takes).
+            Status bar shows Queue → Load → Setup → Generate → Finish. Remove clears the row only
+            (Sampling takes stay).
           </div>
+          <SpeedTipsPanel
+            open={showSpeedTips}
+            onClose={() => setShowSpeedTips(false)}
+            onOpenLearning={onOpenSpeedGuide}
+          />
+          {(() => {
+            const live = jobs.find((j) => j.status === 'queued' || j.status === 'running')
+            if (!live) return null
+            return (
+              <div className="gen-live-status">
+                <GenerationStageBar
+                  job={live}
+                  showTipsLink
+                  onOpenTips={() => setShowSpeedTips(true)}
+                />
+              </div>
+            )
+          })()}
           <div className="job-list">
-            {jobs.length === 0 && <div className="empty">No jobs yet.</div>}
-            {jobs.map((job) => (
-              <div className="job-item" key={job.id}>
+            {(engine?.models || [])
+              .filter(
+                (m) =>
+                  m.download_status === 'downloading' ||
+                  m.download_status === 'stalled' ||
+                  m.download_status === 'failed' ||
+                  m.download_status === 'cancelled',
+              )
+              .map((m) => {
+                const act = describeDownloadActivity(m)
+                const pct = Math.round((m.download_progress || 0) * 100)
+                return (
+                  <div className={`job-item activity-${act.tone}`} key={`dl-${m.id}`}>
+                    <header>
+                      <strong>{act.phase}</strong>
+                      <div className="job-item-actions">
+                        <span className={`badge ${m.download_status}`}>{m.download_status}</span>
+                        <span className="muted tiny">{pct}%</span>
+                      </div>
+                    </header>
+                    <div className={`job-phase tone-${act.tone}`}>{m.label}</div>
+                    <div className="progress">
+                      <div style={{ width: `${pct}%` }} />
+                    </div>
+                    <div className="muted tiny">{act.detail}</div>
+                  </div>
+                )
+              })}
+            {jobs.length === 0 &&
+              !(engine?.models || []).some(
+                (m) =>
+                  m.download_status === 'downloading' ||
+                  m.download_status === 'stalled' ||
+                  m.download_status === 'failed' ||
+                  m.download_status === 'cancelled',
+              ) && <div className="empty">No jobs yet.</div>}
+            {jobs.map((job) => {
+              const act = describeJobActivity(job)
+              return (
+              <div className={`job-item activity-${act.tone}`} key={job.id}>
                 <header>
-                  <strong>
-                    {job.mode.toUpperCase()} · {job.model_label}
-                  </strong>
+                  <strong className={`job-phase tone-${act.tone}`}>{act.phase}</strong>
                   <div className="job-item-actions">
                     <span className={`badge ${job.status}`}>{job.status}</span>
                     <button
@@ -3562,17 +3870,23 @@ function GenerateTab({
                     </button>
                   </div>
                 </header>
-                <div className="muted">{job.prompt || '(no prompt)'}</div>
-                <div className="progress">
-                  <div style={{ width: `${Math.round((job.progress || 0) * 100)}%` }} />
+                <div className="muted tiny">
+                  {job.mode.toUpperCase()} · {job.model_label}
+                  {job.preview ? ' · preview' : ''}
                 </div>
-                <div className="muted tiny">{job.message}</div>
+                <div className="muted truncate">{job.prompt || '(no prompt)'}</div>
+                <GenerationStageBar
+                  job={job}
+                  showTipsLink={job.status === 'running' || job.status === 'queued'}
+                  onOpenTips={() => setShowSpeedTips(true)}
+                />
                 {job.thumb_path && mediaUrl(job.thumb_path) && (
                   <img src={mediaUrl(job.thumb_path)} alt="" className="job-thumb" />
                 )}
                 {job.preview && <div className="muted tiny">Preview output — not full model weights.</div>}
               </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       </div>
@@ -5232,7 +5546,12 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
   const [loras, setLoras] = useState<LoraFile[]>([])
   const [lorasPath, setLorasPath] = useState('')
   const [busyId, setBusyId] = useState<string | null>(null)
-  const [filter, setFilter] = useState<'all' | 'image' | 'video' | 'audio' | 'upsample'>('all')
+  const [filter, setFilter] = useState<'all' | 'image' | 'video' | 'audio' | 'upsample' | 'big'>('all')
+  const [customHf, setCustomHf] = useState('rootonchair/LTX-2-19b-distilled')
+  const [customLabel, setCustomLabel] = useState('LTX-2 19B Distilled')
+  const [customKind, setCustomKind] = useState<'video' | 'image' | 'audio'>('video')
+  const [customVram, setCustomVram] = useState(24)
+  const [adding, setAdding] = useState(false)
 
   const load = async () => {
     const [pack, loraPack] = await Promise.all([api.engineModels(), api.engineLoras()])
@@ -5253,7 +5572,10 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
     return () => window.clearInterval(t)
   }, [])
 
-  const shown = models.filter((m) => filter === 'all' || m.kind === filter)
+  const shown = models.filter((m) => {
+    if (filter === 'big') return (m.min_vram_gb || 0) >= 16 || m.tier === 'big'
+    return filter === 'all' || m.kind === filter
+  })
 
   const act = async (modelId: string, fn: () => Promise<unknown>, okMsg: string) => {
     setBusyId(modelId)
@@ -5268,26 +5590,89 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
     }
   }
 
+  const addCustom = async () => {
+    setAdding(true)
+    try {
+      const r = await api.engineModelAddCustom({
+        hf_id: customHf.trim(),
+        label: customLabel.trim() || undefined,
+        kind: customKind,
+        modes: customKind === 'video' ? ['t2v', 'i2v'] : customKind === 'audio' ? ['t2a'] : ['t2i'],
+        min_vram_gb: customVram,
+        default_steps: customKind === 'video' && /distill/i.test(customHf) ? 8 : 20,
+        default_guidance: /distill/i.test(customHf) ? 1 : 5,
+        activate: true,
+      })
+      notify(`Added ${r.model.label} — select it in Generate`)
+      setModels(r.models)
+      setActiveId(r.model.id)
+      await load()
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setAdding(false)
+    }
+  }
+
   return (
     <div>
       <div className="panel">
         <h3>Choose a model</h3>
         <p className="hint">
-          Pick which checkpoint Generate uses. Download, cancel a stuck 5% bar, clear status, then
-          set active. Files land in <code>models/</code>.
+          Includes big-GPU packs (LTX-2 Distilled, Wan 14B, FLUX Dev…). Folders already in{' '}
+          <code>models/</code> show as Ready — no re-download. Add any Hugging Face Diffusers id below.
         </p>
         <div className="mode-grid" style={{ marginTop: 10 }}>
-          {(['all', 'image', 'video', 'audio', 'upsample'] as const).map((f) => (
+          {(['all', 'big', 'image', 'video', 'audio', 'upsample'] as const).map((f) => (
             <button
               key={f}
               type="button"
               className={`mode-chip ${filter === f ? 'active' : ''}`}
               onClick={() => setFilter(f)}
             >
-              <strong>{f === 'all' ? 'All' : f}</strong>
+              <strong>{f === 'all' ? 'All' : f === 'big' ? 'Big GPU' : f}</strong>
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
+        <h3>Add Hugging Face model</h3>
+        <p className="muted tiny">
+          Paste owner/repo (e.g. <code>rootonchair/LTX-2-19b-distilled</code>). If it already sits in{' '}
+          <code>models/</code>, it marks Ready immediately.
+        </p>
+        <div className="controls-grid" style={{ marginTop: 10 }}>
+          <div className="field" style={{ gridColumn: '1 / -1' }}>
+            <label>Hugging Face id</label>
+            <input value={customHf} onChange={(e) => setCustomHf(e.target.value)} placeholder="owner/repo" />
+          </div>
+          <div className="field">
+            <label>Label</label>
+            <input value={customLabel} onChange={(e) => setCustomLabel(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Kind</label>
+            <select value={customKind} onChange={(e) => setCustomKind(e.target.value as typeof customKind)}>
+              <option value="video">Video</option>
+              <option value="image">Image</option>
+              <option value="audio">Audio</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>Min VRAM (GB)</label>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={customVram}
+              onChange={(e) => setCustomVram(Number(e.target.value) || 0)}
+            />
+          </div>
+        </div>
+        <button className="btn acid" type="button" disabled={adding || !customHf.includes('/')} onClick={addCustom}>
+          {adding ? 'Adding…' : 'Add & use model'}
+        </button>
       </div>
 
       <div className="job-list" style={{ marginTop: 16 }}>
@@ -5301,6 +5686,9 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
                 <strong>
                   {m.label}
                   {isActive ? ' · active' : ''}
+                  {m.distilled ? ' · distilled' : ''}
+                  {m.custom ? ' · custom' : ''}
+                  {m.discovered ? ' · local' : ''}
                 </strong>
                 <span className={`badge ${st === 'installed' ? 'done' : st === 'failed' ? 'failed' : 'queued'}`}>
                   {st === 'downloading' ? `${pct}%` : st}
@@ -5308,7 +5696,9 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
               </header>
               <div className="muted tiny">
                 {m.kind} · ≥{m.min_vram_gb} GB
+                {m.tier === 'big' ? ' · big GPU' : ''}
                 {m.hf_id ? ` · ${m.hf_id}` : ' · built-in'}
+                {m.local_path ? ' · on disk' : ''}
                 {m.notes ? ` — ${m.notes}` : ''}
               </div>
               {(st === 'downloading' || st === 'stalled') && (
@@ -5365,6 +5755,18 @@ function ModelsTab({ notify }: { notify: (m: string) => void }) {
                     }
                   >
                     Clear stuck
+                  </button>
+                )}
+                {m.custom && !m.discovered && (
+                  <button
+                    className="btn ghost tiny"
+                    type="button"
+                    disabled={busyId === m.id}
+                    onClick={() =>
+                      act(m.id, () => api.engineModelRemoveCustom(m.id), `Removed ${m.label}`)
+                    }
+                  >
+                    Remove custom
                   </button>
                 )}
               </div>
@@ -5428,7 +5830,18 @@ function AddonsTab({ notify }: { notify: (m: string) => void }) {
 }
 
 function LearningTab({ onGo }: { onGo: (id: TabId) => void }) {
-  const [active, setActive] = useState<LearnSectionId>('start-here')
+  const [active, setActive] = useState<LearnSectionId>(() => {
+    try {
+      const id = window.sessionStorage.getItem('studionels_learn_section') as LearnSectionId | null
+      if (id && LEARN_TOPICS.some((t) => t.id === id)) {
+        window.sessionStorage.removeItem('studionels_learn_section')
+        return id
+      }
+    } catch {
+      /* ignore */
+    }
+    return 'start-here'
+  })
   const topic = LEARN_TOPICS.find((t) => t.id === active) || LEARN_TOPICS[0]
 
   return (

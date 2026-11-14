@@ -359,7 +359,16 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     width = int(job.get("width") or 768)
     height = int(job.get("height") or 432)
     steps = int(job.get("steps") or model.get("default_steps") or 20)
-    guidance = float(job.get("guidance") or model.get("default_guidance") or 5.0)
+    guidance = float(
+        job.get("guidance")
+        if job.get("guidance") is not None
+        else (model.get("default_guidance") if model.get("default_guidance") is not None else 5.0)
+    )
+    # Distilled LTX-2 family: keep fast defaults unless user overrode steps/guidance
+    if model.get("distilled") and job.get("steps") is None:
+        steps = int(model.get("default_steps") or 8)
+    if model.get("distilled") and job.get("guidance") is None:
+        guidance = float(model.get("default_guidance") if model.get("default_guidance") is not None else 1.0)
     seed = job.get("seed")
     frames_n = int(job.get("frames") or model.get("default_frames") or 49)
     fps = int(job.get("fps") or model.get("fps") or 16)
@@ -474,9 +483,19 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     tried_errors: list[str] = []
     result = None
     attempts = []
+    # LTX-2 / modern video pipes often want frame_rate + num_frames + size together
+    base_video = {
+        **kwargs,
+        "num_frames": frames_n,
+        "height": height,
+        "width": width,
+        "frame_rate": float(fps),
+    }
     if mode in ("i2v", "ref2v") and conditioning is not None:
+        attempts.append({**base_video, "image": conditioning})
         attempts.append({**kwargs, "image": conditioning, "num_frames": frames_n})
         attempts.append({**kwargs, "image": conditioning})
+    attempts.append(base_video)
     attempts.append({**kwargs, "num_frames": frames_n, "height": height, "width": width})
     attempts.append(kwargs)
 
@@ -487,10 +506,23 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         except TypeError as exc:
             tried_errors.append(str(exc))
             continue
+        except Exception as exc:  # noqa: BLE001
+            tried_errors.append(str(exc))
+            # Keep trying lighter kwargs only for TypeError-like mismatches
+            if "unexpected keyword" not in str(exc).lower() and "got an unexpected" not in str(exc).lower():
+                raise
+            continue
     if result is None:
         raise RuntimeError("Pipeline call failed: " + " | ".join(tried_errors[:3]))
 
+    # LTX-2 may return (video, audio) tuple / list
+    if isinstance(result, (tuple, list)) and result and not hasattr(result, "frames"):
+        result = result[0]
+
     video_frames = getattr(result, "frames", None) or getattr(result, "images", None)
+    if video_frames is None and hasattr(result, "__iter__") and not isinstance(result, (str, bytes)):
+        # numpy / tensor batch already
+        video_frames = result
     if video_frames is None:
         raise RuntimeError("Pipeline returned no frames")
     if isinstance(video_frames, list) and video_frames and isinstance(video_frames[0], list):
@@ -513,14 +545,36 @@ def _resolve_model_source(model: dict[str, Any]) -> tuple[str, bool]:
     hf_id = str(model.get("hf_id") or "")
     if not hf_id:
         return hf_id, False
-    mirror = models_dir() / hf_id.replace("/", "__")
-    if mirror.exists() and any(mirror.iterdir()):
-        # Require a pipeline index when present in mirror
+
+    candidates: list[Path] = []
+    if model.get("local_path"):
+        candidates.append(Path(str(model["local_path"])))
+    candidates.append(models_dir() / hf_id.replace("/", "__"))
+    # Common alternate folder names people already have on disk
+    leaf = hf_id.split("/")[-1]
+    for alt in (
+        leaf,
+        leaf.replace(".", "-"),
+        f"Lightricks__{leaf}",
+        "LTX-2-19b-distilled",
+        "LTX-2",
+        "LTX-2.5-Diffusers",
+    ):
+        candidates.append(models_dir() / alt)
+
+    seen: set[str] = set()
+    for mirror in candidates:
+        key = str(mirror)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not mirror.exists():
+            continue
         if (mirror / "model_index.json").exists() or any(mirror.glob("*.safetensors")) or any(
             mirror.glob("**/*.safetensors")
         ):
             return str(mirror), True
-    # Download status may record an absolute local_path
+
     try:
         from .models_manager import list_models_with_status
 

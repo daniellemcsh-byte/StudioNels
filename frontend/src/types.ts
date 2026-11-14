@@ -58,6 +58,10 @@ export interface EngineModel {
   download_error?: string | null
   download_message?: string | null
   local_path?: string | null
+  tier?: string
+  custom?: boolean
+  discovered?: boolean
+  distilled?: boolean
 }
 
 export interface EngineModelsPack {

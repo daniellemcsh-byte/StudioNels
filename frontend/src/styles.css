@@ -1366,6 +1366,119 @@ a {
   overflow: auto;
 }
 
+.job-phase {
+  font-weight: 650;
+}
+
+.job-phase.tone-wait {
+  color: #9ec5ff;
+}
+
+.job-phase.tone-load {
+  color: #ffd27a;
+}
+
+.job-phase.tone-run {
+  color: var(--neon, #39ffc7);
+}
+
+.job-phase.tone-done {
+  color: #b8ff3d;
+}
+
+.job-phase.tone-fail {
+  color: #ff8e8e;
+}
+
+.job-phase.tone-stop {
+  color: #c4c9d4;
+}
+
+.gen-stage-bar {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.gen-stage-track {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+}
+
+.gen-stage {
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  text-align: center;
+  opacity: 0.45;
+}
+
+.gen-stage.done,
+.gen-stage.active {
+  opacity: 1;
+}
+
+.gen-stage-dot {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.gen-stage.done .gen-stage-dot {
+  background: rgba(184, 255, 61, 0.85);
+}
+
+.gen-stage.active .gen-stage-dot {
+  background: var(--neon, #39ffc7);
+  box-shadow: 0 0 10px rgba(57, 255, 199, 0.45);
+  animation: gen-dock-pulse 1.4s ease-in-out infinite;
+}
+
+.gen-stage-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.gen-stage-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.gen-live-status {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid rgba(57, 255, 199, 0.28);
+  border-radius: 14px;
+  background: rgba(57, 255, 199, 0.05);
+}
+
+.gen-speed-tips {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.speed-tips-panel {
+  margin-bottom: 12px;
+}
+
+.speed-tips-list {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
 .job-item {
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -1373,6 +1486,14 @@ a {
   background: rgba(0, 0, 0, 0.45);
   display: grid;
   gap: 6px;
+}
+
+.job-item.activity-load {
+  border-color: rgba(255, 210, 122, 0.35);
+}
+
+.job-item.activity-run {
+  border-color: rgba(57, 255, 199, 0.35);
 }
 
 .job-item header {

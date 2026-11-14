@@ -9,7 +9,7 @@ from typing import Any
 
 from ..models import utc_now
 from ..paths import MODEL_DOWNLOADS_PATH, ensure_dirs
-from .catalog import MODELS, get_model
+from .catalog import _all_models, get_model
 from .queue_store import loras_dir, models_dir
 
 _LOCK = threading.Lock()
@@ -68,10 +68,16 @@ def list_models_with_status(active_model_id: str | None = None) -> list[dict[str
     status = _load_status()
     settings_active = active_model_id or status.get("active_model_id")
     out = []
-    for m in MODELS:
+    for m in _all_models():
         mid = m["id"]
         dl = status.get("downloads", {}).get(mid) or _DOWNLOADS.get(mid) or {}
-        installed = bool(dl.get("installed")) or _hf_cache_has(m.get("hf_id"))
+        local = dl.get("local_path") or m.get("local_path")
+        installed = (
+            bool(dl.get("installed"))
+            or bool(local and Path(str(local)).exists())
+            or _hf_cache_has(m.get("hf_id"))
+            or bool(m.get("discovered"))
+        )
         if m.get("hf_id") is None:
             installed = True
         # Stuck "downloading" with no live thread → expose as stalled so UI can clear it
@@ -80,6 +86,8 @@ def list_models_with_status(active_model_id: str | None = None) -> list[dict[str
             live = _THREADS.get(mid)
             if live is None or not live.is_alive():
                 dl_status = "stalled"
+        if installed and dl_status == "not_downloaded":
+            dl_status = "installed"
         out.append(
             {
                 **m,
@@ -88,8 +96,9 @@ def list_models_with_status(active_model_id: str | None = None) -> list[dict[str
                 "download_status": dl_status,
                 "download_progress": float(dl.get("progress") or (1.0 if installed else 0.0)),
                 "download_error": dl.get("error"),
-                "download_message": dl.get("message"),
-                "local_path": dl.get("local_path"),
+                "download_message": dl.get("message")
+                or ("Ready on disk" if installed and not dl.get("message") else dl.get("message")),
+                "local_path": local,
             }
         )
     return out

@@ -237,6 +237,41 @@ async def engine_model_activate(model_id: str):
         raise HTTPException(404, str(exc)) from exc
 
 
+@app.post("/api/engine/models/custom")
+async def engine_model_add_custom(body: dict):
+    """Register any Hugging Face Diffusers repo (for big GPUs / already-downloaded packs)."""
+    from .engine.custom_models import add_custom_model
+    from .engine.models_manager import list_models_with_status, set_active_model
+
+    try:
+        entry = add_custom_model(
+            hf_id=str(body.get("hf_id") or ""),
+            label=body.get("label"),
+            modes=body.get("modes"),
+            kind=str(body.get("kind") or "video"),
+            min_vram_gb=float(body.get("min_vram_gb") or 24),
+            default_steps=int(body.get("default_steps") or 20),
+            default_guidance=float(body.get("default_guidance") or 5.0),
+            notes=body.get("notes"),
+            local_path=body.get("local_path"),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if body.get("activate"):
+        set_active_model(entry["id"])
+    return {"ok": True, "model": entry, "models": list_models_with_status()}
+
+
+@app.delete("/api/engine/models/custom/{model_id}")
+async def engine_model_remove_custom(model_id: str):
+    from .engine.custom_models import remove_custom_model
+
+    try:
+        return remove_custom_model(model_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @app.get("/api/engine/jobs")
 async def engine_jobs(limit: int = 40):
     return list_jobs(limit)

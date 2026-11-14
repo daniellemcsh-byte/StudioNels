@@ -5,6 +5,7 @@ import type {
   CharacterProfile,
   ContinuityData,
   EngineJob,
+  EngineModel,
   EngineStatus,
   GpuEstimate,
   Health,
@@ -314,6 +315,26 @@ export const api = {
     req<{ ok: boolean; active_model_id: string }>(
       `/api/engine/models/${encodeURIComponent(modelId)}/activate`,
       { method: 'POST', body: '{}' },
+    ),
+  engineModelAddCustom: (body: {
+    hf_id: string
+    label?: string
+    kind?: string
+    modes?: string[]
+    min_vram_gb?: number
+    default_steps?: number
+    default_guidance?: number
+    notes?: string
+    activate?: boolean
+  }) =>
+    req<{ ok: boolean; model: EngineModel; models: EngineModel[] }>(
+      '/api/engine/models/custom',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  engineModelRemoveCustom: (modelId: string) =>
+    req<{ ok: boolean; id: string }>(
+      `/api/engine/models/custom/${encodeURIComponent(modelId)}`,
+      { method: 'DELETE' },
     ),
   engineJobs: () => req<EngineJob[]>('/api/engine/jobs'),
   engineJob: (id: string) => req<EngineJob>(`/api/engine/jobs/${id}`),

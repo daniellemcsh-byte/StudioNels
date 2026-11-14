@@ -5,6 +5,7 @@ export type LearnSectionId =
   | 'words'
   | 'first-film'
   | 'generate'
+  | 'speed'
   | 'characters'
   | 'continue'
   | 'audio'
@@ -144,6 +145,46 @@ export const LEARN_TOPICS: LearnTopic[] = [
       'Start without a LoRA. Add style packs once the base look works.',
       '“Can my GPU do this?” saying won’t fit → lower resolution or switch model.',
     ],
+  },
+  {
+    id: 'speed',
+    title: 'Speed up slow generation',
+    blurb:
+      'First load of a model on AMD ROCm can sit on “Loading model weights” for several minutes. After that, Draft settings keep the next runs snappy.',
+    where: [
+      { label: 'Generate queue status bar', tab: 'generate', detail: 'Make → Generate → Queue' },
+      { label: 'Models', tab: 'models', detail: 'Make sure the model shows Ready before you queue' },
+      { label: 'GPU panel', tab: 'generate', detail: 'Generate → Can my GPU do this?' },
+    ],
+    howto: [
+      {
+        title: 'While it’s stuck loading weights',
+        steps: [
+          'Leave it alone the first time — ROCm is compiling kernels into VRAM.',
+          'Confirm the model finished downloading (Models tab → Ready), not stuck at 5%.',
+          'Only run one job. Extra queued jobs wait behind the load.',
+          'Close other GPU apps (games overlays, browsers with WebGPU tabs).',
+        ],
+      },
+      {
+        title: 'Make the next run faster',
+        steps: [
+          'Quality → Draft (fewer steps).',
+          'Shorter clip: 2–3 seconds, 8–16 fps, or fewer frames.',
+          'Smaller frame size (e.g. 768×432) before you go bigger.',
+          'Prefer a small video model (Wan 1.3B) over 14B until the look works.',
+          'Skip LoRA / custom text encoders for test shots.',
+          'Keep CPU offload on if VRAM is tight; turn it off only when fit is comfortable.',
+        ],
+        example: 'Draft · 768×432 · 3s · 16 fps · Wan 1.3B — good “is it working?” recipe.',
+      },
+    ],
+    examples: [
+      'Status bar stages: Queue → Load weights → Generate → Finish.',
+      'Loading once is slow; generating after the model is warm is much faster.',
+      'Preview mode is instant but fake — install ROCm + Diffusers for real frames.',
+    ],
+    tip: 'If progress text shows elapsed seconds climbing past ~5 minutes on first load, check Models for a stalled download, then Stop and retry one Draft job.',
   },
   {
     id: 'characters',
