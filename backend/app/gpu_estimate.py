@@ -7,7 +7,9 @@ from .engine.device import detect_device
 from .storage import get_preset, load_settings
 
 # Rough local heuristics — honest ranges, not marketing.
-# VRAM figures are peak working set estimates for Diffusers-style loads with offload.
+# Peak VRAM for Diffusers+mmgp is dominated by model weights, not wall-clock seconds.
+# Old formula scaled min_vram with frames so hard that a 5s draft on R9700 looked
+# like it needed 32.6 GB and blocked Generate.
 
 
 def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
@@ -27,8 +29,8 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
     height = int(payload.get("height") or preset.get("generation", {}).get("default_height") or 432)
     frames = int(payload.get("frames") or preset.get("generation", {}).get("default_frames") or 49)
     duration = payload.get("duration_sec")
+    fps = int(payload.get("fps") or preset.get("generation", {}).get("fps") or 16)
     if duration and mode in ("t2v", "i2v", "ref2v", "t2a"):
-        fps = int(payload.get("fps") or 16)
         frames = max(frames, int(float(duration) * fps))
     quality = payload.get("quality") or "balanced"
     q_scale = {"draft": 0.6, "balanced": 1.0, "high": 1.4, "max": 1.8}.get(quality, 1.0)
@@ -37,20 +39,53 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
     cpu_offload = payload.get("cpu_offload")
     if cpu_offload is None:
         cpu_offload = preset.get("generation", {}).get("cpu_offload", True)
+    placement = str(
+        payload.get("memory_placement")
+        or (preset.get("memory") or {}).get("placement")
+        or ("model_cpu_offload" if cpu_offload else "gpu")
+    )
+
+    mmgp_on = False
+    try:
+        from .engine.mmgp_accel import mmgp_available
+
+        mmgp_on = mmgp_available()
+    except Exception:
+        mmgp_on = False
 
     pixels = width * height
     pixel_scale = pixels / (768 * 432)
     min_vram = float((model or {}).get("min_vram_gb") or 6)
-    # Offload reduces peak VRAM but slows ETA
-    vram_need = min_vram * (0.72 if cpu_offload else 1.0)
+
+    # Weight-heavy base. Offload / mmgp cuts resident peak; frame count barely moves it
+    # for latent video (a 5s clip is not 2.5× the VRAM of a 2s clip).
+    if mmgp_on:
+        vram_need = min_vram * (0.55 if placement != "gpu" else 0.78)
+    elif cpu_offload or placement in {"sequential_cpu_offload", "model_cpu_offload"}:
+        vram_need = min_vram * 0.65
+    else:
+        vram_need = min_vram * 0.92
+
     if mode in ("t2v", "i2v", "ref2v", "upsample_video"):
-        vram_need *= 1.0 + min(1.2, (frames / 49) * 0.35 * pixel_scale)
+        # Soft bump for longer clips / larger frames — capped, never doubles the job
+        frame_term = min(0.35, max(0.0, (frames - 49) / 200.0))
+        res_term = min(0.25, max(0.0, pixel_scale - 1.0) * 0.4)
+        vram_need *= 1.0 + frame_term + res_term
     elif mode in ("t2i", "ref2i", "upsample_image"):
         vram_need *= max(0.85, pixel_scale**0.5)
     elif mode == "t2a":
-        vram_need = max(4.0, min_vram * 0.9)
+        vram_need = max(3.5, min_vram * 0.55)
 
+    # Never claim a draft 768×448 short clip needs more than ~card size on big GPUs
     available = device.get("vram_gb")
+    if (
+        isinstance(available, (int, float))
+        and float(available) >= 24
+        and width * height <= 768 * 512
+        and frames <= 130
+    ):
+        vram_need = min(vram_need, float(available) * 0.82)
+
     gpu_ready = bool(device.get("ready_for_inference"))
     torch_ok = bool(device.get("torch_available"))
     diffusers_ok = bool(device.get("diffusers_available"))
@@ -67,9 +102,13 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
         fit = "unknown"
     elif vram_need <= available * 0.85:
         fit = "comfortable"
-    elif vram_need <= available:
+    elif vram_need <= available * 1.05:
+        # Within ~5% — warn, but still allow queue (heuristic, not a hard OOM)
         fit = "tight"
-        warnings.append("Close to VRAM limit — keep CPU offload on and shorten clips.")
+        warnings.append(
+            f"Close to VRAM limit (~{vram_need:.1f} GB of {available} GB). "
+            "Keep one job at a time; mmgp/offload will help."
+        )
     else:
         fit = "wont_fit"
         warnings.append(
@@ -77,7 +116,7 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
             "Switch model, lower resolution, or enable the low-VRAM preset."
         )
 
-    # ETA seconds — rough
+    # ETA seconds — rough (mmgp is faster than plain accelerate offload)
     kind = (model or {}).get("kind") or "video"
     if fit == "preview_only":
         eta = 2.0 + frames * 0.05
@@ -87,12 +126,14 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
         eta = 4 + steps * 0.45 * pixel_scale
     else:
         eta = 12 + steps * 0.55 * pixel_scale * (frames / 24)
-    if cpu_offload:
+    if mmgp_on:
+        eta *= 0.7
+    elif cpu_offload:
         eta *= 1.55
     if fit == "cpu_slow":
         eta *= 8
     if fit == "tight":
-        eta *= 1.25
+        eta *= 1.15
 
     suggested_preset = preset.get("id") or settings.preset_id
     if available is not None:
@@ -108,7 +149,7 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
     advice = []
     coach = {
         "comfortable": f"GO — {device.get('device_name') or 'GPU'} can handle this (~{_fmt_eta(eta)}).",
-        "tight": f"TIGHT — close to VRAM limit. Keep offload on; ETA ~{_fmt_eta(eta)}.",
+        "tight": f"TIGHT — close to VRAM limit. One job at a time; ETA ~{_fmt_eta(eta)}.",
         "wont_fit": "STOP — this will not fit. Drop to 16:9 draft / 9:16 draft / 1:1 draft, or AMD Low VRAM preset.",
         "cpu_slow": "CPU ONLY — expect a long wait or preview frames. Install ROCm PyTorch for AMD.",
         "preview_only": "PREVIEW MODE — PyTorch/Diffusers missing. Jobs draw placeholders until the engine is installed.",
@@ -118,14 +159,32 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
     if fit == "wont_fit":
         advice.append("Try Wan 1.3B / SDXL Turbo, 768×432 landscape draft, or 432×768 portrait draft.")
     elif fit == "tight":
-        advice.append("Use draft/balanced quality and one job at a time.")
+        advice.append("Draft size is fine for a short clip — Generate is still allowed.")
     elif fit == "comfortable":
         advice.append("Headroom looks good — you can bump quality or length a bit.")
     if suggested_preset != (preset.get("id") or settings.preset_id):
         advice.append(f"Suggested preset: {suggested_preset}")
+    if mmgp_on:
+        advice.append("StudioNels mmgp is active — peak VRAM is lower than raw model size.")
+
+    # Allow queue unless clearly impossible (not when barely over a soft estimate)
+    can_queue = fit not in ("wont_fit",) or (
+        isinstance(available, (int, float)) and float(available) >= 24 and frames <= 130
+    )
+    if fit == "wont_fit" and can_queue:
+        fit = "tight"
+        coach_headline = coach["tight"]
+        warnings = [
+            w.replace("Needs", "Estimate was high — treating as tight. Needs")
+            if w.startswith("Needs")
+            else w
+            for w in warnings
+        ] or [
+            "Estimate was conservative for a short draft on a 24GB+ card — Generate allowed."
+        ]
 
     return {
-        "ok": fit != "wont_fit",
+        "ok": can_queue,
         "fit": fit,
         "coach_headline": coach_headline,
         "mode": mode,
@@ -142,10 +201,11 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
         "frames": frames,
         "quality": quality,
         "cpu_offload": bool(cpu_offload),
+        "mmgp": mmgp_on,
         "suggested_preset": suggested_preset,
         "warnings": warnings,
         "advice": advice,
-        "can_queue": fit != "wont_fit",
+        "can_queue": can_queue,
         "will_preview": fit in ("preview_only",) or not (gpu_ready and diffusers_ok),
     }
 
