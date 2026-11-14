@@ -128,15 +128,20 @@ function describeJobActivity(job: EngineJob): {
   if (/preview/.test(msg)) {
     return pack(`Creating preview ${modeLabel}`, job.message || `${pct}%`, 'run', 3)
   }
-  if (/generat/.test(msg) || (job.progress || 0) >= 0.2) {
+  if (/generat|denois|step\s*\d/.test(msg) || (job.progress || 0) >= 0.2) {
+    const stepMatch =
+      (job.message || '').match(/step\s+(\d+)\s*\/\s*(\d+)/i) ||
+      (job.message || '').match(/step\s+(\d+)\s+of\s+(\d+)/i)
+    const stepBit = stepMatch ? ` · step ${stepMatch[1]}/${stepMatch[2]}` : ''
     const phase =
       modeLabel === 'video'
-        ? 'Generating video'
+        ? `Generating video${stepBit}`
         : modeLabel === 'audio'
-          ? 'Generating audio'
+          ? `Generating audio${stepBit}`
           : modeLabel === 'upsample'
-            ? 'Upsampling'
-            : 'Generating image'
+            ? `Upsampling${stepBit}`
+            : `Generating image${stepBit}`
+    // Prefer full backend message (includes elapsed / ETA) so 20% doesn't look frozen
     return pack(phase, job.message || `${pct}%`, 'run', 3)
   }
   if (/start/.test(msg)) {
@@ -165,6 +170,10 @@ function GenerationStageBar({
     (job.status === 'running' || job.status === 'queued') &&
     act.stageIndex <= 2 &&
     (job.progress || 0) < 0.25
+  const slowGen =
+    job.status === 'running' &&
+    act.stageIndex === 3 &&
+    /starting denoise|Generating…|step 0\//i.test(job.message || '')
 
   return (
     <div className="gen-stage-bar">
@@ -188,11 +197,12 @@ function GenerationStageBar({
       <div className="progress">
         <div style={{ width: `${pct}%` }} />
       </div>
-      {slowLoad && showTipsLink && onOpenTips ? (
+      {(slowLoad || slowGen) && showTipsLink && onOpenTips ? (
         <div className="gen-speed-tips">
           <p className="muted tiny">
-            First AMD load can take several minutes while weights move into VRAM. Want it faster next
-            time?
+            {slowGen
+              ? 'Still working — ROCm often sits near 20% until the first denoise step reports. Elapsed time above means it is not frozen; 98% VRAM is normal.'
+              : 'First AMD load can take several minutes while weights move into VRAM. Want it faster next time?'}
           </p>
           <button type="button" className="btn acid tiny" onClick={onOpenTips}>
             Speed-up tips

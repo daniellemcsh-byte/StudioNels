@@ -40,6 +40,110 @@ def _progress(cb: ProgressCb | None, message: str, frac: float) -> None:
         cb(message, max(0.0, min(1.0, frac)))
 
 
+def _call_pipe_with_progress(
+    pipe: Any,
+    kwargs: dict[str, Any],
+    cb: ProgressCb | None,
+    *,
+    steps: int,
+    label: str = "Generating",
+) -> Any:
+    """Run pipe(**kwargs) with step callbacks + heartbeat so UI doesn't sit at 20%."""
+    total = max(1, int(steps or 1))
+    state = {"step": 0, "done": False}
+    stop = threading.Event()
+    started = time.time()
+
+    def _report(i: int) -> None:
+        i = max(0, min(int(i), total))
+        state["step"] = i
+        frac = 0.22 + 0.68 * min(1.0, i / total)
+        elapsed = int(time.time() - started)
+        eta = ""
+        if i >= 1:
+            per = elapsed / i
+            left = max(0, int(per * (total - i)))
+            if left >= 60:
+                eta = f" · ~{left // 60}m{left % 60:02d}s left"
+            else:
+                eta = f" · ~{left}s left"
+        _progress(
+            cb,
+            f"{label} · step {i}/{total} · {elapsed}s elapsed{eta}",
+            frac,
+        )
+
+    def on_step_end(pipe_self=None, step_index=None, timestep=None, callback_kwargs=None, **_kw):
+        # Diffusers callback_on_step_end — step_index is 0-based
+        idx = step_index
+        if idx is None and isinstance(callback_kwargs, dict):
+            idx = callback_kwargs.get("i", callback_kwargs.get("step_index"))
+        try:
+            i = int(idx) + 1 if idx is not None else state["step"] + 1
+        except Exception:
+            i = state["step"] + 1
+        _report(i)
+        return callback_kwargs if isinstance(callback_kwargs, dict) else {}
+
+    def on_step_legacy(step: int, timestep, latents):
+        try:
+            _report(int(step) + 1)
+        except Exception:
+            _report(state["step"] + 1)
+        return latents
+
+    call_kwargs = dict(kwargs)
+    # Try modern callback first; fall back inside TypeError handler
+    call_kwargs["callback_on_step_end"] = on_step_end
+
+    def beat() -> None:
+        while not stop.wait(2.5):
+            if state["done"]:
+                return
+            i = int(state["step"] or 0)
+            elapsed = int(time.time() - started)
+            if i > 0:
+                _report(i)
+                continue
+            # Soft crawl before first callback fires (ROCm can sit quiet a while)
+            soft = 0.22 + min(0.5, elapsed / 480.0)
+            _progress(
+                cb,
+                f"{label} · step 0/{total} · starting denoise · {elapsed}s · high VRAM is normal",
+                min(0.72, soft),
+            )
+
+    if cb:
+        t = threading.Thread(target=beat, name="gen-beat", daemon=True)
+        t.start()
+    try:
+        try:
+            return pipe(**call_kwargs)
+        except TypeError:
+            # Older pipes: callback + callback_steps
+            legacy = {
+                k: v
+                for k, v in kwargs.items()
+                if k not in {"callback_on_step_end", "callback", "callback_steps"}
+            }
+            legacy["callback"] = on_step_legacy
+            legacy["callback_steps"] = 1
+            try:
+                return pipe(**legacy)
+            except TypeError:
+                clean = {
+                    k: v
+                    for k, v in kwargs.items()
+                    if k not in {"callback_on_step_end", "callback", "callback_steps"}
+                }
+                return pipe(**clean)
+    finally:
+        state["done"] = True
+        stop.set()
+        if state["step"] < total:
+            _report(total)
+
+
 def _heartbeat_while(
     cb: ProgressCb | None,
     label: str,
@@ -475,7 +579,12 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         te_job["cpu_offload"] = True
     _apply_text_encoder(pipe, te_job, device, dtype, cb)
     _apply_lora(pipe, job, cb)
-    _progress(cb, "Generating…", 0.2)
+    place = (mem or {}).get("placement") or "unknown"
+    _progress(
+        cb,
+        f"Generating… {width}×{height} · {frames_n}f · {steps} steps · VRAM busy is normal ({place})",
+        0.2,
+    )
 
     image_in = _load_image(job.get("image_path"))
     ref_in = _load_image(job.get("reference_path"))
@@ -501,18 +610,28 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             kwargs["cross_attention_kwargs"] = lora_kw
         if mode in ("ref2i",) and conditioning is not None:
             try:
-                result = pipe(
-                    prompt=prompt,
-                    image=conditioning.resize((width, height)),
-                    strength=float(job.get("strength") or 0.65),
-                    num_inference_steps=steps,
-                    guidance_scale=max(guidance, 1.0),
-                    generator=generator,
+                result = _call_pipe_with_progress(
+                    pipe,
+                    {
+                        "prompt": prompt,
+                        "image": conditioning.resize((width, height)),
+                        "strength": float(job.get("strength") or 0.65),
+                        "num_inference_steps": steps,
+                        "guidance_scale": max(guidance, 1.0),
+                        "generator": generator,
+                    },
+                    cb,
+                    steps=steps,
+                    label="Generating image",
                 )
             except TypeError:
-                result = pipe(**kwargs)
+                result = _call_pipe_with_progress(
+                    pipe, kwargs, cb, steps=steps, label="Generating image"
+                )
         else:
-            result = pipe(**kwargs)
+            result = _call_pipe_with_progress(
+                pipe, kwargs, cb, steps=steps, label="Generating image"
+            )
         out = result.images[0]
         media = _save_image(out, out_path.with_suffix(".png"))
         _progress(cb, "Done", 1.0)
@@ -550,7 +669,13 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
 
     for attempt in attempts:
         try:
-            result = pipe(**attempt)
+            result = _call_pipe_with_progress(
+                pipe,
+                attempt,
+                cb,
+                steps=steps,
+                label="Generating video",
+            )
             break
         except TypeError as exc:
             tried_errors.append(str(exc))

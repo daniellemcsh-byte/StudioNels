@@ -432,6 +432,8 @@ def _run_one(job: dict[str, Any]) -> None:
     job["status"] = "running"
     job["message"] = "Starting"
     job["progress"] = 0.01
+    job["started_at"] = utc_now()
+    job["elapsed_sec"] = 0
     job["updated_at"] = utc_now()
     upsert_job(job)
 
@@ -441,6 +443,26 @@ def _run_one(job: dict[str, Any]) -> None:
         job["message"] = message
         job["progress"] = frac
         job["updated_at"] = utc_now()
+        try:
+            from datetime import datetime
+            import re
+
+            start = job.get("started_at")
+            if isinstance(start, str) and start:
+                t0 = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                job["elapsed_sec"] = max(0, int((datetime.now(t0.tzinfo) - t0).total_seconds()))
+            m = re.search(r"step\s+(\d+)\s*/\s*(\d+)", message or "", re.I)
+            if m:
+                job["step"] = int(m.group(1))
+                job["steps_total"] = int(m.group(2))
+            eta_m = re.search(r"~\s*(\d+)m(\d+)s\s*left", message or "", re.I)
+            eta_s = re.search(r"~\s*(\d+)s\s*left", message or "", re.I)
+            if eta_m:
+                job["eta_sec"] = int(eta_m.group(1)) * 60 + int(eta_m.group(2))
+            elif eta_s:
+                job["eta_sec"] = int(eta_s.group(1))
+        except Exception:
+            pass
         upsert_job(job)
 
     out_dir = MEDIA_DIR / (job.get("project_id") or "standalone")
