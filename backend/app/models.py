@@ -278,6 +278,8 @@ class EngineGenerateRequest(BaseModel):
     video_path: str | None = None
     lora_path: str | None = None
     lora_scale: float | None = 0.8
+    text_encoder: str | None = "auto"
+    audio_path: str | None = None
     project_id: str | None = None
     shot_id: str | None = None
     force_preview: bool = False
@@ -347,6 +349,23 @@ class AgentPlanRequest(BaseModel):
     attachments: list[AgentAttachment] = Field(default_factory=list)
 
 
+class CreateShotRequest(BaseModel):
+    """Manual storyboard / shot list entry — no LLM required."""
+
+    title: str = "New shot"
+    action: str = ""
+    dialogue: str = ""
+    camera: str = "medium"
+    duration_sec: float = 3.0
+    character_ids: list[str] = Field(default_factory=list)
+    scene_id: str | None = None
+    prompt: str = ""
+    negative_prompt: str = ""
+    storyboard_note: str = ""
+    director_notes: str = ""
+    insert_at: int | None = None  # None = append
+
+
 class UpdateShotRequest(BaseModel):
     title: str | None = None
     action: str | None = None
@@ -361,6 +380,7 @@ class UpdateShotRequest(BaseModel):
     director_notes: str | None = None
     status: str | None = None
     pinned_take_id: str | None = None
+    index: int | None = None
 
 
 class GenerateRequest(BaseModel):

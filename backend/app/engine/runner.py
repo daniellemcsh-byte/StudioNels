@@ -13,12 +13,13 @@ from .catalog import (
     GENERATION_MODES,
     QUALITY_PRESETS,
     SIZE_PRESETS,
+    TEXT_ENCODER_PRESETS,
     default_model_for_mode,
     get_model,
     list_models_for_mode,
 )
 from .device import detect_device
-from .pipelines import run_diffusers_job, run_preview_job
+from .pipelines import mux_audio_onto_video, run_diffusers_job, run_preview_job
 from .queue_store import get_job as store_get
 from .queue_store import list_jobs as store_list
 from .queue_store import loras_dir, models_dir
@@ -27,6 +28,12 @@ from .queue_store import upsert_job
 _WORKER_STARTED = False
 _QUEUE: list[str] = []
 _CV = threading.Condition()
+_CANCEL: dict[str, bool] = {}
+_CURRENT_JOB_ID: str | None = None
+
+
+class JobCancelled(Exception):
+    """Raised when the user stops a generation job."""
 
 
 @dataclass
@@ -104,6 +111,8 @@ def engine_status_public() -> dict[str, Any]:
         "loras_path": str(loras_dir()),
         "loras": loras,
         "lora_count": len(loras),
+        "text_encoders": TEXT_ENCODER_PRESETS,
+        "current_job_id": _CURRENT_JOB_ID,
     }
 
 
@@ -242,19 +251,25 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         "video_path": payload.get("video_path"),
         "lora_path": payload.get("lora_path"),
         "lora_scale": float(payload.get("lora_scale") if payload.get("lora_scale") is not None else 0.8),
+        "text_encoder": payload.get("text_encoder") or "auto",
+        "audio_path": payload.get("audio_path"),
         "project_id": payload.get("project_id"),
         "shot_id": payload.get("shot_id"),
         "is_rehearsal": is_rehearsal,
         "continue_from_previous": bool(payload.get("continue_from_previous")),
         "continue_from_take_id": payload.get("continue_from_take_id"),
         "chain_shot_ids": list(payload.get("chain_shot_ids") or []),
+        # Full form snapshot so Stop can restore the workflow without losing input
+        "workflow": dict(payload),
         "media_path": None,
         "thumb_path": None,
         "last_frame_path": None,
         "error": None,
         "preview": False,
         "engine": "builtin",
+        "cancel_requested": False,
     }
+    _CANCEL[job["id"]] = False
     upsert_job(job)
     with _CV:
         _QUEUE.append(job["id"])
@@ -262,20 +277,85 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     return job
 
 
+def cancel_job(job_id: str) -> dict[str, Any]:
+    """Stop a queued/running job. Keeps the job + workflow snapshot for restore."""
+    job = store_get(job_id)
+    if not job:
+        raise ValueError("Job not found")
+    _CANCEL[job_id] = True
+    with _CV:
+        if job_id in _QUEUE:
+            _QUEUE[:] = [j for j in _QUEUE if j != job_id]
+    status = job.get("status")
+    if status in ("queued", "running"):
+        job["cancel_requested"] = True
+        job["status"] = "cancelled"
+        job["message"] = (
+            "Stopped — your prompt and settings are saved. "
+            "Open Generate → Restore workflow to continue."
+        )
+        job["updated_at"] = utc_now()
+        job["progress"] = float(job.get("progress") or 0)
+        upsert_job(job)
+    return job
+
+
+def cancel_all_jobs() -> dict[str, Any]:
+    active = [
+        j
+        for j in store_list(80)
+        if j.get("status") in ("queued", "running")
+    ]
+    stopped = [cancel_job(j["id"]) for j in active]
+    return {"ok": True, "stopped": len(stopped), "jobs": stopped}
+
+
+def list_restorable_jobs(limit: int = 20) -> list[dict[str, Any]]:
+    """Cancelled / failed jobs that still carry a workflow snapshot."""
+    out = []
+    for job in store_list(80):
+        if job.get("workflow") and job.get("status") in ("cancelled", "failed", "done"):
+            out.append(job)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _worker_loop() -> None:
+    global _CURRENT_JOB_ID
     while True:
         with _CV:
             while not _QUEUE:
                 _CV.wait()
             job_id = _QUEUE.pop(0)
+        if _CANCEL.get(job_id):
+            job = store_get(job_id)
+            if job and job.get("status") not in ("cancelled",):
+                job["status"] = "cancelled"
+                job["message"] = "Stopped before start — workflow saved."
+                job["updated_at"] = utc_now()
+                upsert_job(job)
+            continue
         job = store_get(job_id)
         if not job:
             continue
-        _run_one(job)
+        _CURRENT_JOB_ID = job_id
+        try:
+            _run_one(job)
+        finally:
+            if _CURRENT_JOB_ID == job_id:
+                _CURRENT_JOB_ID = None
 
 
 def _run_one(job: dict[str, Any]) -> None:
     ensure_dirs()
+    if _CANCEL.get(job["id"]):
+        job["status"] = "cancelled"
+        job["message"] = "Stopped — workflow saved."
+        job["updated_at"] = utc_now()
+        upsert_job(job)
+        return
+
     job["status"] = "running"
     job["message"] = "Starting"
     job["progress"] = 0.01
@@ -283,6 +363,8 @@ def _run_one(job: dict[str, Any]) -> None:
     upsert_job(job)
 
     def cb(message: str, frac: float) -> None:
+        if _CANCEL.get(job["id"]):
+            raise JobCancelled("Stopped by user")
         job["message"] = message
         job["progress"] = frac
         job["updated_at"] = utc_now()
@@ -315,6 +397,29 @@ def _run_one(job: dict[str, Any]) -> None:
             else:
                 job["message"] = "Preview only — no GPU visible; install AMD ROCm PyTorch."
 
+        if _CANCEL.get(job["id"]):
+            raise JobCancelled("Stopped by user")
+
+        # Optional: mux audio bed onto finished video
+        audio_path = job.get("audio_path")
+        media = result.get("media_path")
+        if (
+            audio_path
+            and media
+            and str(media).lower().endswith((".mp4", ".webm", ".mov"))
+        ):
+            try:
+                muxed = mux_audio_onto_video(
+                    media,
+                    str(audio_path),
+                    out_path=Path(media).with_name(Path(media).stem + "_audio.mp4"),
+                    cb=cb,
+                )
+                result["media_path"] = muxed
+                job["message"] = "Complete (audio attached)"
+            except Exception as mux_exc:  # noqa: BLE001
+                job["message"] = f"Complete — audio mux skipped ({mux_exc})"
+
         job["media_path"] = result.get("media_path")
         job["thumb_path"] = result.get("thumb_path")
         try:
@@ -325,7 +430,7 @@ def _run_one(job: dict[str, Any]) -> None:
             job["last_frame_path"] = None
         job["status"] = "done"
         job["progress"] = 1.0
-        if not job.get("message") or job["status"] == "done" and not job["preview"]:
+        if not job.get("message") or (job["status"] == "done" and not job.get("preview") and "audio" not in (job.get("message") or "").lower()):
             msg = "Complete"
             if job.get("continue_from_previous"):
                 msg = "Complete (continued from previous)"
@@ -333,13 +438,28 @@ def _run_one(job: dict[str, Any]) -> None:
         job["updated_at"] = utc_now()
         upsert_job(job)
 
-        if job.get("project_id") and job.get("media_path"):
+        if job.get("project_id") and job.get("media_path") and not _CANCEL.get(job["id"]):
             _attach_to_project(job)
             _maybe_chain_next(job)
+    except JobCancelled:
+        job["status"] = "cancelled"
+        job["cancel_requested"] = True
+        job["error"] = None
+        job["message"] = (
+            "Stopped — your prompt and settings are saved. "
+            "Restore workflow in Generate to pick up where you left off."
+        )
+        job["updated_at"] = utc_now()
+        upsert_job(job)
     except Exception as exc:  # noqa: BLE001
-        job["status"] = "failed"
-        job["error"] = f"{exc}\n{traceback.format_exc()[-1500:]}"
-        job["message"] = str(exc)
+        if _CANCEL.get(job["id"]) or "Stopped" in str(exc):
+            job["status"] = "cancelled"
+            job["error"] = None
+            job["message"] = "Stopped — workflow saved."
+        else:
+            job["status"] = "failed"
+            job["error"] = f"{exc}\n{traceback.format_exc()[-1500:]}"
+            job["message"] = str(exc)
         job["updated_at"] = utc_now()
         upsert_job(job)
 

@@ -6,7 +6,10 @@ import wave
 from pathlib import Path
 from typing import Any, Callable
 
-from .catalog import get_model
+import shutil
+import subprocess
+
+from .catalog import get_model, get_text_encoder_preset
 from .device import detect_device
 
 
@@ -86,6 +89,131 @@ def _apply_lora(pipe, job: dict[str, Any], cb: ProgressCb | None) -> None:
             pipe.set_adapters(["default"], adapter_weights=[scale])
     except Exception as exc:  # noqa: BLE001
         _progress(cb, f"LoRA skipped: {exc}", 0.15)
+
+
+def mux_audio_onto_video(
+    video_path: str,
+    audio_path: str,
+    out_path: Path | None = None,
+    cb: ProgressCb | None = None,
+) -> str:
+    """Combine a silent/generated video with an audio bed via ffmpeg."""
+    video = Path(video_path)
+    audio = Path(audio_path)
+    if not video.exists():
+        raise FileNotFoundError(f"Video not found: {video}")
+    if not audio.exists():
+        raise FileNotFoundError(f"Audio not found: {audio}")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found — install ffmpeg to add audio to video.")
+
+    dest = out_path or video.with_name(f"{video.stem}_with_audio.mp4")
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _progress(cb, "Muxing audio onto video…", 0.85)
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-i",
+        str(video),
+        "-i",
+        str(audio),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-shortest",
+        str(dest),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
+        # Re-encode fallback when stream copy fails
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(video),
+            "-i",
+            str(audio),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-shortest",
+            str(dest),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0 or not dest.exists():
+            err = (proc.stderr or proc.stdout or "ffmpeg failed")[-800:]
+            raise RuntimeError(f"Could not mux audio: {err}")
+    _progress(cb, "Audio attached", 0.95)
+    return str(dest)
+
+
+def _apply_text_encoder(pipe, job: dict[str, Any], device: str, dtype, cb: ProgressCb | None) -> None:
+    choice = (job.get("text_encoder") or "auto").strip()
+    preset = get_text_encoder_preset(choice)
+    if not preset or not preset.get("hf_id"):
+        return
+    hf_id = str(preset["hf_id"])
+    slot = str(preset.get("slot") or "text_encoder")
+    _progress(cb, f"Loading text encoder ({preset.get('label') or hf_id})…", 0.08)
+    try:
+        import torch
+        from transformers import AutoModel, AutoTokenizer, CLIPTextModel, T5EncoderModel
+
+        # Prefer known encoder classes; fall back to AutoModel.
+        encoder = None
+        last_err: Exception | None = None
+        for loader in (CLIPTextModel, T5EncoderModel, AutoModel):
+            try:
+                encoder = loader.from_pretrained(hf_id, torch_dtype=dtype)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+        if encoder is None:
+            raise RuntimeError(str(last_err or "encoder load failed"))
+
+        tokenizer = None
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(hf_id)
+        except Exception:
+            tokenizer = None
+
+        moved = encoder.to(device if not str(device).startswith("cuda") or not job.get("cpu_offload") else "cpu")
+        if hasattr(pipe, slot):
+            setattr(pipe, slot, moved)
+        elif hasattr(pipe, "text_encoder"):
+            pipe.text_encoder = moved
+        else:
+            _progress(cb, "Pipeline has no text_encoder slot — left as model default.", 0.1)
+            return
+
+        # Match tokenizer slot when present
+        tok_slot = "tokenizer_2" if slot.endswith("_2") else "tokenizer"
+        if tokenizer is not None and hasattr(pipe, tok_slot):
+            setattr(pipe, tok_slot, tokenizer)
+        elif tokenizer is not None and hasattr(pipe, "tokenizer"):
+            pipe.tokenizer = tokenizer
+        _progress(cb, f"Text encoder → {preset.get('label') or hf_id}", 0.11)
+    except Exception as exc:  # noqa: BLE001
+        _progress(cb, f"Text encoder swap skipped: {exc}", 0.11)
 
 
 def _upsample_image_file(src: str, out_path: Path, scale: int, cb: ProgressCb | None) -> dict[str, Any]:
@@ -228,6 +356,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
 
     _progress(cb, "Loading pipeline weights…", 0.05)
     pipe = _build_pipeline(model, device, dtype, cpu_offload)
+    _apply_text_encoder(pipe, job, device, dtype, cb)
     _apply_lora(pipe, job, cb)
     _progress(cb, "Generating…", 0.2)
 

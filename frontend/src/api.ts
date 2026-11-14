@@ -189,6 +189,26 @@ export const api = {
     }),
   deleteScene: (id: string, sceneId: string) =>
     req<Project>(`/api/projects/${id}/scenes/${sceneId}`, { method: 'DELETE' }),
+  addShot: (
+    id: string,
+    body: {
+      title?: string
+      action?: string
+      dialogue?: string
+      camera?: string
+      duration_sec?: number
+      prompt?: string
+      storyboard_note?: string
+      director_notes?: string
+      character_ids?: string[]
+      scene_id?: string | null
+      insert_at?: number | null
+    } = {},
+  ) =>
+    req<Project>(`/api/projects/${id}/shots`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   patchShot: (id: string, shotId: string, body: Record<string, unknown>) =>
     req<Project>(`/api/projects/${id}/shots/${shotId}`, {
       method: 'PATCH',
@@ -297,6 +317,18 @@ export const api = {
     ),
   engineJobs: () => req<EngineJob[]>('/api/engine/jobs'),
   engineJob: (id: string) => req<EngineJob>(`/api/engine/jobs/${id}`),
+  engineCancelJob: (id: string) =>
+    req<EngineJob>(`/api/engine/jobs/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  engineCancelAll: () =>
+    req<{ ok: boolean; stopped: number }>('/api/engine/jobs/cancel-all', {
+      method: 'POST',
+      body: '{}',
+    }),
+  engineWorkflows: () =>
+    req<{ jobs: EngineJob[] }>('/api/engine/workflows'),
   engineGenerate: (body: Record<string, unknown>) =>
     req<EngineJob>('/api/engine/generate', { method: 'POST', body: JSON.stringify(body) }),
   engineEstimate: (body: Record<string, unknown>) =>
@@ -311,6 +343,20 @@ export const api = {
       `/api/projects/${id}/takes/clear-previews?delete_files=${deleteFiles}`,
       { method: 'POST', body: '{}' },
     ),
+  takeAddAudio: async (id: string, takeId: string, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch(
+      `/api/projects/${id}/takes/${encodeURIComponent(takeId)}/add-audio`,
+      { method: 'POST', body: fd },
+    )
+    if (!res.ok) throw new Error(await res.text())
+    return res.json() as Promise<{
+      ok: boolean
+      project: Project
+      message: string
+    }>
+  },
   cancelPersonalImport: (jobId: string) =>
     req<PersonalImportJob>(`/api/personal/imports/${jobId}/cancel`, {
       method: 'POST',

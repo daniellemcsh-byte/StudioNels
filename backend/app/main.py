@@ -12,7 +12,15 @@ from .agent_director import director_chat
 from .captions import captions_srt, generate_captions, timeline_progress
 from .continuity import build_bible, rescore_project
 from .engine.device import detect_device
-from .engine.runner import engine_status_public, enqueue_job, get_job, list_jobs
+from .engine.runner import (
+    cancel_all_jobs,
+    cancel_job,
+    engine_status_public,
+    enqueue_job,
+    get_job,
+    list_jobs,
+    list_restorable_jobs,
+)
 from .generate import generate_takes
 from .gpu_estimate import estimate_job
 from .llm_providers import list_providers, probe_agent
@@ -24,6 +32,7 @@ from .models import (
     CharacterProfile,
     ContinuityRulesRequest,
     CreateProjectRequest,
+    CreateShotRequest,
     AgentPlanRequest,
     EngineGenerateRequest,
     FilmNightRequest,
@@ -231,6 +240,26 @@ async def engine_job(job_id: str):
     if not job:
         raise HTTPException(404, "Job not found")
     return job
+
+
+@app.post("/api/engine/jobs/{job_id}/cancel")
+async def engine_job_cancel(job_id: str):
+    """Stop generation without wiping the prompt/settings workflow snapshot."""
+    try:
+        return cancel_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/engine/jobs/cancel-all")
+async def engine_jobs_cancel_all():
+    return cancel_all_jobs()
+
+
+@app.get("/api/engine/workflows")
+async def engine_workflows(limit: int = 20):
+    """Stopped/failed jobs you can restore into Generate."""
+    return {"jobs": list_restorable_jobs(limit)}
 
 
 @app.post("/api/engine/generate")
@@ -500,14 +529,53 @@ async def delete_scene(project_id: str, scene_id: str):
     return save_project(project)
 
 
+@app.post("/api/projects/{project_id}/shots", response_model=Project)
+async def add_shot(project_id: str, body: CreateShotRequest):
+    """Add a shot by hand — storyboard / shot list without the agent."""
+    from .models import Shot
+
+    project = load_project(project_id)
+    shot = Shot(
+        index=len(project.shots),
+        title=(body.title or "New shot").strip() or "New shot",
+        action=body.action or "",
+        dialogue=body.dialogue or "",
+        camera=body.camera or "medium",
+        duration_sec=float(body.duration_sec or 3),
+        character_ids=list(body.character_ids or []),
+        scene_id=body.scene_id,
+        prompt=body.prompt or "",
+        negative_prompt=body.negative_prompt or "",
+        storyboard_note=body.storyboard_note or "",
+        director_notes=body.director_notes or "",
+        status="draft",
+    )
+    insert_at = body.insert_at
+    if insert_at is None or insert_at < 0 or insert_at >= len(project.shots):
+        project.shots.append(shot)
+    else:
+        project.shots.insert(insert_at, shot)
+    for i, s in enumerate(project.shots):
+        s.index = i
+    return save_project(project)
+
+
 @app.patch("/api/projects/{project_id}/shots/{shot_id}", response_model=Project)
 async def patch_shot(project_id: str, shot_id: str, body: UpdateShotRequest):
     project = load_project(project_id)
     for shot in project.shots:
         if shot.id == shot_id:
             data = body.model_dump(exclude_unset=True)
+            new_index = data.pop("index", None)
             for key, value in data.items():
                 setattr(shot, key, value)
+            if new_index is not None:
+                ordered = [s for s in project.shots if s.id != shot_id]
+                idx = max(0, min(int(new_index), len(ordered)))
+                ordered.insert(idx, shot)
+                project.shots = ordered
+                for i, s in enumerate(project.shots):
+                    s.index = i
             return save_project(project)
     raise HTTPException(404, "Shot not found")
 
@@ -713,6 +781,68 @@ async def clear_preview_takes(project_id: str, delete_files: bool = True):
     for i, c in enumerate(project.timeline):
         c.order = i
     return save_project(project)
+
+
+@app.post("/api/projects/{project_id}/takes/{take_id}/add-audio")
+async def take_add_audio(
+    project_id: str,
+    take_id: str,
+    audio_path: str | None = Form(None),
+    file: UploadFile | None = File(None),
+):
+    """Mux audio onto an existing video take (keeps the original take, adds a new one)."""
+    from .engine.pipelines import mux_audio_onto_video
+    from .models import Take
+    from .paths import MEDIA_DIR
+
+    project = load_project(project_id)
+    take = next((t for t in project.takes if t.id == take_id), None)
+    if not take:
+        raise HTTPException(404, "Take not found")
+    if not take.media_path or not str(take.media_path).lower().endswith((".mp4", ".webm", ".mov")):
+        raise HTTPException(400, "Take has no video to attach audio to")
+
+    audio: str | None = audio_path
+    if file is not None and file.filename:
+        data = await file.read()
+        dest = UPLOADS_DIR / f"{new_id('aud')}{Path(file.filename).suffix or '.wav'}"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        audio = str(dest)
+    if not audio:
+        raise HTTPException(400, "Provide audio file upload or audio_path=")
+
+    out_dir = MEDIA_DIR / project_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        muxed = mux_audio_onto_video(
+            take.media_path,
+            audio,
+            out_path=out_dir / f"{new_id('mux')}.mp4",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+
+    new_take = Take(
+        shot_id=take.shot_id,
+        label=f"{take.label} + audio",
+        media_path=muxed,
+        thumb_path=take.thumb_path,
+        seed=take.seed,
+        is_placeholder=False,
+        score_note="Audio muxed onto video",
+        prompt_used=take.prompt_used,
+        is_rehearsal=False,
+    )
+    project.takes.append(new_take)
+    save_project(project)
+    return {
+        "ok": True,
+        "project": project.model_dump(),
+        "take": new_take.model_dump(),
+        "media_path": muxed,
+        "message": "Audio added — new take created (original kept).",
+    }
 
 
 @app.put("/api/projects/{project_id}/timeline", response_model=Project)

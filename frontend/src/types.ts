@@ -80,6 +80,18 @@ export interface EngineJob {
   preview?: boolean
   error?: string | null
   created_at: string
+  workflow?: Record<string, unknown>
+  cancel_requested?: boolean
+  text_encoder?: string
+  audio_path?: string | null
+}
+
+export interface TextEncoderPreset {
+  id: string
+  label: string
+  hf_id?: string | null
+  slot?: string
+  notes?: string
 }
 
 export interface LoraFile {
@@ -109,6 +121,8 @@ export interface EngineStatus {
   loras_path?: string
   loras?: LoraFile[]
   lora_count?: number
+  text_encoders?: TextEncoderPreset[]
+  current_job_id?: string | null
 }
 
 export interface CharacterProfile {

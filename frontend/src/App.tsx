@@ -775,7 +775,16 @@ export default function App() {
             onGenerate={(id) => generateShots([id])}
           />
         )}
-        {tab === 'storyboard' && <StoryboardTab project={project} onGenerate={generateShots} />}
+        {tab === 'storyboard' && (
+          <StoryboardTab
+            project={project}
+            setProject={setProject}
+            busy={busy}
+            setBusy={setBusy}
+            notify={notify}
+            onGenerate={generateShots}
+          />
+        )}
         {tab === 'characters' && (
           <CharactersTab
             project={project}
@@ -886,6 +895,14 @@ export default function App() {
         notify={notify}
         onOpenGenerate={() => goTab('generate')}
         onOpenSampling={() => goTab('sampling')}
+        onRestoreWorkflow={() => {
+          try {
+            window.sessionStorage.setItem('studionels_restore_workflow', '1')
+          } catch {
+            /* ignore */
+          }
+          goTab('generate')
+        }}
       />
       {toast && <div className="toast">{toast}</div>}
     </div>
@@ -899,6 +916,7 @@ function GenerationDock({
   notify,
   onOpenGenerate,
   onOpenSampling,
+  onRestoreWorkflow,
 }: {
   projectId: string
   health: Health | null
@@ -906,9 +924,11 @@ function GenerationDock({
   notify: (m: string) => void
   onOpenGenerate: () => void
   onOpenSampling: () => void
+  onRestoreWorkflow: () => void
 }) {
   const [jobs, setJobs] = useState<EngineJob[]>([])
   const [open, setOpen] = useState(true)
+  const [stopping, setStopping] = useState(false)
   const prevActive = useRef(0)
 
   useEffect(() => {
@@ -919,15 +939,20 @@ function GenerationDock({
         if (cancelled) return
         setJobs(list.slice(0, 12))
         const active = list.filter((j) => j.status === 'queued' || j.status === 'running').length
-        const doneNow = list.filter((j) => j.status === 'done' || j.status === 'failed').length
+        const doneNow = list.filter(
+          (j) => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled',
+        ).length
         if (prevActive.current > 0 && active === 0 && doneNow > 0) {
           const p = await api.getProject(projectId)
           if (!cancelled) {
             setProject(p)
+            const stopped = list.some((j) => j.status === 'cancelled')
             notify(
-              health?.will_preview
-                ? `Jobs finished (preview mode). Check Sampling — ${p.takes.length} take(s).`
-                : `Jobs finished — ${p.takes.length} take(s). Open Sampling or Director.`,
+              stopped
+                ? 'Stopped — prompts/settings kept. Restore workflow in Generate.'
+                : health?.will_preview
+                  ? `Jobs finished (preview mode). Check Sampling — ${p.takes.length} take(s).`
+                  : `Jobs finished — ${p.takes.length} take(s). Open Sampling or Director.`,
             )
           }
         }
@@ -947,6 +972,9 @@ function GenerationDock({
 
   const active = jobs.filter((j) => j.status === 'queued' || j.status === 'running')
   const recent = jobs.slice(0, 6)
+  const hasRestorable = jobs.some(
+    (j) => j.workflow && (j.status === 'cancelled' || j.status === 'failed'),
+  )
   if (recent.length === 0 && !health?.will_preview) return null
 
   return (
@@ -992,11 +1020,58 @@ function GenerationDock({
                   </div>
                   <div className="muted tiny truncate">{job.message || job.prompt || job.id}</div>
                   {job.error ? <div className="fit-warn tiny">{job.error.slice(0, 160)}</div> : null}
+                  {(job.status === 'queued' || job.status === 'running') && (
+                    <button
+                      className="btn ghost tiny"
+                      type="button"
+                      disabled={stopping}
+                      onClick={async () => {
+                        setStopping(true)
+                        try {
+                          await api.engineCancelJob(job.id)
+                          notify('Stopped — your prompt/settings are saved.')
+                          setJobs(await api.engineJobs())
+                        } catch (err) {
+                          notify(String((err as Error).message || err))
+                        } finally {
+                          setStopping(false)
+                        }
+                      }}
+                    >
+                      Stop
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
           )}
-          <div className="cta-row" style={{ marginTop: 8 }}>
+          <div className="cta-row" style={{ marginTop: 8, flexWrap: 'wrap', gap: 6 }}>
+            {active.length > 0 && (
+              <button
+                className="btn secondary tiny"
+                type="button"
+                disabled={stopping}
+                onClick={async () => {
+                  setStopping(true)
+                  try {
+                    const r = await api.engineCancelAll()
+                    notify(`Stopped ${r.stopped} job(s) — workflow kept.`)
+                    setJobs(await api.engineJobs())
+                  } catch (err) {
+                    notify(String((err as Error).message || err))
+                  } finally {
+                    setStopping(false)
+                  }
+                }}
+              >
+                Stop all
+              </button>
+            )}
+            {hasRestorable && (
+              <button className="btn acid tiny" type="button" onClick={onRestoreWorkflow}>
+                Restore workflow
+              </button>
+            )}
             <button className="btn ghost tiny" type="button" onClick={onOpenGenerate}>
               Generate
             </button>
@@ -1751,20 +1826,39 @@ function ShotsTab({
     }
   }
 
-  if (project.shots.length === 0) {
-    return (
-      <div className="empty">
-        No shots yet. Open the Agent tab and describe your idea — or add profiles first.
-      </div>
-    )
+  const addManualShot = async () => {
+    try {
+      const p = await api.addShot(project.id, {
+        title: `Shot ${project.shots.length + 1}`,
+        action: '',
+        camera: 'medium',
+        duration_sec: 3,
+        storyboard_note: '',
+      })
+      setProject(p)
+      notify('Shot added — edit the fields below (no agent needed).')
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    }
   }
 
   return (
     <div>
       <p className="hint">
-        Every field is editable. With <em>continue from previous</em> on, Generate runs as i2v from
-        the prior take’s last frame so scenes stay in the same world.
+        Build the shot list yourself or with the Agent. Every field is editable. With{' '}
+        <em>continue from previous</em> on, Generate runs as i2v from the prior take’s last frame.
       </p>
+      <div className="inline-actions" style={{ marginBottom: 12 }}>
+        <button className="btn acid" type="button" disabled={busy} onClick={addManualShot}>
+          Add shot
+        </button>
+      </div>
+      {project.shots.length === 0 ? (
+        <div className="empty">
+          No shots yet. Click <strong>Add shot</strong> to build the board by hand, or ask the Agent
+          to plan one.
+        </div>
+      ) : null}
       <label className="muted" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
         <input
           type="checkbox"
@@ -1869,11 +1963,32 @@ function ShotsTab({
 
 function StoryboardTab({
   project,
+  setProject,
+  busy,
+  setBusy,
+  notify,
   onGenerate,
 }: {
   project: Project
+  setProject: (p: Project) => void
+  busy: boolean
+  setBusy: (v: boolean) => void
+  notify: (m: string) => void
   onGenerate: (ids?: string[]) => void
 }) {
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draft, setDraft] = useState({
+    title: '',
+    action: '',
+    dialogue: '',
+    camera: 'medium',
+    duration_sec: 3,
+    prompt: '',
+    storyboard_note: '',
+    director_notes: '',
+    scene_id: '' as string,
+  })
+
   const takeMap = useMemo(() => {
     const m = new Map<string, Take>()
     for (const t of project.takes) {
@@ -1884,40 +1999,289 @@ function StoryboardTab({
     return m
   }, [project])
 
-  if (!project.shots.length) {
-    return <div className="empty">Storyboard fills in after the agent plans shots.</div>
+  const openEdit = (shot: Shot) => {
+    setEditingId(shot.id)
+    setDraft({
+      title: shot.title || '',
+      action: shot.action || '',
+      dialogue: shot.dialogue || '',
+      camera: shot.camera || 'medium',
+      duration_sec: shot.duration_sec || 3,
+      prompt: shot.prompt || '',
+      storyboard_note: shot.storyboard_note || '',
+      director_notes: shot.director_notes || '',
+      scene_id: shot.scene_id || '',
+    })
+  }
+
+  const openNew = () => {
+    setEditingId('new')
+    setDraft({
+      title: `Shot ${project.shots.length + 1}`,
+      action: '',
+      dialogue: '',
+      camera: 'medium',
+      duration_sec: 3,
+      prompt: '',
+      storyboard_note: '',
+      director_notes: '',
+      scene_id: '',
+    })
+  }
+
+  const saveCard = async () => {
+    setBusy(true)
+    try {
+      const body = {
+        title: draft.title.trim() || 'Untitled shot',
+        action: draft.action,
+        dialogue: draft.dialogue,
+        camera: draft.camera,
+        duration_sec: Number(draft.duration_sec) || 3,
+        prompt: draft.prompt,
+        storyboard_note: draft.storyboard_note,
+        director_notes: draft.director_notes,
+        scene_id: draft.scene_id || null,
+      }
+      let p: Project
+      if (editingId === 'new' || !editingId) {
+        p = await api.addShot(project.id, body)
+        notify('Shot added to storyboard.')
+      } else {
+        p = await api.patchShot(project.id, editingId, body)
+        notify('Storyboard card saved.')
+      }
+      setProject(p)
+      setEditingId(null)
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const moveShot = async (shotId: string, dir: -1 | 1) => {
+    const shot = project.shots.find((s) => s.id === shotId)
+    if (!shot) return
+    const next = Math.max(0, Math.min(project.shots.length - 1, shot.index + dir))
+    if (next === shot.index) return
+    setBusy(true)
+    try {
+      const p = await api.patchShot(project.id, shotId, { index: next })
+      setProject(p)
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
     <div>
-      <p className="hint">Visual board of your film. Pin favorites later in Sampling.</p>
-      <div className="inline-actions" style={{ marginBottom: 12 }}>
-        <button className="btn" type="button" onClick={() => onGenerate()}>
-          Generate missing shots
+      <p className="hint">
+        Build the board yourself — add cards, write notes, reorder. Agent help is optional.
+      </p>
+      <div className="inline-actions" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+        <button className="btn acid" type="button" disabled={busy} onClick={openNew}>
+          Add storyboard card
         </button>
+        {project.shots.length > 0 && (
+          <button className="btn" type="button" disabled={busy} onClick={() => onGenerate()}>
+            Generate missing shots
+          </button>
+        )}
       </div>
-      <div className="board">
-        {project.shots.map((shot) => {
-          const take = takeMap.get(shot.id)
-          const src = mediaUrl(take?.thumb_path || take?.media_path)
-          return (
-            <div className="board-card" key={shot.id}>
-              <div className="board-thumb">
-                {src ? <img src={src} alt="" /> : <span>{shot.index + 1}. {shot.title}</span>}
+
+      {editingId && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3>{editingId === 'new' ? 'New storyboard card' : 'Edit card'}</h3>
+          <div className="controls-grid">
+            <div className="field">
+              <label>Title</label>
+              <input
+                value={draft.title}
+                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+                placeholder="Shot title"
+              />
+            </div>
+            <div className="field">
+              <label>Camera</label>
+              <select
+                value={draft.camera}
+                onChange={(e) => setDraft({ ...draft, camera: e.target.value })}
+              >
+                {['wide', 'medium', 'close-up', 'tracking', 'pov', 'overhead', 'insert'].map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label>Duration (sec)</label>
+              <input
+                type="number"
+                min={0.5}
+                step={0.5}
+                value={draft.duration_sec}
+                onChange={(e) => setDraft({ ...draft, duration_sec: Number(e.target.value) })}
+              />
+            </div>
+            {project.scenes.length > 0 && (
+              <div className="field">
+                <label>Scene (optional)</label>
+                <select
+                  value={draft.scene_id}
+                  onChange={(e) => setDraft({ ...draft, scene_id: e.target.value })}
+                >
+                  <option value="">— none —</option>
+                  {project.scenes.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
               </div>
-              <div className="board-body">
-                <strong>
-                  {shot.index + 1}. {shot.title}
-                </strong>
-                <div className="muted">{shot.storyboard_note || shot.action}</div>
-                <div className="muted tiny">
-                  {shot.camera} · {shot.duration_sec}s
+            )}
+          </div>
+          <div className="field">
+            <label>Storyboard note</label>
+            <textarea
+              rows={2}
+              value={draft.storyboard_note}
+              onChange={(e) => setDraft({ ...draft, storyboard_note: e.target.value })}
+              placeholder="What we see on this card…"
+            />
+          </div>
+          <div className="field">
+            <label>Action</label>
+            <textarea
+              rows={2}
+              value={draft.action}
+              onChange={(e) => setDraft({ ...draft, action: e.target.value })}
+              placeholder="What happens in the shot"
+            />
+          </div>
+          <div className="field">
+            <label>Dialogue</label>
+            <input
+              value={draft.dialogue}
+              onChange={(e) => setDraft({ ...draft, dialogue: e.target.value })}
+              placeholder="Optional line"
+            />
+          </div>
+          <div className="field">
+            <label>Visual prompt (for Generate)</label>
+            <textarea
+              rows={2}
+              value={draft.prompt}
+              onChange={(e) => setDraft({ ...draft, prompt: e.target.value })}
+              placeholder="Prompt used when you generate this shot"
+            />
+          </div>
+          <div className="field">
+            <label>Director notes</label>
+            <textarea
+              rows={2}
+              value={draft.director_notes}
+              onChange={(e) => setDraft({ ...draft, director_notes: e.target.value })}
+              placeholder="Blocking, emotion, continuity…"
+            />
+          </div>
+          <div className="cta-row">
+            <button className="btn acid" type="button" disabled={busy} onClick={saveCard}>
+              {editingId === 'new' ? 'Add to board' : 'Save card'}
+            </button>
+            <button className="btn ghost" type="button" onClick={() => setEditingId(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {project.shots.length === 0 && !editingId ? (
+        <div className="empty">
+          Empty board. Click <strong>Add storyboard card</strong> to plan by hand — no LLM required.
+        </div>
+      ) : (
+        <div className="board">
+          {project.shots.map((shot) => {
+            const take = takeMap.get(shot.id)
+            const src = mediaUrl(take?.thumb_path || take?.media_path)
+            return (
+              <div className="board-card" key={shot.id}>
+                <div className="board-thumb">
+                  {src ? <img src={src} alt="" /> : <span>{shot.index + 1}. {shot.title}</span>}
+                </div>
+                <div className="board-body">
+                  <strong>
+                    {shot.index + 1}. {shot.title}
+                  </strong>
+                  <div className="muted">{shot.storyboard_note || shot.action || 'No note yet'}</div>
+                  <div className="muted tiny">
+                    {shot.camera} · {shot.duration_sec}s
+                    {shot.dialogue ? ` · “${shot.dialogue.slice(0, 40)}${shot.dialogue.length > 40 ? '…' : ''}”` : ''}
+                  </div>
+                  <div className="inline-actions" style={{ marginTop: 8, flexWrap: 'wrap', gap: 6 }}>
+                    <button
+                      className="btn ghost tiny"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => openEdit(shot)}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="btn ghost tiny"
+                      type="button"
+                      disabled={busy || shot.index === 0}
+                      onClick={() => moveShot(shot.id, -1)}
+                    >
+                      Up
+                    </button>
+                    <button
+                      className="btn ghost tiny"
+                      type="button"
+                      disabled={busy || shot.index >= project.shots.length - 1}
+                      onClick={() => moveShot(shot.id, 1)}
+                    >
+                      Down
+                    </button>
+                    <button
+                      className="btn ghost tiny"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onGenerate([shot.id])}
+                    >
+                      Generate
+                    </button>
+                    <button
+                      className="btn ghost tiny"
+                      type="button"
+                      disabled={busy}
+                      onClick={async () => {
+                        setBusy(true)
+                        try {
+                          const p = await api.deleteShot(project.id, shot.id)
+                          setProject(p)
+                          if (editingId === shot.id) setEditingId(null)
+                          notify('Card removed.')
+                        } catch (err) {
+                          notify(String((err as Error).message || err))
+                        } finally {
+                          setBusy(false)
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          )
-        })}
-      </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -2212,6 +2576,9 @@ function GenerateTab({
   const [guidance, setGuidance] = useState(-1) // -1 = model default
   const [strength, setStrength] = useState(0.85)
   const [showAdvanced, setShowAdvanced] = useState(true)
+  const [textEncoder, setTextEncoder] = useState('auto')
+  const [audioPath, setAudioPath] = useState<string | null>(null)
+  const [audioLabel, setAudioLabel] = useState('')
   const [loraPath, setLoraPath] = useState('')
   const [loraScale, setLoraScale] = useState(0.8)
   const [loras, setLoras] = useState<LoraFile[]>([])
@@ -2221,9 +2588,41 @@ function GenerateTab({
   const [estimating, setEstimating] = useState(false)
   const [continuePrev, setContinuePrev] = useState(project.continue_from_previous !== false)
   const [continueInfo, setContinueInfo] = useState<string | null>(null)
+  const [restorable, setRestorable] = useState<EngineJob[]>([])
 
   const effectiveFrames =
     frames > 0 ? frames : Math.max(8, Math.round(Math.max(0.5, durationSec) * Math.max(1, fps)))
+
+  const applyWorkflow = (wf: Record<string, unknown>) => {
+    if (typeof wf.mode === 'string') setMode(wf.mode as GenMode)
+    if (typeof wf.model_id === 'string') setModelId(wf.model_id)
+    if (typeof wf.prompt === 'string') setPrompt(wf.prompt)
+    if (typeof wf.negative_prompt === 'string') setNegative(wf.negative_prompt)
+    if (typeof wf.width === 'number') setWidth(wf.width)
+    if (typeof wf.height === 'number') setHeight(wf.height)
+    if (typeof wf.quality === 'string') setQuality(wf.quality)
+    if (typeof wf.duration_sec === 'number') setDurationSec(wf.duration_sec)
+    if (typeof wf.fps === 'number') setFps(wf.fps)
+    if (typeof wf.frames === 'number') setFrames(wf.frames)
+    if (typeof wf.seed === 'number') {
+      setRenderSeed(wf.seed)
+      setSeedLocked(true)
+    }
+    if (typeof wf.steps === 'number') setSteps(wf.steps)
+    if (typeof wf.guidance === 'number') setGuidance(wf.guidance)
+    if (typeof wf.strength === 'number') setStrength(wf.strength)
+    if (typeof wf.text_encoder === 'string') setTextEncoder(wf.text_encoder)
+    if (typeof wf.audio_path === 'string') {
+      setAudioPath(wf.audio_path)
+      setAudioLabel(wf.audio_path.split(/[/\\]/).pop() || 'audio')
+    }
+    if (typeof wf.image_path === 'string') setImagePath(wf.image_path)
+    if (typeof wf.reference_path === 'string') setRefPath(wf.reference_path)
+    if (typeof wf.lora_path === 'string') setLoraPath(wf.lora_path)
+    if (typeof wf.shot_id === 'string') setShotId(wf.shot_id)
+    setShowAdvanced(true)
+    notify('Workflow restored — review settings, then Generate again.')
+  }
 
   useEffect(() => {
     if (!seed) return
@@ -2238,9 +2637,14 @@ function GenerateTab({
   }, [project.width, project.height, project.frame_size_id])
 
   const refresh = async () => {
-    const [e, j] = await Promise.all([api.engine(), api.engineJobs()])
+    const [e, j, wf] = await Promise.all([
+      api.engine(),
+      api.engineJobs(),
+      api.engineWorkflows().catch(() => ({ jobs: [] as EngineJob[] })),
+    ])
     setEngine(e)
     setJobs(j)
+    setRestorable(wf.jobs || [])
     setLoras(e.loras || [])
     setLorasPath(e.loras_path || '')
     if (!modelId) {
@@ -2253,7 +2657,21 @@ function GenerateTab({
   }
 
   useEffect(() => {
-    refresh().catch((err) => notify(String(err.message || err)))
+    refresh()
+      .then(() => {
+        try {
+          if (window.sessionStorage.getItem('studionels_restore_workflow') === '1') {
+            window.sessionStorage.removeItem('studionels_restore_workflow')
+            api.engineWorkflows().then((pack) => {
+              const hit = pack.jobs.find((j) => j.workflow)
+              if (hit?.workflow) applyWorkflow(hit.workflow)
+            })
+          }
+        } catch {
+          /* ignore */
+        }
+      })
+      .catch((err) => notify(String(err.message || err)))
     const t = window.setInterval(() => {
       api.engineJobs().then(setJobs).catch(() => undefined)
     }, 2000)
@@ -2390,6 +2808,8 @@ function GenerateTab({
         guidance: guidance >= 0 ? guidance : undefined,
         strength:
           mode === 'i2v' || mode === 'ref2v' || useContinue ? strength : undefined,
+        text_encoder: textEncoder || 'auto',
+        audio_path: audioPath || undefined,
         lora_path: loraPath || undefined,
         lora_scale: loraPath ? loraScale : undefined,
         image_format: project.image_format,
@@ -2702,16 +3122,93 @@ function GenerateTab({
                       />
                     </div>
                   )}
+                  <div className="field">
+                    <label>Text encoder</label>
+                    <select value={textEncoder} onChange={(e) => setTextEncoder(e.target.value)}>
+                      {(engine?.text_encoders || [
+                        { id: 'auto', label: 'Auto (model default)' },
+                      ]).map((te) => (
+                        <option key={te.id} value={te.id}>
+                          {te.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="field" style={{ marginTop: 10 }}>
+                  <label>Add audio to video (optional)</label>
+                  <input
+                    type="file"
+                    accept="audio/*,.wav,.mp3,.m4a"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0]
+                      if (!file) return
+                      try {
+                        const up = await api.engineUpload(file, 'audio')
+                        setAudioPath(up.path)
+                        setAudioLabel(file.name)
+                        notify(`Audio attached: ${file.name}`)
+                      } catch (err) {
+                        notify(String((err as Error).message || err))
+                      }
+                    }}
+                  />
+                  {audioPath ? (
+                    <div className="inline-actions" style={{ marginTop: 6 }}>
+                      <span className="muted tiny">{audioLabel || audioPath}</span>
+                      <button
+                        className="btn ghost tiny"
+                        type="button"
+                        onClick={() => {
+                          setAudioPath(null)
+                          setAudioLabel('')
+                        }}
+                      >
+                        Clear audio
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="muted tiny">Muxed onto the clip after video finishes (needs ffmpeg).</p>
+                  )}
                 </div>
                 <p className="muted tiny" style={{ marginTop: 8 }}>
                   ≈ {effectiveFrames} frames @ {fps} fps · {durationSec}s
                   {frames > 0 ? ' (manual frame count)' : ' (from length × fps)'}
                   {' · '}seed {renderSeed}
                   {seedLocked ? ' locked' : ' (rolls after each run)'}
+                  {' · '}TE {textEncoder}
                 </p>
               </>
             )}
           </div>
+
+          {restorable.length > 0 && (
+            <div className="panel" style={{ marginTop: 12, padding: 12 }}>
+              <strong>Restore stopped workflow</strong>
+              <p className="muted tiny">
+                Stop keeps your prompt and settings. Pick a cancelled/failed job to load it back.
+              </p>
+              <div className="job-list">
+                {restorable.slice(0, 5).map((j) => (
+                  <div className="job-item" key={j.id}>
+                    <header>
+                      <strong>
+                        {j.mode?.toUpperCase()} · {j.status}
+                      </strong>
+                      <button
+                        className="btn acid tiny"
+                        type="button"
+                        onClick={() => j.workflow && applyWorkflow(j.workflow)}
+                      >
+                        Restore
+                      </button>
+                    </header>
+                    <div className="muted tiny truncate">{j.prompt || j.message}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="lora-box">
             <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
@@ -3049,6 +3546,33 @@ function SamplingTab({
                           Promote
                         </button>
                       )}
+                      {take.media_path &&
+                        /\.(mp4|webm|mov)$/i.test(take.media_path) && (
+                          <label className="btn ghost tiny" style={{ cursor: busy ? 'default' : 'pointer' }}>
+                            Add audio
+                            <input
+                              type="file"
+                              accept="audio/*,.wav,.mp3,.m4a"
+                              hidden
+                              disabled={busy}
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0]
+                                e.target.value = ''
+                                if (!file) return
+                                setBusy(true)
+                                try {
+                                  const res = await api.takeAddAudio(project.id, take.id, file)
+                                  setProject(res.project)
+                                  notify(res.message || 'Audio added as new take.')
+                                } catch (err) {
+                                  notify(String((err as Error).message || err))
+                                } finally {
+                                  setBusy(false)
+                                }
+                              }}
+                            />
+                          </label>
+                        )}
                       <button
                         className="btn ghost tiny"
                         type="button"

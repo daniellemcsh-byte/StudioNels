@@ -13,14 +13,16 @@ module.exports = {
         message: ["node scripts/check-backend.js"],
       },
     },
-    // API must stay up — use venv python directly (not conda base python)
+    // Start API as a daemon. Do NOT wait on uvicorn log text here —
+    // Pinokio can race past that on Windows before the port is bound.
+    // Proceed as soon as run-api.js has spawned python, then poll /api/health.
     {
       method: "shell.run",
       params: {
         message: ["node scripts/run-api.js"],
         on: [
           {
-            event: "/(Uvicorn running on http:\\/\\/127\\.0\\.0\\.1:8787|Application startup complete)/i",
+            event: "/Using .+python/i",
             done: true,
           },
         ],

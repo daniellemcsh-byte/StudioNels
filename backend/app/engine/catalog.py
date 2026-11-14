@@ -105,6 +105,69 @@ QUALITY_PRESETS = [
     {"id": "max", "label": "Max (slow)", "steps_scale": 1.8, "guidance_scale": 1.2},
 ]
 
+# Optional text-encoder swap when building Diffusers pipelines.
+# "auto" keeps whatever ships with the checkpoint.
+TEXT_ENCODER_PRESETS: list[dict[str, Any]] = [
+    {
+        "id": "auto",
+        "label": "Auto (model default)",
+        "hf_id": None,
+        "slot": "default",
+        "notes": "Use the encoder bundled with the selected model.",
+    },
+    {
+        "id": "clip",
+        "label": "CLIP ViT-L/14",
+        "hf_id": "openai/clip-vit-large-patch14",
+        "slot": "text_encoder",
+        "notes": "Classic CLIP — good for SDXL / many still models.",
+    },
+    {
+        "id": "openclip",
+        "label": "OpenCLIP bigG (SDXL TE2)",
+        "hf_id": "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k",
+        "slot": "text_encoder_2",
+        "notes": "Second encoder slot used by SDXL-style pipelines.",
+    },
+    {
+        "id": "t5-base",
+        "label": "T5 Base (lighter)",
+        "hf_id": "google/t5-v1_1-base",
+        "slot": "text_encoder",
+        "notes": "Smaller T5 — tries first encoder slot; may not fit every pipeline.",
+    },
+    {
+        "id": "t5-xxl",
+        "label": "T5 XXL (heavy)",
+        "hf_id": "google/t5-v1_1-xxl",
+        "slot": "text_encoder",
+        "notes": "Large T5 used by some video / FLUX-style stacks. Needs lots of VRAM.",
+    },
+    {
+        "id": "umt5-xxl",
+        "label": "UMT5 XXL (Wan-style)",
+        "hf_id": "google/umt5-xxl",
+        "slot": "text_encoder",
+        "notes": "Multilingual T5 often paired with Wan video models.",
+    },
+]
+
+
+def get_text_encoder_preset(encoder_id: str | None) -> dict[str, Any] | None:
+    if not encoder_id or encoder_id in ("auto", "default"):
+        return TEXT_ENCODER_PRESETS[0]
+    for p in TEXT_ENCODER_PRESETS:
+        if p["id"] == encoder_id:
+            return p
+    # Treat unknown id as a custom Hugging Face repo for text_encoder
+    return {
+        "id": "custom",
+        "label": encoder_id,
+        "hf_id": encoder_id,
+        "slot": "text_encoder",
+        "notes": "Custom Hugging Face text encoder id.",
+    }
+
 MODELS: list[dict[str, Any]] = [
     {
         "id": "sdxl-turbo",
