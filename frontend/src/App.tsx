@@ -3369,8 +3369,8 @@ function GenerateTab({
     <div>
       <p className="hint">
         {engine?.wan2gp?.available
-          ? `Wan2GP engine linked (${engine.wan2gp.root || 'ready'}) — Generate uses mmgp like Wan2GP (~1 min path).`
-          : 'Import your Wan2GP folder in Models to use the real mmgp engine. Until then Diffusers is the slower fallback.'}
+          ? `Wan2GP engine linked (${engine.wan2gp.model_count || '?'} models) — video, image, and audio gens use mmgp across the catalog.`
+          : 'Import your Wan2GP folder in Models to run the full model list on mmgp. Until then Diffusers is the slower fallback.'}
         {health?.gpu
           ? ` GPU: ${health.device_name}.`
           : ' Running preview until ROCm PyTorch + weights are installed.'}
@@ -6280,8 +6280,8 @@ function ModelsTab({
         <h3>Generation assets (Wan2GP)</h3>
         <p className="muted tiny">
           Point at your Wan2GP <strong>root</strong> (folder with <code>wgp.py</code>,{' '}
-          <code>ckpts/</code>, <code>loras/</code>). After import, Generate runs through Wan2GP’s
-          mmgp engine — same ~1‑min path — not slow Diffusers. You can also paste just{' '}
+          <code>ckpts/</code>, <code>loras/</code>). After import, Generate lists every Wan2GP
+          architecture and runs video/image/audio through mmgp. You can also paste just{' '}
           <code>ckpts</code>. Imports models for every Generate tab — t2v, i2v, ref2v, t2i, t2a, upsample —
           plus LoRAs, text encoders, VAEs, and upscalers. No need to copy huge weights.
         </p>

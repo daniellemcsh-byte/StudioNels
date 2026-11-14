@@ -783,8 +783,9 @@ def import_wan2gp_root(path: str, *, activate: bool = True) -> dict[str, Any]:
 
     counts = inv.get("counts") or {}
     try:
-        from .wan2gp_runtime import wan2gp_available
+        from .wan2gp_runtime import clear_architecture_cache, wan2gp_available
 
+        clear_architecture_cache()
         engine_info = wan2gp_available()
     except Exception:
         engine_info = {"available": False}

@@ -196,6 +196,7 @@ export interface EngineStatus {
     root?: string
     python?: string
     reason?: string
+    model_count?: number
   }
   device: {
     torch_available: boolean

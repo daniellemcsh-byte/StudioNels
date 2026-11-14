@@ -193,6 +193,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2i"],
         "hf_id": "black-forest-labs/FLUX.1-schnell",
         "pipeline": "FluxPipeline",
+        "wan2gp_model_type": "flux_schnell",
         "min_vram_gb": 12,
         "default_steps": 4,
         "default_guidance": 0.0,
@@ -341,6 +342,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v", "i2v", "ref2v"],
         "hf_id": "MiniMaxAI/MiniMax-H3",
         "pipeline": "ModularPipeline",
+        "wan2gp_model_type": "minimax_h3_ref2va",
         "min_vram_gb": 24,
         "default_steps": 30,
         "default_guidance": 1.0,
@@ -360,6 +362,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2i"],
         "hf_id": "black-forest-labs/FLUX.1-dev",
         "pipeline": "FluxPipeline",
+        "wan2gp_model_type": "flux",
         "min_vram_gb": 24,
         "default_steps": 28,
         "default_guidance": 3.5,
@@ -420,6 +423,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v", "i2v"],
         "hf_id": "Lightricks/LTX-Video",
         "pipeline": "LTXPipeline",
+        "wan2gp_model_type": "ltxv_13B",
         "min_vram_gb": 8,
         "default_steps": 30,
         "default_guidance": 3.0,
@@ -436,6 +440,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v", "i2v"],
         "hf_id": "rootonchair/LTX-2-19b-distilled",
         "pipeline": "LTX2Pipeline",
+        "wan2gp_model_type": "ltx2_19B",
         "min_vram_gb": 24,
         "default_steps": 8,
         "default_guidance": 1.0,
@@ -453,6 +458,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v", "i2v", "ref2v"],
         "hf_id": "Lightricks/LTX-2",
         "pipeline": "LTX2Pipeline",
+        "wan2gp_model_type": "ltx2_22B",
         "min_vram_gb": 24,
         "default_steps": 20,
         "default_guidance": 3.0,
@@ -469,6 +475,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v", "i2v", "ref2v"],
         "hf_id": "Lightricks/LTX-2.5-Diffusers",
         "pipeline": "LTX2Pipeline",
+        "wan2gp_model_type": "ltx2_25_22B",
         "min_vram_gb": 24,
         "default_steps": 8,
         "default_guidance": 1.0,
@@ -525,6 +532,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2a"],
         "hf_id": "stabilityai/stable-audio-open-1.0",
         "pipeline": "StableAudioPipeline",
+        "wan2gp_model_type": "stable_audio3_medium",
         "min_vram_gb": 8,
         "default_steps": 100,
         "default_guidance": 7.0,
@@ -540,6 +548,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2a"],
         "hf_id": "stabilityai/stable-audio-open-1.0",
         "pipeline": "StableAudioPipeline",
+        "wan2gp_model_type": "stable_audio3_medium",
         "min_vram_gb": 8,
         "default_steps": 120,
         "default_guidance": 7.5,
@@ -571,6 +580,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v"],
         "hf_id": "hunyuanvideo-community/HunyuanVideo",
         "pipeline": "HunyuanVideoPipeline",
+        "wan2gp_model_type": "hunyuan",
         "min_vram_gb": 24,
         "default_steps": 30,
         "default_guidance": 6.0,
@@ -587,6 +597,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["i2v", "ref2v"],
         "hf_id": "hunyuanvideo-community/HunyuanVideo-I2V",
         "pipeline": "HunyuanVideoPipeline",
+        "wan2gp_model_type": "hunyuan_i2v",
         "min_vram_gb": 24,
         "default_steps": 30,
         "default_guidance": 6.0,
@@ -619,6 +630,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["i2v", "ref2v"],
         "hf_id": "Skywork/SkyReels-V2-I2V-14B-720P-Diffusers",
         "pipeline": "SkyReelsV2ImageToVideoPipeline",
+        "wan2gp_model_type": "sky_df_720p_14B",
         "min_vram_gb": 24,
         "default_steps": 30,
         "default_guidance": 5.0,
@@ -635,6 +647,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2v"],
         "hf_id": "Skywork/SkyReels-V2-T2V-14B-720P-Diffusers",
         "pipeline": "DiffusionPipeline",
+        "wan2gp_model_type": "sky_df_14B",
         "min_vram_gb": 24,
         "default_steps": 30,
         "default_guidance": 5.0,
@@ -724,6 +737,7 @@ MODELS: list[dict[str, Any]] = [
         "modes": ["t2i", "ref2i"],
         "hf_id": "Qwen/Qwen-Image",
         "pipeline": "DiffusionPipeline",
+        "wan2gp_model_type": "qwen_image_20B",
         "min_vram_gb": 24,
         "default_steps": 30,
         "default_guidance": 4.0,
@@ -994,6 +1008,21 @@ def _all_models() -> list[dict[str, Any]]:
                 by_id[m["id"]] = m
             if m.get("hf_id"):
                 known_hf.add(str(m["hf_id"]))
+    except Exception:
+        pass
+    # Full Wan2GP architecture list (every model the linked install knows)
+    try:
+        from .wan2gp_runtime import scan_engine_models
+
+        for m in scan_engine_models():
+            existing = by_id.get(m["id"])
+            if existing:
+                # Keep richer labels from ckpts packs; always keep wan2gp_model_type
+                for k, v in m.items():
+                    if v is not None and (k not in existing or k in {"wan2gp_model_type", "wan2gp", "format"}):
+                        existing[k] = v
+            else:
+                by_id[m["id"]] = m
     except Exception:
         pass
     return list(by_id.values())

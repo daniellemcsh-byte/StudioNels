@@ -184,7 +184,7 @@ export const LEARN_TOPICS: LearnTopic[] = [
       'Loading once is slow; generating after the model is warm is much faster.',
       'Preview mode is instant but fake — install ROCm + Diffusers for real frames.',
     ],
-    tip: 'For Wan2GP-speed gens: Models → Import your Wan2GP root (folder with wgp.py). Generate then uses mmgp. Without that link, Diffusers is the slow fallback — Stop, Max VRAM, Wan 1.3B / LTX Distilled.',
+    tip: 'Models → Import Wan2GP root (wgp.py). Generate then offers the full Wan2GP model list and runs video/image/audio on mmgp. Unmapped tools (e.g. Lanczos) still use the local path.',
   },
   {
     id: 'characters',
