@@ -409,6 +409,34 @@ async def engine_generate(body: EngineGenerateRequest):
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.post("/api/engine/jobs/{job_id}/save-to-project")
+async def engine_job_save_to_project(job_id: str, body: dict | None = None):
+    """Attach a finished job’s media into the project library / Sampling (e.g. standalone audio)."""
+    from .engine.runner import _attach_to_project, get_job
+
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.get("status") != "done" or not job.get("media_path"):
+        raise HTTPException(400, "Only finished jobs with media can be saved")
+    project_id = (body or {}).get("project_id") or job.get("project_id")
+    if not project_id:
+        raise HTTPException(400, "project_id is required")
+    job = dict(job)
+    job["project_id"] = project_id
+    if (body or {}).get("shot_id"):
+        job["shot_id"] = (body or {}).get("shot_id")
+    _attach_to_project(job)
+    from .storage import load_project
+
+    return {
+        "ok": True,
+        "take_id": job.get("_attached_take_id"),
+        "project": load_project(project_id),
+        "hint": "Saved to Sampling → Library / standalone generations.",
+    }
+
+
 @app.post("/api/engine/enhance-prompt")
 async def engine_enhance_prompt(body: PromptEnhanceRequest):
     """Expand a short prompt for Generate (Agent LLM, or offline fallback)."""

@@ -537,6 +537,10 @@ def _run_one(job: dict[str, Any]) -> None:
         upsert_job(job)
 
 
+# Takes without a storyboard shot land here so Sampling / Audio can still find them
+LIBRARY_SHOT_ID = "__library__"
+
+
 def _attach_to_project(job: dict[str, Any]) -> None:
     from ..models import Take
     from ..storage import load_project, save_project
@@ -544,6 +548,9 @@ def _attach_to_project(job: dict[str, Any]) -> None:
     try:
         project = load_project(job["project_id"])
     except FileNotFoundError:
+        return
+
+    if not job.get("media_path"):
         return
 
     tag = f"job:{job['id']}"
@@ -554,48 +561,52 @@ def _attach_to_project(job: dict[str, Any]) -> None:
         if tag in (scene.tags or []) and not scene.reference_path:
             scene.reference_path = job.get("thumb_path") or job["media_path"]
 
-    if job.get("shot_id"):
-        from ..continuity import score_take_continuity
+    # Avoid duplicate attaches if a job is replayed / saved twice
+    if any(job["id"] in (t.score_note or "") for t in project.takes):
+        return
 
-        prompt_used = job.get("prompt") or ""
-        is_rehearsal = bool(job.get("is_rehearsal"))
-        label = (
-            f"REHEARSAL · {job['mode'].upper()}"
-            if is_rehearsal
-            else f"{job['mode'].upper()} · {job['model_label']}"
+    from ..continuity import score_take_continuity
+
+    prompt_used = job.get("prompt") or ""
+    is_rehearsal = bool(job.get("is_rehearsal"))
+    shot_id = job.get("shot_id") or LIBRARY_SHOT_ID
+    shot = next((s for s in project.shots if s.id == shot_id), None)
+    label = (
+        f"REHEARSAL · {job['mode'].upper()}"
+        if is_rehearsal
+        else f"{job['mode'].upper()} · {job['model_label']}"
+    )
+    if shot_id == LIBRARY_SHOT_ID:
+        label = f"Library · {label}"
+    take = Take(
+        shot_id=shot_id,
+        label=label,
+        media_path=job["media_path"],
+        thumb_path=job.get("thumb_path") or job["media_path"],
+        seed=job.get("seed"),
+        is_placeholder=bool(job.get("preview")),
+        score_note=f"job:{job['id']} · {job.get('message') or ''}",
+        prompt_used=prompt_used,
+        is_rehearsal=is_rehearsal,
+    )
+    if shot:
+        scored = score_take_continuity(
+            project, shot, prompt_used, take.label, take=take
         )
-        take = Take(
-            shot_id=job["shot_id"],
-            label=label,
-            media_path=job["media_path"],
-            thumb_path=job.get("thumb_path") or job["media_path"],
-            seed=job.get("seed"),
-            is_placeholder=bool(job.get("preview")),
-            score_note=job.get("message") or "",
-            prompt_used=prompt_used,
-            is_rehearsal=is_rehearsal,
-        )
-        shot = next((s for s in project.shots if s.id == job["shot_id"]), None)
-        if shot:
-            scored = score_take_continuity(
-                project, shot, prompt_used, take.label, take=take
-            )
-            take.continuity_score = scored["continuity_score"]
-            take.continuity_flags = scored["continuity_flags"]
-            take.vision_score = scored.get("vision_score")
-            take.identity_score = scored.get("identity_score")
-            take.rejected = scored["rejected"]
-            take.score_note = scored["score_note"]
-            shot.status = "ready"
-            # Auto-pin best non-rejected final take; never auto-pin rehearsals
-            if not is_rehearsal and not take.rejected and not shot.pinned_take_id:
-                shot.pinned_take_id = take.id
-            # If rejected, keep generating? — mark shot ready but unpinned for Sampling
-            if take.rejected:
-                take.label = f"{take.label} · REJECT"
-        project.takes.append(take)
-        # Kick sequential continuation for remaining shots in the chain
-        job["_attached_take_id"] = take.id
+        take.continuity_score = scored["continuity_score"]
+        take.continuity_flags = scored["continuity_flags"]
+        take.vision_score = scored.get("vision_score")
+        take.identity_score = scored.get("identity_score")
+        take.rejected = scored["rejected"]
+        take.score_note = f"job:{job['id']} · {scored['score_note']}"
+        shot.status = "ready"
+        # Auto-pin best non-rejected final take; never auto-pin rehearsals
+        if not is_rehearsal and not take.rejected and not shot.pinned_take_id:
+            shot.pinned_take_id = take.id
+        if take.rejected:
+            take.label = f"{take.label} · REJECT"
+    project.takes.append(take)
+    job["_attached_take_id"] = take.id
     save_project(project)
 
 

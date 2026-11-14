@@ -408,6 +408,14 @@ export const api = {
     req<{ jobs: EngineJob[] }>('/api/engine/workflows'),
   engineGenerate: (body: Record<string, unknown>) =>
     req<EngineJob>('/api/engine/generate', { method: 'POST', body: JSON.stringify(body) }),
+  engineJobSaveToProject: (jobId: string, projectId: string, shotId?: string) =>
+    req<{ ok: boolean; take_id?: string; project: Project; hint?: string }>(
+      `/api/engine/jobs/${encodeURIComponent(jobId)}/save-to-project`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ project_id: projectId, shot_id: shotId || undefined }),
+      },
+    ),
   engineEnhancePrompt: (body: {
     prompt: string
     negative_prompt?: string

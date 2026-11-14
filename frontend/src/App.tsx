@@ -4118,6 +4118,34 @@ function GenerateTab({
   )
 }
 
+function isAudioPath(path: string | null | undefined) {
+  return !!path && /\.(wav|mp3|m4a|flac|ogg|aac)$/i.test(path)
+}
+
+function isVideoPath(path: string | null | undefined) {
+  return !!path && /\.(mp4|webm|mov|mkv|avi)$/i.test(path)
+}
+
+function TakeMediaPreview({ path, label }: { path: string | null | undefined; label?: string }) {
+  const src = mediaUrl(path)
+  if (!src || !path) return null
+  if (isAudioPath(path)) {
+    return (
+      <div className="take-audio-wrap">
+        <div className="take-audio-badge">Audio</div>
+        <audio controls src={src} preload="metadata" style={{ width: '100%' }} />
+        <a className="btn ghost tiny" href={src} download style={{ marginTop: 6 }}>
+          Download {label || path.split(/[/\\]/).pop()}
+        </a>
+      </div>
+    )
+  }
+  if (isVideoPath(path)) {
+    return <video className="take-video" src={src} controls playsInline preload="metadata" />
+  }
+  return <img src={src} alt={label || ''} />
+}
+
 function SamplingTab({
   project,
   setProject,
@@ -4132,9 +4160,18 @@ function SamplingTab({
   notify: (m: string) => void
 }) {
   const previewCount = project.takes.filter((t) => t.is_placeholder).length
+  const shotIds = new Set(project.shots.map((s) => s.id))
+  const libraryTakes = project.takes.filter(
+    (t) => t.shot_id === '__library__' || !shotIds.has(t.shot_id),
+  )
 
   if (project.takes.length === 0) {
-    return <div className="empty">Generate shots first — takes will appear here for comparison.</div>
+    return (
+      <div className="empty">
+        No generations yet. Run Generate or Audio — finished clips (including standalone audio) show
+        up here.
+      </div>
+    )
   }
 
   const byShot = project.shots.map((shot) => ({
@@ -4146,7 +4183,8 @@ function SamplingTab({
     <div>
       <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
         <p className="hint" style={{ margin: 0 }}>
-          Compare takes. Pin the ones you want in Director mode. Delete previews anytime.
+          Compare takes (video, image, and audio). Pin shot takes for Director. Standalone audio
+          lands under Library below.
         </p>
         {previewCount > 0 && (
           <button
@@ -4170,6 +4208,53 @@ function SamplingTab({
           </button>
         )}
       </div>
+      {libraryTakes.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <h3 style={{ fontFamily: 'var(--font-display)' }}>Library / standalone generations</h3>
+          <p className="muted tiny">
+            Audio and Generate runs without a shot attach here — play or download below.
+          </p>
+          <div className="takes-grid">
+            {libraryTakes.map((take) => (
+              <div className="take-card" key={take.id}>
+                <TakeMediaPreview path={take.media_path} label={take.label} />
+                <div className="body">
+                  <strong>{take.label}</strong>
+                  <div className="muted tiny">
+                    seed {take.seed}
+                    {take.is_placeholder ? ' · preview' : ''}
+                    {isAudioPath(take.media_path) ? ' · audio' : ''}
+                  </div>
+                  {take.prompt_used ? (
+                    <div className="muted tiny truncate">{take.prompt_used}</div>
+                  ) : null}
+                  <div className="inline-actions">
+                    <button
+                      className="btn ghost tiny"
+                      type="button"
+                      disabled={busy}
+                      onClick={async () => {
+                        setBusy(true)
+                        try {
+                          const p = await api.deleteTake(project.id, take.id, true)
+                          setProject(p)
+                          notify(`Deleted ${take.label}.`)
+                        } catch (err) {
+                          notify(String((err as Error).message || err))
+                        } finally {
+                          setBusy(false)
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {byShot.map(({ shot, takes }) =>
         takes.length ? (
           <div key={shot.id} style={{ marginBottom: 24 }}>
@@ -4179,9 +4264,7 @@ function SamplingTab({
             <div className="takes-grid">
               {takes.map((take) => (
                 <div className="take-card" key={take.id}>
-                  {mediaUrl(take.media_path) && (
-                    <img src={mediaUrl(take.media_path)} alt={take.label} />
-                  )}
+                  <TakeMediaPreview path={take.media_path} label={take.label} />
                   <div className="body">
                     <strong>{take.label}</strong>
                     <div className="muted tiny">
@@ -4189,6 +4272,7 @@ function SamplingTab({
                       {take.is_placeholder ? ' · preview placeholder' : ''}
                       {take.is_rehearsal ? ' · rehearsal' : ''}
                       {take.rejected ? ' · rejected' : ''}
+                      {isAudioPath(take.media_path) ? ' · audio' : ''}
                     </div>
                     {take.continuity_score != null && (
                       <div className={`cont-score ${take.rejected ? 'bad' : 'ok'}`}>
@@ -4201,23 +4285,25 @@ function SamplingTab({
                       </div>
                     ))}
                     <div className="inline-actions">
-                      <button
-                        className="btn acid"
-                        type="button"
-                        disabled={busy || shot.pinned_take_id === take.id}
-                        onClick={async () => {
-                          setBusy(true)
-                          try {
-                            const p = await api.pinTake(project.id, take.id)
-                            setProject(p)
-                            notify(`Pinned ${take.label} for Director.`)
-                          } finally {
-                            setBusy(false)
-                          }
-                        }}
-                      >
-                        {shot.pinned_take_id === take.id ? 'Pinned' : 'Pin take'}
-                      </button>
+                      {!isAudioPath(take.media_path) && (
+                        <button
+                          className="btn acid"
+                          type="button"
+                          disabled={busy || shot.pinned_take_id === take.id}
+                          onClick={async () => {
+                            setBusy(true)
+                            try {
+                              const p = await api.pinTake(project.id, take.id)
+                              setProject(p)
+                              notify(`Pinned ${take.label} for Director.`)
+                            } finally {
+                              setBusy(false)
+                            }
+                          }}
+                        >
+                          {shot.pinned_take_id === take.id ? 'Pinned' : 'Pin take'}
+                        </button>
+                      )}
                       {take.is_rehearsal && (
                         <button
                           className="btn ghost"
@@ -4237,8 +4323,7 @@ function SamplingTab({
                           Promote
                         </button>
                       )}
-                      {take.media_path &&
-                        /\.(mp4|webm|mov)$/i.test(take.media_path) && (
+                      {take.media_path && isVideoPath(take.media_path) && (
                           <label className="btn ghost tiny" style={{ cursor: busy ? 'default' : 'pointer' }}>
                             Add audio
                             <input
@@ -5472,13 +5557,26 @@ function AudioTab({
   const kindMeta = AUDIO_KINDS.find((k) => k.id === kind)!
   const accent = VOICE_ACCENTS.find((a) => a.id === accentId) || VOICE_ACCENTS[0]
 
+  const prevDone = useRef(0)
   useEffect(() => {
-    const t = window.setInterval(() => {
-      api.engineJobs().then((list) => setJobs(list.filter((j) => j.mode === 't2a'))).catch(() => undefined)
-    }, 2000)
-    api.engineJobs().then((list) => setJobs(list.filter((j) => j.mode === 't2a'))).catch(() => undefined)
+    const tick = async () => {
+      try {
+        const list = (await api.engineJobs()).filter((j) => j.mode === 't2a')
+        setJobs(list)
+        const done = list.filter((j) => j.status === 'done' && j.media_path).length
+        if (done > prevDone.current) {
+          const p = await api.getProject(project.id)
+          setProject(p)
+        }
+        prevDone.current = done
+      } catch {
+        /* ignore */
+      }
+    }
+    tick()
+    const t = window.setInterval(tick, 2000)
     return () => window.clearInterval(t)
-  }, [])
+  }, [project.id, setProject])
 
   const buildPrompt = () => {
     const parts = [kindMeta.prompt_prefix, prompt.trim()]
@@ -5517,13 +5615,11 @@ function AudioTab({
         audio_format: project.audio_format || 'wav',
         quality: 'balanced',
       })
-      notify(`Audio queued · ${kindMeta.label} · seed ${seed}`)
+      notify(
+        `Audio queued · ${kindMeta.label} · when ready it appears here and in Sampling → Library`,
+      )
       setSeed(Math.floor(Math.random() * 1_000_000_000))
       setJobs((prev) => [job, ...prev])
-      if (shotId) {
-        const p = await api.getProject(project.id)
-        setProject(p)
-      }
     } catch (err) {
       notify(String((err as Error).message || err))
     } finally {
@@ -5535,8 +5631,9 @@ function AudioTab({
     <div>
       <p className="hint">
         Dedicated audio studio — instrumentals, songs with a voice accent, film scores, ambience, and
-        SFX. Saves as {project.audio_format || 'wav'}.
-        {health?.gpu ? ` GPU: ${health.device_name}.` : ' Preview tones until audio models are installed.'}
+        SFX. Saves as {project.audio_format || 'wav'}. Finished clips play in the queue below and under{' '}
+        <strong>Sampling → Library / standalone generations</strong>
+        {health?.gpu ? ` · GPU: ${health.device_name}.` : ' · Preview tones until audio models are installed.'}
       </p>
 
       <div className="gen-layout">
@@ -5710,11 +5807,42 @@ function AudioTab({
                   </div>
                 </header>
                 <div className="muted">{job.prompt}</div>
+                <div className="muted tiny">
+                  {job.status === 'done'
+                    ? 'Audio ready — play below, or open Sampling → Library'
+                    : job.message}
+                </div>
                 <div className="progress">
                   <div style={{ width: `${Math.round((job.progress || 0) * 100)}%` }} />
                 </div>
                 {job.media_path && (
-                  <audio controls src={mediaUrl(job.media_path)} style={{ width: '100%', marginTop: 8 }} />
+                  <div style={{ marginTop: 8 }}>
+                    <audio controls src={mediaUrl(job.media_path)} style={{ width: '100%' }} />
+                    <div className="inline-actions" style={{ marginTop: 8, flexWrap: 'wrap', gap: 8 }}>
+                      <a
+                        className="btn ghost tiny"
+                        href={mediaUrl(job.media_path) || '#'}
+                        download
+                      >
+                        Download
+                      </a>
+                      <button
+                        type="button"
+                        className="btn acid tiny"
+                        onClick={async () => {
+                          try {
+                            const r = await api.engineJobSaveToProject(job.id, project.id, shotId || undefined)
+                            setProject(r.project)
+                            notify(r.hint || 'Saved to Sampling → Library')
+                          } catch (err) {
+                            notify(String((err as Error).message || err))
+                          }
+                        }}
+                      >
+                        Save to Sampling
+                      </button>
+                    </div>
+                  </div>
                 )}
                 {job.preview && <div className="muted tiny">Preview tone — install audio model for real music/songs.</div>}
               </div>
