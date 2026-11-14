@@ -274,12 +274,50 @@ export const api = {
   engine: () => req<EngineStatus>('/api/engine'),
   engineLoras: () =>
     req<{ path: string; loras: import('./types').LoraFile[]; count: number }>('/api/engine/loras'),
+  engineModels: () => req<import('./types').EngineModelsPack>('/api/engine/models'),
+  engineModelDownload: (modelId: string, force = false) =>
+    req<Record<string, unknown>>(
+      `/api/engine/models/${encodeURIComponent(modelId)}/download?force=${force}`,
+      { method: 'POST', body: '{}' },
+    ),
+  engineModelCancel: (modelId: string) =>
+    req<Record<string, unknown>>(
+      `/api/engine/models/${encodeURIComponent(modelId)}/cancel`,
+      { method: 'POST', body: '{}' },
+    ),
+  engineModelClear: (modelId: string, deleteFiles = false) =>
+    req<Record<string, unknown>>(
+      `/api/engine/models/${encodeURIComponent(modelId)}/clear?delete_files=${deleteFiles}`,
+      { method: 'POST', body: '{}' },
+    ),
+  engineModelActivate: (modelId: string) =>
+    req<{ ok: boolean; active_model_id: string }>(
+      `/api/engine/models/${encodeURIComponent(modelId)}/activate`,
+      { method: 'POST', body: '{}' },
+    ),
   engineJobs: () => req<EngineJob[]>('/api/engine/jobs'),
   engineJob: (id: string) => req<EngineJob>(`/api/engine/jobs/${id}`),
   engineGenerate: (body: Record<string, unknown>) =>
     req<EngineJob>('/api/engine/generate', { method: 'POST', body: JSON.stringify(body) }),
   engineEstimate: (body: Record<string, unknown>) =>
     req<GpuEstimate>('/api/engine/estimate', { method: 'POST', body: JSON.stringify(body) }),
+  deleteTake: (id: string, takeId: string, deleteFiles = true) =>
+    req<Project>(
+      `/api/projects/${id}/takes/${takeId}?delete_files=${deleteFiles}`,
+      { method: 'DELETE' },
+    ),
+  clearPreviewTakes: (id: string, deleteFiles = true) =>
+    req<Project>(
+      `/api/projects/${id}/takes/clear-previews?delete_files=${deleteFiles}`,
+      { method: 'POST', body: '{}' },
+    ),
+  cancelPersonalImport: (jobId: string) =>
+    req<PersonalImportJob>(`/api/personal/imports/${jobId}/cancel`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  clearPersonalImport: (jobId: string) =>
+    req<{ ok: boolean }>(`/api/personal/imports/${jobId}`, { method: 'DELETE' }),
   getContinuity: (id: string) => req<ContinuityData>(`/api/projects/${id}/continuity`),
   putContinuity: (
     id: string,

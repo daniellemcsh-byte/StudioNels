@@ -47,10 +47,23 @@ export interface EngineModel {
   id: string
   label: string
   modes: GenMode[]
-  hf_id: string
+  hf_id: string | null
   min_vram_gb: number
   kind: string
   notes?: string
+  installed?: boolean
+  active?: boolean
+  download_status?: string
+  download_progress?: number
+  download_error?: string | null
+  download_message?: string | null
+  local_path?: string | null
+}
+
+export interface EngineModelsPack {
+  models: EngineModel[]
+  active_model_id?: string | null
+  count: number
 }
 
 export interface EngineJob {
@@ -89,6 +102,7 @@ export interface EngineStatus {
   }
   modes: EngineMode[]
   models: EngineModel[]
+  active_model_id?: string | null
   queue_length: number
   preset_id: string
   models_path: string

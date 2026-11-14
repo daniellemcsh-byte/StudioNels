@@ -170,6 +170,56 @@ async def engine_loras():
     }
 
 
+@app.get("/api/engine/models")
+async def engine_models():
+    """Catalog + download status + which model is active."""
+    from .engine.models_manager import get_active_model_id, list_models_with_status
+
+    active = get_active_model_id()
+    models = list_models_with_status(active)
+    return {"models": models, "active_model_id": active, "count": len(models)}
+
+
+@app.post("/api/engine/models/{model_id}/download")
+async def engine_model_download(model_id: str, force: bool = False):
+    from .engine.models_manager import download_model
+
+    try:
+        return download_model(model_id, force=force)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/engine/models/{model_id}/cancel")
+async def engine_model_cancel(model_id: str):
+    from .engine.models_manager import cancel_download
+
+    try:
+        return cancel_download(model_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/engine/models/{model_id}/clear")
+async def engine_model_clear(model_id: str, delete_files: bool = False):
+    from .engine.models_manager import clear_download
+
+    try:
+        return clear_download(model_id, delete_files=delete_files)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/engine/models/{model_id}/activate")
+async def engine_model_activate(model_id: str):
+    from .engine.models_manager import set_active_model
+
+    try:
+        return set_active_model(model_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @app.get("/api/engine/jobs")
 async def engine_jobs(limit: int = 40):
     return list_jobs(limit)
@@ -273,6 +323,26 @@ async def personal_import_job(job_id: str):
     if not job:
         raise HTTPException(404, "Import not found")
     return job
+
+
+@app.post("/api/personal/imports/{job_id}/cancel")
+async def personal_import_cancel(job_id: str):
+    from .personal_sources import cancel_import
+
+    try:
+        return cancel_import(job_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.delete("/api/personal/imports/{job_id}")
+async def personal_import_clear(job_id: str):
+    from .personal_sources import clear_import
+
+    try:
+        return clear_import(job_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @app.get("/api/projects")
@@ -581,6 +651,67 @@ async def pin_take(project_id: str, take_id: str):
                 order=len(project.timeline),
             )
         )
+    return save_project(project)
+
+
+def _unlink_take_media(take) -> None:
+    from .paths import MEDIA_DIR, OUTPUTS_DIR, ROOT
+
+    for attr in ("media_path", "thumb_path"):
+        raw = getattr(take, attr, None)
+        if not raw:
+            continue
+        try:
+            p = Path(raw).expanduser().resolve()
+        except Exception:
+            continue
+        allowed = [MEDIA_DIR.resolve(), OUTPUTS_DIR.resolve(), ROOT.resolve()]
+        if not any(root == p or root in p.parents for root in allowed):
+            continue
+        try:
+            if p.is_file():
+                p.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+@app.delete("/api/projects/{project_id}/takes/{take_id}", response_model=Project)
+async def delete_take(project_id: str, take_id: str, delete_files: bool = True):
+    """Remove one take (preview or real) from Sampling / timeline."""
+    project = load_project(project_id)
+    take = next((t for t in project.takes if t.id == take_id), None)
+    if not take:
+        raise HTTPException(404, "Take not found")
+    if delete_files:
+        _unlink_take_media(take)
+    project.takes = [t for t in project.takes if t.id != take_id]
+    for shot in project.shots:
+        if shot.pinned_take_id == take_id:
+            shot.pinned_take_id = None
+            shot.status = "draft" if not any(t.shot_id == shot.id for t in project.takes) else "ready"
+    project.timeline = [c for c in project.timeline if c.take_id != take_id]
+    for i, c in enumerate(project.timeline):
+        c.order = i
+    return save_project(project)
+
+
+@app.post("/api/projects/{project_id}/takes/clear-previews", response_model=Project)
+async def clear_preview_takes(project_id: str, delete_files: bool = True):
+    """Delete all preview/placeholder takes so Sampling isn't cluttered."""
+    project = load_project(project_id)
+    doomed = [t for t in project.takes if t.is_placeholder]
+    doomed_ids = {t.id for t in doomed}
+    if delete_files:
+        for t in doomed:
+            _unlink_take_media(t)
+    project.takes = [t for t in project.takes if t.id not in doomed_ids]
+    for shot in project.shots:
+        if shot.pinned_take_id in doomed_ids:
+            shot.pinned_take_id = None
+            shot.status = "draft" if not any(t.shot_id == shot.id for t in project.takes) else "ready"
+    project.timeline = [c for c in project.timeline if c.take_id not in doomed_ids]
+    for i, c in enumerate(project.timeline):
+        c.order = i
     return save_project(project)
 
 

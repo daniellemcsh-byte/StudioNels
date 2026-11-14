@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import shutil
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
-from ..models import new_id, utc_now
+from ..models import utc_now
 from ..paths import MODEL_DOWNLOADS_PATH, ensure_dirs
 from .catalog import MODELS, get_model
 from .queue_store import loras_dir, models_dir
 
 _LOCK = threading.Lock()
 _DOWNLOADS: dict[str, dict[str, Any]] = {}
+_CANCEL: dict[str, bool] = {}
+_THREADS: dict[str, threading.Thread] = {}
 
 
 def _status_path() -> Path:
@@ -70,14 +74,21 @@ def list_models_with_status(active_model_id: str | None = None) -> list[dict[str
         installed = bool(dl.get("installed")) or _hf_cache_has(m.get("hf_id"))
         if m.get("hf_id") is None:
             installed = True
+        # Stuck "downloading" with no live thread → expose as stalled so UI can clear it
+        dl_status = dl.get("status") or ("installed" if installed else "not_downloaded")
+        if dl_status == "downloading":
+            live = _THREADS.get(mid)
+            if live is None or not live.is_alive():
+                dl_status = "stalled"
         out.append(
             {
                 **m,
                 "installed": installed,
                 "active": settings_active == mid,
-                "download_status": dl.get("status") or ("installed" if installed else "not_downloaded"),
+                "download_status": dl_status,
                 "download_progress": float(dl.get("progress") or (1.0 if installed else 0.0)),
                 "download_error": dl.get("error"),
+                "download_message": dl.get("message"),
                 "local_path": dl.get("local_path"),
             }
         )
@@ -108,10 +119,55 @@ def _set_download(model_id: str, **fields: Any) -> dict[str, Any]:
         downloads[model_id] = cur
         _DOWNLOADS[model_id] = cur
         _save_status(data)
-        return cur
+        return dict(cur)
 
 
-def download_model(model_id: str) -> dict[str, Any]:
+def _is_cancelled(model_id: str) -> bool:
+    return bool(_CANCEL.get(model_id))
+
+
+def cancel_download(model_id: str) -> dict[str, Any]:
+    """Mark an in-flight or stuck download as cancelled so the UI can recover."""
+    model = get_model(model_id)
+    if not model:
+        raise ValueError(f"Unknown model {model_id}")
+    _CANCEL[model_id] = True
+    cur = _set_download(
+        model_id,
+        status="cancelled",
+        progress=0.0,
+        installed=False,
+        error=None,
+        message="Cancelled — tap Download to retry",
+        finished_at=utc_now(),
+    )
+    return {"ok": True, "model_id": model_id, "download": cur}
+
+
+def clear_download(model_id: str, *, delete_files: bool = False) -> dict[str, Any]:
+    """Clear stuck/cancelled/failed download state (optionally wipe partial files)."""
+    model = get_model(model_id)
+    if not model:
+        raise ValueError(f"Unknown model {model_id}")
+    _CANCEL[model_id] = True
+    if delete_files and model.get("hf_id"):
+        dest = models_dir() / str(model["hf_id"]).replace("/", "__")
+        if dest.exists():
+            try:
+                shutil.rmtree(dest, ignore_errors=True)
+            except Exception:
+                pass
+    with _LOCK:
+        data = _load_status()
+        downloads = data.setdefault("downloads", {})
+        downloads.pop(model_id, None)
+        _DOWNLOADS.pop(model_id, None)
+        _save_status(data)
+    _CANCEL.pop(model_id, None)
+    return {"ok": True, "model_id": model_id, "cleared": True}
+
+
+def download_model(model_id: str, *, force: bool = False) -> dict[str, Any]:
     model = get_model(model_id)
     if not model:
         raise ValueError(f"Unknown model {model_id}")
@@ -125,9 +181,16 @@ def download_model(model_id: str) -> dict[str, Any]:
         )
 
     existing = _DOWNLOADS.get(model_id) or _load_status().get("downloads", {}).get(model_id) or {}
-    if existing.get("status") == "downloading":
+    live = _THREADS.get(model_id)
+    if existing.get("status") == "downloading" and live and live.is_alive() and not force:
         return existing
 
+    if force:
+        _CANCEL[model_id] = True
+        # brief pause so an old worker can notice cancel before we reset
+        time.sleep(0.05)
+
+    _CANCEL[model_id] = False
     job = _set_download(
         model_id,
         status="downloading",
@@ -146,25 +209,50 @@ def download_model(model_id: str) -> dict[str, Any]:
             dest = models_dir() / model["hf_id"].replace("/", "__")
             dest.mkdir(parents=True, exist_ok=True)
 
-            def _cb(progress: Any) -> None:
-                # huggingface progress callback shapes vary; keep soft updates
-                try:
-                    frac = float(getattr(progress, "progress", None) or 0)
-                except Exception:
-                    frac = 0.2
+            _set_download(model_id, progress=0.08, message="Connecting to Hugging Face…")
+            if _is_cancelled(model_id):
+                raise RuntimeError("cancelled")
+
+            # Soft heartbeat while snapshot_download blocks (no reliable % from HF).
+            stop_beat = threading.Event()
+
+            def heartbeat() -> None:
+                tick = 0.08
+                while not stop_beat.wait(2.5):
+                    if _is_cancelled(model_id):
+                        return
+                    tick = min(0.85, tick + 0.03)
+                    cur = _DOWNLOADS.get(model_id) or {}
+                    if cur.get("status") != "downloading":
+                        return
+                    _set_download(
+                        model_id,
+                        progress=max(float(cur.get("progress") or 0), tick),
+                        message="Downloading from Hugging Face… (large models take a while)",
+                    )
+
+            beat = threading.Thread(target=heartbeat, name=f"dl-beat-{model_id}", daemon=True)
+            beat.start()
+            try:
+                path = snapshot_download(
+                    repo_id=model["hf_id"],
+                    local_dir=str(dest),
+                    local_dir_use_symlinks=False,
+                )
+            finally:
+                stop_beat.set()
+
+            if _is_cancelled(model_id):
                 _set_download(
                     model_id,
-                    status="downloading",
-                    progress=max(0.05, min(0.95, frac or 0.35)),
-                    message="Downloading from Hugging Face…",
+                    status="cancelled",
+                    progress=0.0,
+                    installed=False,
+                    message="Cancelled — tap Download to retry",
+                    finished_at=utc_now(),
                 )
+                return
 
-            _set_download(model_id, progress=0.15, message="Fetching snapshot…")
-            path = snapshot_download(
-                repo_id=model["hf_id"],
-                local_dir=str(dest),
-                local_dir_use_symlinks=False,
-            )
             _set_download(
                 model_id,
                 status="installed",
@@ -176,16 +264,32 @@ def download_model(model_id: str) -> dict[str, Any]:
                 error=None,
             )
         except Exception as exc:  # noqa: BLE001
-            _set_download(
-                model_id,
-                status="failed",
-                progress=0.0,
-                installed=False,
-                error=str(exc),
-                message=str(exc),
-            )
+            if _is_cancelled(model_id) or "cancelled" in str(exc).lower():
+                _set_download(
+                    model_id,
+                    status="cancelled",
+                    progress=0.0,
+                    installed=False,
+                    error=None,
+                    message="Cancelled — tap Download to retry",
+                    finished_at=utc_now(),
+                )
+            else:
+                _set_download(
+                    model_id,
+                    status="failed",
+                    progress=0.0,
+                    installed=False,
+                    error=str(exc),
+                    message=str(exc),
+                    finished_at=utc_now(),
+                )
+        finally:
+            _THREADS.pop(model_id, None)
 
-    threading.Thread(target=worker, name=f"dl-{model_id}", daemon=True).start()
+    t = threading.Thread(target=worker, name=f"dl-{model_id}", daemon=True)
+    _THREADS[model_id] = t
+    t.start()
     return job
 
 

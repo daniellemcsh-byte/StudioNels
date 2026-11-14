@@ -32,6 +32,7 @@ import type {
   CharacterProfile,
   ContinuityData,
   EngineJob,
+  EngineModel,
   EngineStatus,
   GenMode,
   GpuEstimate,
@@ -2232,8 +2233,11 @@ function GenerateTab({
     setLoras(e.loras || [])
     setLorasPath(e.loras_path || '')
     if (!modelId) {
-      const models = e.models.filter((m) => m.modes.includes(mode))
-      if (models[0]) setModelId(models[0].id)
+      const forMode = e.models.filter((m) => m.modes.includes(mode))
+      const active = forMode.find((m) => m.id === e.active_model_id || m.active)
+      const installed = forMode.find((m) => m.installed)
+      const pick = active || installed || forMode[0]
+      if (pick) setModelId(pick.id)
     }
   }
 
@@ -2407,13 +2411,109 @@ function GenerateTab({
 
           <div className="field" style={{ marginTop: 14 }}>
             <label>Model</label>
-            <select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label} (≥{m.min_vram_gb} GB)
-                </option>
-              ))}
+            <select
+              value={modelId}
+              onChange={async (e) => {
+                const id = e.target.value
+                setModelId(id)
+                try {
+                  await api.engineModelActivate(id)
+                  notify(`Using ${models.find((m) => m.id === id)?.label || id}`)
+                  await refresh()
+                } catch (err) {
+                  notify(String((err as Error).message || err))
+                }
+              }}
+            >
+              {models.map((m) => {
+                const st = m.download_status || (m.installed ? 'installed' : 'not_downloaded')
+                const tag =
+                  st === 'installed'
+                    ? 'ready'
+                    : st === 'downloading'
+                      ? `↓${Math.round((m.download_progress || 0) * 100)}%`
+                      : st === 'stalled' || st === 'cancelled' || st === 'failed'
+                        ? st
+                        : 'not downloaded'
+                return (
+                  <option key={m.id} value={m.id}>
+                    {m.label} · {tag} (≥{m.min_vram_gb} GB)
+                  </option>
+                )
+              })}
             </select>
+            {(() => {
+              const cur = models.find((m) => m.id === modelId)
+              if (!cur) return null
+              const st = cur.download_status || (cur.installed ? 'installed' : 'not_downloaded')
+              const pct = Math.round((cur.download_progress || 0) * 100)
+              return (
+                <div className="inline-actions" style={{ marginTop: 8, flexWrap: 'wrap', gap: 8 }}>
+                  {(st === 'not_downloaded' || st === 'cancelled' || st === 'failed' || st === 'stalled') && (
+                    <button
+                      className="btn acid tiny"
+                      type="button"
+                      disabled={busy}
+                      onClick={async () => {
+                        setBusy(true)
+                        try {
+                          await api.engineModelDownload(cur.id, st === 'stalled' || st === 'failed')
+                          notify(`Downloading ${cur.label}…`)
+                          await refresh()
+                        } catch (err) {
+                          notify(String((err as Error).message || err))
+                        } finally {
+                          setBusy(false)
+                        }
+                      }}
+                    >
+                      {st === 'stalled' ? 'Retry download' : 'Download model'}
+                    </button>
+                  )}
+                  {(st === 'downloading' || st === 'stalled') && (
+                    <button
+                      className="btn ghost tiny"
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await api.engineModelCancel(cur.id)
+                          notify('Download cancelled')
+                          await refresh()
+                        } catch (err) {
+                          notify(String((err as Error).message || err))
+                        }
+                      }}
+                    >
+                      Cancel download
+                    </button>
+                  )}
+                  {(st === 'stalled' || st === 'cancelled' || st === 'failed' || st === 'downloading') && (
+                    <button
+                      className="btn ghost tiny"
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await api.engineModelClear(cur.id, false)
+                          notify('Cleared stuck download status')
+                          await refresh()
+                        } catch (err) {
+                          notify(String((err as Error).message || err))
+                        }
+                      }}
+                    >
+                      Clear stuck
+                    </button>
+                  )}
+                  {st === 'downloading' && (
+                    <span className="muted tiny">
+                      Downloading… {pct}% {cur.download_message || ''}
+                    </span>
+                  )}
+                  {st === 'installed' && <span className="muted tiny">Ready on disk — selected for this mode.</span>}
+                  {cur.notes && <span className="muted tiny">{cur.notes}</span>}
+                </div>
+              )
+            })()}
           </div>
 
           <div className="field">
@@ -2689,6 +2789,8 @@ function SamplingTab({
   setBusy: (v: boolean) => void
   notify: (m: string) => void
 }) {
+  const previewCount = project.takes.filter((t) => t.is_placeholder).length
+
   if (project.takes.length === 0) {
     return <div className="empty">Generate shots first — takes will appear here for comparison.</div>
   }
@@ -2700,7 +2802,32 @@ function SamplingTab({
 
   return (
     <div>
-      <p className="hint">Compare takes. Pin the ones you want in Director mode.</p>
+      <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
+        <p className="hint" style={{ margin: 0 }}>
+          Compare takes. Pin the ones you want in Director mode. Delete previews anytime.
+        </p>
+        {previewCount > 0 && (
+          <button
+            className="btn ghost tiny"
+            type="button"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true)
+              try {
+                const p = await api.clearPreviewTakes(project.id, true)
+                setProject(p)
+                notify(`Deleted ${previewCount} preview take(s).`)
+              } catch (err) {
+                notify(String((err as Error).message || err))
+              } finally {
+                setBusy(false)
+              }
+            }}
+          >
+            Delete all previews ({previewCount})
+          </button>
+        )}
+      </div>
       {byShot.map(({ shot, takes }) =>
         takes.length ? (
           <div key={shot.id} style={{ marginBottom: 24 }}>
@@ -2768,6 +2895,29 @@ function SamplingTab({
                           Promote
                         </button>
                       )}
+                      <button
+                        className="btn ghost tiny"
+                        type="button"
+                        disabled={busy}
+                        onClick={async () => {
+                          setBusy(true)
+                          try {
+                            const p = await api.deleteTake(project.id, take.id, true)
+                            setProject(p)
+                            notify(
+                              take.is_placeholder
+                                ? 'Deleted preview take.'
+                                : `Deleted ${take.label}.`,
+                            )
+                          } catch (err) {
+                            notify(String((err as Error).message || err))
+                          } finally {
+                            setBusy(false)
+                          }
+                        }}
+                      >
+                        Delete
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -4188,32 +4338,152 @@ function UpsampleTab({ project, notify }: { project: Project; notify: (m: string
 }
 
 function ModelsTab({ notify }: { notify: (m: string) => void }) {
+  const [models, setModels] = useState<EngineModel[]>([])
+  const [activeId, setActiveId] = useState<string | null>(null)
   const [loras, setLoras] = useState<LoraFile[]>([])
   const [lorasPath, setLorasPath] = useState('')
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [filter, setFilter] = useState<'all' | 'image' | 'video' | 'audio' | 'upsample'>('all')
 
   const load = async () => {
-    const pack = await api.engineLoras()
-    setLoras(pack.loras)
-    setLorasPath(pack.path)
+    const [pack, loraPack] = await Promise.all([api.engineModels(), api.engineLoras()])
+    setModels(pack.models)
+    setActiveId(pack.active_model_id || null)
+    setLoras(loraPack.loras)
+    setLorasPath(loraPack.path)
   }
 
   useEffect(() => {
     load().catch((e) => notify(String(e.message || e)))
+    const t = window.setInterval(() => {
+      api.engineModels().then((pack) => {
+        setModels(pack.models)
+        setActiveId(pack.active_model_id || null)
+      }).catch(() => undefined)
+    }, 2000)
+    return () => window.clearInterval(t)
   }, [])
+
+  const shown = models.filter((m) => filter === 'all' || m.kind === filter)
+
+  const act = async (modelId: string, fn: () => Promise<unknown>, okMsg: string) => {
+    setBusyId(modelId)
+    try {
+      await fn()
+      notify(okMsg)
+      await load()
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setBusyId(null)
+    }
+  }
 
   return (
     <div>
       <div className="panel">
-        <h3>Models</h3>
+        <h3>Choose a model</h3>
         <p className="hint">
-          Switch and download models from the Generate tab’s model menu. Files land in the app’s{' '}
-          <code>models/</code> folder (Pinokio-style).
+          Pick which checkpoint Generate uses. Download, cancel a stuck 5% bar, clear status, then
+          set active. Files land in <code>models/</code>.
         </p>
-        <p className="muted">
-          Tip: open <strong>Info</strong> for the full folder map. Pick a model in Generate and it
-          will fetch on first real GPU run.
-        </p>
+        <div className="mode-grid" style={{ marginTop: 10 }}>
+          {(['all', 'image', 'video', 'audio', 'upsample'] as const).map((f) => (
+            <button
+              key={f}
+              type="button"
+              className={`mode-chip ${filter === f ? 'active' : ''}`}
+              onClick={() => setFilter(f)}
+            >
+              <strong>{f === 'all' ? 'All' : f}</strong>
+            </button>
+          ))}
+        </div>
       </div>
+
+      <div className="job-list" style={{ marginTop: 16 }}>
+        {shown.map((m) => {
+          const st = m.download_status || (m.installed ? 'installed' : 'not_downloaded')
+          const pct = Math.round((m.download_progress || 0) * 100)
+          const isActive = activeId === m.id || m.active
+          return (
+            <div className="job-item" key={m.id}>
+              <header>
+                <strong>
+                  {m.label}
+                  {isActive ? ' · active' : ''}
+                </strong>
+                <span className={`badge ${st === 'installed' ? 'done' : st === 'failed' ? 'failed' : 'queued'}`}>
+                  {st === 'downloading' ? `${pct}%` : st}
+                </span>
+              </header>
+              <div className="muted tiny">
+                {m.kind} · ≥{m.min_vram_gb} GB
+                {m.hf_id ? ` · ${m.hf_id}` : ' · built-in'}
+                {m.notes ? ` — ${m.notes}` : ''}
+              </div>
+              {(st === 'downloading' || st === 'stalled') && (
+                <div className="progress" style={{ marginTop: 8 }}>
+                  <div style={{ width: `${pct}%` }} />
+                </div>
+              )}
+              {m.download_message && <div className="muted tiny">{m.download_message}</div>}
+              {m.download_error && <div className="fit-warn tiny">{m.download_error}</div>}
+              <div className="inline-actions" style={{ marginTop: 10, flexWrap: 'wrap', gap: 8 }}>
+                <button
+                  className="btn acid tiny"
+                  type="button"
+                  disabled={busyId === m.id || isActive}
+                  onClick={() =>
+                    act(m.id, () => api.engineModelActivate(m.id), `Active model → ${m.label}`)
+                  }
+                >
+                  {isActive ? 'Selected' : 'Use this model'}
+                </button>
+                {(st === 'not_downloaded' || st === 'cancelled' || st === 'failed' || st === 'stalled') && (
+                  <button
+                    className="btn secondary tiny"
+                    type="button"
+                    disabled={busyId === m.id || !m.hf_id}
+                    onClick={() =>
+                      act(
+                        m.id,
+                        () => api.engineModelDownload(m.id, st !== 'not_downloaded'),
+                        `Downloading ${m.label}…`,
+                      )
+                    }
+                  >
+                    {st === 'stalled' || st === 'failed' ? 'Retry download' : 'Download'}
+                  </button>
+                )}
+                {(st === 'downloading' || st === 'stalled') && (
+                  <button
+                    className="btn ghost tiny"
+                    type="button"
+                    disabled={busyId === m.id}
+                    onClick={() => act(m.id, () => api.engineModelCancel(m.id), 'Download cancelled')}
+                  >
+                    Cancel
+                  </button>
+                )}
+                {(st === 'downloading' || st === 'stalled' || st === 'cancelled' || st === 'failed') && (
+                  <button
+                    className="btn ghost tiny"
+                    type="button"
+                    disabled={busyId === m.id}
+                    onClick={() =>
+                      act(m.id, () => api.engineModelClear(m.id, false), 'Cleared stuck status')
+                    }
+                  >
+                    Clear stuck
+                  </button>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
       <div className="panel" style={{ marginTop: 16 }}>
         <div className="inline-actions" style={{ justifyContent: 'space-between' }}>
           <h3 style={{ margin: 0 }}>LoRAs in folder</h3>
@@ -4529,6 +4799,41 @@ function SourcesTab({ notify }: { notify: (m: string) => void }) {
                   <div style={{ width: `${Math.round((job.progress || 0) * 100)}%` }} />
                 </div>
                 {job.local_path && <div className="muted tiny">{job.local_path}</div>}
+                <div className="inline-actions" style={{ marginTop: 8 }}>
+                  {(job.status === 'running' || job.status === 'queued') && (
+                    <button
+                      className="btn ghost tiny"
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await api.cancelPersonalImport(job.id)
+                          notify('Import cancelled')
+                          setImports(await api.personalImports())
+                        } catch (err) {
+                          notify(String((err as Error).message || err))
+                        }
+                      }}
+                    >
+                      Cancel stuck import
+                    </button>
+                  )}
+                  {(job.status === 'cancelled' || job.status === 'failed' || job.status === 'done') && (
+                    <button
+                      className="btn ghost tiny"
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await api.clearPersonalImport(job.id)
+                          setImports(await api.personalImports())
+                        } catch (err) {
+                          notify(String((err as Error).message || err))
+                        }
+                      }}
+                    >
+                      Remove from list
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>

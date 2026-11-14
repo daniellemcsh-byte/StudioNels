@@ -72,6 +72,31 @@ def get_import(job_id: str) -> dict[str, Any] | None:
     return _IMPORTS.get(job_id)
 
 
+def cancel_import(job_id: str) -> dict[str, Any]:
+    """Unstick a hung import (status stays cancelled; background thread may finish later)."""
+    with _LOCK:
+        job = _IMPORTS.get(job_id)
+        if not job:
+            raise ValueError("Import not found")
+        if job.get("status") in ("done",):
+            return job
+        job["status"] = "cancelled"
+        job["progress"] = 0.0
+        job["message"] = "Cancelled — you can import again"
+        job["error"] = None
+        job["updated_at"] = utc_now()
+        job["cancel"] = True
+        return dict(job)
+
+
+def clear_import(job_id: str) -> dict[str, Any]:
+    with _LOCK:
+        job = _IMPORTS.pop(job_id, None)
+        if not job:
+            raise ValueError("Import not found")
+        return {"ok": True, "id": job_id}
+
+
 def start_import(kind: Kind, source: str, name: str | None = None) -> dict[str, Any]:
     source = (source or "").strip()
     if not source:
@@ -97,9 +122,15 @@ def start_import(kind: Kind, source: str, name: str | None = None) -> dict[str, 
         try:
             _run_import(job)
         except Exception as exc:  # noqa: BLE001
-            job["status"] = "failed"
-            job["error"] = str(exc)
-            job["message"] = str(exc)
+            if job.get("cancel") or "cancelled" in str(exc).lower():
+                job["status"] = "cancelled"
+                job["progress"] = 0.0
+                job["error"] = None
+                job["message"] = "Cancelled — you can import again"
+            else:
+                job["status"] = "failed"
+                job["error"] = str(exc)
+                job["message"] = str(exc)
             job["updated_at"] = utc_now()
 
     threading.Thread(target=worker, name=f"import-{job['id']}", daemon=True).start()
@@ -108,6 +139,8 @@ def start_import(kind: Kind, source: str, name: str | None = None) -> dict[str, 
 
 def _run_import(job: dict[str, Any]) -> None:
     ensure_dirs()
+    if job.get("cancel"):
+        return
     job["status"] = "running"
     job["message"] = "Starting import…"
     job["progress"] = 0.05
@@ -124,6 +157,13 @@ def _run_import(job: dict[str, Any]) -> None:
     else:
         dest_root = ADDONS_DIR / "plugins" if source.endswith(".json") else ADDONS_DIR / "skills"
         path = _import_file(source, dest_root, settings, job, default_name="addon.json")
+
+    if job.get("cancel") or job.get("status") == "cancelled":
+        job["status"] = "cancelled"
+        job["progress"] = 0.0
+        job["message"] = "Cancelled — you can import again"
+        job["updated_at"] = utc_now()
+        return
 
     job["local_path"] = str(path)
     job["status"] = "done"
@@ -189,6 +229,8 @@ def _import_file(
         tmp = dest.with_suffix(dest.suffix + ".part")
         with tmp.open("wb") as f:
             for chunk in res.iter_bytes():
+                if job.get("cancel"):
+                    raise RuntimeError("cancelled")
                 f.write(chunk)
                 done += len(chunk)
                 if total:

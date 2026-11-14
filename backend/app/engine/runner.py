@@ -69,14 +69,32 @@ def _dedupe_models(status: EngineStatus) -> EngineStatus:
 
 
 def engine_status_public() -> dict[str, Any]:
-    from .models_manager import list_loras
+    from .models_manager import get_active_model_id, list_loras, list_models_with_status
 
     st = _dedupe_models(engine_status())
     loras = list_loras()
+    active = get_active_model_id()
+    # Merge download / active flags onto catalog models shown in Generate
+    status_by_id = {m["id"]: m for m in list_models_with_status(active)}
+    enriched = []
+    for m in st.models:
+        extra = status_by_id.get(m["id"]) or {}
+        enriched.append(
+            {
+                **m,
+                "installed": extra.get("installed", False),
+                "active": extra.get("active", False),
+                "download_status": extra.get("download_status"),
+                "download_progress": extra.get("download_progress"),
+                "download_error": extra.get("download_error"),
+                "download_message": extra.get("download_message"),
+            }
+        )
     return {
         "device": st.device,
         "modes": st.modes,
-        "models": st.models,
+        "models": enriched,
+        "active_model_id": active,
         "queue_length": st.queue_length,
         "preset_id": st.preset_id,
         "models_path": st.models_path,
