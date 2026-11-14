@@ -879,13 +879,15 @@ def _build_pipeline(
     memory: dict[str, Any] | None = None,
     cb: ProgressCb | None = None,
 ):
-    # mmgp redirects safetensors — import early when present
+    # mmgp redirects safetensors — import early when present, then re-patch backend=
     try:
         from .mmgp_accel import apply_runtime_env, mmgp_available
+        from .safetensors_compat import apply_safetensors_backend_compat
 
         apply_runtime_env()
         if mmgp_available():
             from mmgp import offload as _mmgp_offload  # noqa: F401
+        apply_safetensors_backend_compat(force=True)
     except Exception:
         pass
 
@@ -898,7 +900,11 @@ def _build_pipeline(
     short = source if len(str(source)) < 80 else ("…" + str(source)[-60:])
     _progress(cb, f"Reading weights from {where}: {short}", 0.06)
 
-    load_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+    def _dtype_kwargs(dt) -> dict[str, Any]:
+        # Newer diffusers prefer dtype=; older want torch_dtype=
+        return {"dtype": dt}
+
+    load_kwargs: dict[str, Any] = _dtype_kwargs(dtype)
     if is_local:
         load_kwargs["local_files_only"] = True
         # Incomplete local packs used to silently fall through to a multi-GB HF download
@@ -914,27 +920,69 @@ def _build_pipeline(
                 "Open Models → Download until status is Ready, then retry."
             )
 
+    def _from_pretrained(src: str, **kwargs: Any):
+        try:
+            return DiffusionPipeline.from_pretrained(src, **kwargs)
+        except TypeError as exc:
+            # Older diffusers: dtype= unknown → fall back to torch_dtype=
+            if "dtype" in kwargs and ("dtype" in str(exc) or "unexpected" in str(exc).lower()):
+                alt = dict(kwargs)
+                dt = alt.pop("dtype", None)
+                if dt is not None:
+                    alt["torch_dtype"] = dt
+                return DiffusionPipeline.from_pretrained(src, **alt)
+            raise
+
     # Always materialize on CPU first so mmgp can own device placement
     try:
-        pipe = DiffusionPipeline.from_pretrained(source, **load_kwargs)
+        pipe = _from_pretrained(source, **load_kwargs)
+    except TypeError as first_exc:
+        # safetensors/mmgp rejected backend= — patch and retry once
+        if "backend" in str(first_exc):
+            try:
+                from .safetensors_compat import apply_safetensors_backend_compat
+
+                apply_safetensors_backend_compat(force=True)
+            except Exception:
+                pass
+            pipe = _from_pretrained(source, **load_kwargs)
+        elif is_local:
+            raise RuntimeError(
+                f"Could not load local weights from {source}: {first_exc}. "
+                "Pinokio Update (upgrades safetensors), then retry."
+            ) from first_exc
+        else:
+            raise
     except Exception as first_exc:
-        if is_local:
+        if "backend" in str(first_exc):
+            try:
+                from .safetensors_compat import apply_safetensors_backend_compat
+
+                apply_safetensors_backend_compat(force=True)
+                pipe = _from_pretrained(source, **load_kwargs)
+            except Exception as retry_exc:
+                raise RuntimeError(
+                    f"Weight load failed (safetensors/transformers mismatch): {retry_exc}. "
+                    "Pinokio → Update, or: pip install -U 'safetensors>=0.5.3'"
+                ) from retry_exc
+        elif is_local:
             raise RuntimeError(
                 f"Could not load local weights from {source}: {first_exc}. "
                 "Re-download the model in Models (do not wait on a silent HF fetch)."
             ) from first_exc
-        import torch
+        else:
+            import torch
 
-        _progress(cb, f"Retrying load (float32)… {first_exc}", 0.08)
-        retry_kwargs: dict[str, Any] = {"torch_dtype": torch.float32}
-        try:
-            pipe = DiffusionPipeline.from_pretrained(source, **retry_kwargs)
-        except Exception as second_exc:
-            hf = model.get("hf_id")
-            if not hf:
-                raise RuntimeError(f"Pipeline load failed: {second_exc}") from second_exc
-            _progress(cb, f"Fetching from Hugging Face: {hf}", 0.09)
-            pipe = DiffusionPipeline.from_pretrained(hf, torch_dtype=torch.float32)
+            _progress(cb, f"Retrying load (float32)… {first_exc}", 0.08)
+            retry_kwargs: dict[str, Any] = _dtype_kwargs(torch.float32)
+            try:
+                pipe = _from_pretrained(source, **retry_kwargs)
+            except Exception as second_exc:
+                hf = model.get("hf_id")
+                if not hf:
+                    raise RuntimeError(f"Pipeline load failed: {second_exc}") from second_exc
+                _progress(cb, f"Fetching from Hugging Face: {hf}", 0.09)
+                pipe = _from_pretrained(hf, **_dtype_kwargs(torch.float32))
 
     _progress(cb, "Weights in RAM — applying StudioNels mmgp / device placement…", 0.14)
     try:

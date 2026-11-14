@@ -58,8 +58,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
+        from .safetensors_compat import apply_safetensors_backend_compat
         from .mmgp_accel import apply_runtime_env, mmgp_available
 
+        apply_safetensors_backend_compat()
         apply_runtime_env()
         cb(
             (
@@ -71,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if mmgp_available():
             from mmgp import offload as _mmgp_offload  # noqa: F401
+        apply_safetensors_backend_compat(force=True)
 
         from .pipelines import run_diffusers_job
 

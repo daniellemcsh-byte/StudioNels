@@ -86,6 +86,7 @@ if (process.platform === "win32") {
 }
 
 run(["-m", "pip", "install", "-r", "requirements-engine.txt"], "Diffusers + mmgp (native StudioNels speed)")
+run(["-m", "pip", "install", "-U", "safetensors>=0.5.3"], "safetensors (transformers backend= compat)")
 
 const check = spawnSync(
   py,

@@ -21,6 +21,8 @@ module.exports = {
           "python -m pip install -r requirements.txt",
           // Diffusers + mmgp — without this, Generate sits at 3% and says install requirements-engine.txt
           "python -m pip install -r requirements-engine.txt",
+          // Force safetensors new enough for transformers' safe_open(..., backend=...)
+          "python -m pip install -U \"safetensors>=0.5.3\"",
         ],
       },
     },

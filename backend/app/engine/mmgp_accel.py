@@ -18,12 +18,32 @@ def apply_runtime_env() -> None:
     # Avoid accidental torch.compile hangs on first AMD kernel
     os.environ.setdefault("TORCHINDUCTOR_DISABLE", "1")
     os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+    # transformers↔safetensors(+mmgp) version skew on Windows ROCm installs
+    try:
+        from .safetensors_compat import apply_safetensors_backend_compat
+
+        apply_safetensors_backend_compat()
+    except Exception:
+        pass
 
 
 def mmgp_available() -> bool:
     try:
+        from .safetensors_compat import apply_safetensors_backend_compat
+
+        apply_safetensors_backend_compat()
+    except Exception:
+        pass
+    try:
         import mmgp  # noqa: F401
 
+        # mmgp may replace safetensors.safe_open — re-apply compat after import
+        try:
+            from .safetensors_compat import apply_safetensors_backend_compat
+
+            apply_safetensors_backend_compat(force=True)
+        except Exception:
+            pass
         return True
     except Exception:
         return False

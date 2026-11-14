@@ -4,11 +4,13 @@
 #
 # PyTorch+ROCm is NOT listed here — install the wheel matching your ROCm from AMD/PyTorch docs first.
 # mmgp = Memory Management for the GPU Poor (same library Wan2GP uses) — native StudioNels speed.
+#
+# safetensors>=0.5.3 is required: newer transformers pass backend= into safe_open().
 
 diffusers>=0.32.0
 transformers>=4.46.0
 accelerate>=1.1.0
-safetensors>=0.4.5
+safetensors>=0.5.3
 huggingface_hub>=0.26.0
 sentencepiece>=0.2.0
 protobuf>=5.28.0
