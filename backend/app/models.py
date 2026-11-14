@@ -288,6 +288,7 @@ class EngineGenerateRequest(BaseModel):
     cpu_offload: bool | None = None
     image_path: str | None = None
     reference_path: str | None = None
+    reference_paths: list[str] | None = None
     video_path: str | None = None
     lora_path: str | None = None
     lora_scale: float | None = 0.8

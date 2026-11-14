@@ -117,27 +117,41 @@ def ckpts_and_extra_roots() -> list[Path]:
 
 
 def lora_roots() -> list[Path]:
+    """StudioNels/loras + Wan2GP loras folders (settings + siblings of ckpts)."""
     from .queue_store import loras_dir
 
     ensure_dirs()
-    roots = [loras_dir()]
+    candidates: list[Path | None] = [loras_dir()]
+
     wan_loras = _settings_path("wan2gp_loras_path")
     if wan_loras:
-        roots.append(wan_loras)
+        candidates.append(wan_loras)
+        # User may point at Wan2GP root or at loras/ itself
         if (wan_loras / "loras").is_dir():
-            roots.append(wan_loras / "loras")
+            candidates.append(wan_loras / "loras")
+        # Family subfolders (loras/ltx2, loras/wan, …) are scanned via rglob
+
     ckpts = _settings_path("wan2gp_ckpts_path")
     if ckpts:
-        sibling = ckpts.parent / "loras"
-        if sibling.is_dir():
-            roots.append(sibling)
+        parent = ckpts.parent
+        for rel in ("loras", "Loras", "LORA", "loras_i2v", "loras_t2v"):
+            sibling = parent / rel
+            if sibling.is_dir():
+                candidates.append(sibling)
+        # ckpts itself sometimes holds small adapter files — only if named *lora*
+        candidates.append(ckpts)
+
     assets = _settings_path("wan2gp_assets_path")
     if assets:
         if (assets / "loras").is_dir():
-            roots.append(assets / "loras")
+            candidates.append(assets / "loras")
         else:
-            roots.append(assets)
-    return _dedupe_roots(*roots)
+            candidates.append(assets)
+        for rel in ("loras_i2v", "loras_t2v"):
+            if (assets / rel).is_dir():
+                candidates.append(assets / rel)
+
+    return _dedupe_roots(*candidates)
 
 
 def _family_from_path(path: Path, root: Path) -> str:
@@ -154,6 +168,47 @@ def _family_from_path(path: Path, root: Path) -> str:
     return "misc"
 
 
+def _looks_like_lora(path: Path, *, under_loras_tree: bool) -> bool:
+    """Accept Wan2GP adapter files; reject full DiT / VAE / TE dumps."""
+    low = path.name.lower()
+    if path.suffix.lower() not in {".safetensors", ".pt", ".bin", ".gguf", ".sft"}:
+        return False
+    if path.name.upper().startswith("README"):
+        return False
+    # Hard rejects — full checkpoints
+    if any(
+        k in low
+        for k in (
+            "diffusion_model",
+            "diffusion-model",
+            "text_encoder",
+            "text-encoder",
+            "audio_vae",
+            "vocoder",
+            "spatial-upscaler",
+            "temporal-upscaler",
+        )
+    ):
+        return False
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    # Full video DiTs are multi-GB; real LoRAs are almost always < 2GB
+    if size > 2_500_000_000:
+        return False
+    if size < 8_000:
+        return False
+    if under_loras_tree:
+        # Anything weight-like under a loras/ tree counts
+        if "_vae" in low or low.endswith("-vae.safetensors") or low.endswith("_vae.safetensors"):
+            if "lora" not in low:
+                return False
+        return True
+    # Outside loras/ (e.g. stray file in ckpts) — require a LoRA hint in the name
+    return any(k in low for k in ("lora", "lokr", "lycoris", "locon", "loha", "adapter", "ic-lora", "ic_lora"))
+
+
 def scan_loras() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -166,36 +221,84 @@ def scan_loras() -> list[dict[str, Any]]:
         pass
 
     for root in lora_roots():
-        for path in sorted(root.rglob("*")):
+        try:
+            root_res = root.resolve()
+        except OSError:
+            continue
+        under_loras = "lora" in root.name.lower() or (
+            local_root is not None and root_res == local_root
+        )
+        try:
+            paths = sorted(root.rglob("*"))
+        except OSError:
+            continue
+        for path in paths:
             if not path.is_file():
                 continue
-            if path.name.upper().startswith("README"):
+            # Nested family dirs like loras/ltx2/ always count as under loras tree
+            in_loras = under_loras or any(
+                part.lower() in {"loras", "lora", "loras_i2v", "loras_t2v"}
+                for part in path.parts
+            )
+            if not _looks_like_lora(path, under_loras_tree=in_loras):
                 continue
-            if path.suffix.lower() not in {".safetensors", ".pt", ".bin", ".gguf"}:
+            try:
+                key = str(path.resolve())
+            except OSError:
                 continue
-            low = path.name.lower()
-            if "diffusion_model" in low:
-                continue
-            if path.stat().st_size > 8_000_000_000:
-                continue
-            key = str(path.resolve())
             if key in seen:
                 continue
             seen.add(key)
             family = _family_from_path(path, root)
-            is_local = local_root is not None and root.resolve() == local_root
+            is_local = local_root is not None and root_res == local_root
+            try:
+                size_mb = round(path.stat().st_size / (1024 * 1024), 1)
+            except OSError:
+                size_mb = 0.0
             items.append(
                 {
                     "id": f"{family}-{path.stem}"[:120],
                     "name": path.name,
                     "path": str(path),
-                    "size_mb": round(path.stat().st_size / (1024 * 1024), 1),
+                    "size_mb": size_mb,
                     "family": family,
                     "source": "local" if is_local else "wan2gp",
                     "root": str(root),
                 }
             )
+    # Prefer Wan2GP then local; stable sort by family/name
+    items.sort(key=lambda x: (x.get("source") != "wan2gp", x.get("family") or "", x.get("name") or ""))
     return items
+
+
+def import_loras_path(path: str) -> dict[str, Any]:
+    """Point Settings at a Wan2GP loras folder and return the scan."""
+    p = Path(path).expanduser()
+    if not p.exists() or not p.is_dir():
+        raise ValueError(f"LoRA folder not found: {path}")
+    settings = load_settings()
+    # If user pasted Wan2GP root, prefer …/loras
+    if (p / "loras").is_dir() and p.name.lower() != "loras":
+        settings.wan2gp_loras_path = str((p / "loras").resolve())
+        settings.wan2gp_assets_path = str(p.resolve())
+    else:
+        settings.wan2gp_loras_path = str(p.resolve())
+        # Also remember parent as assets if it looks like Wan2GP root
+        if p.name.lower() == "loras" and p.parent.is_dir():
+            settings.wan2gp_assets_path = str(p.parent.resolve())
+    save_settings(settings)
+    found = scan_loras()
+    return {
+        "ok": True,
+        "path": settings.wan2gp_loras_path,
+        "roots": [str(r) for r in lora_roots()],
+        "loras": found,
+        "count": len(found),
+        "hint": (
+            f"Scanning {settings.wan2gp_loras_path} — found {len(found)} LoRA(s). "
+            "They appear in Generate → Optional LoRA."
+        ),
+    }
 
 
 def scan_text_encoders() -> list[dict[str, Any]]:

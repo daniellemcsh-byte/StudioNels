@@ -91,6 +91,15 @@ export interface EngineJob {
   preview?: boolean
   error?: string | null
   created_at: string
+  started_at?: string | null
+  updated_at?: string
+  elapsed_sec?: number
+  eta_sec?: number
+  step?: number
+  steps_total?: number
+  frames?: number
+  fps?: number
+  duration_sec?: number
   workflow?: Record<string, unknown>
   cancel_requested?: boolean
   text_encoder?: string
@@ -201,6 +210,7 @@ export interface EngineStatus {
   preset_id: string
   models_path: string
   loras_path?: string
+  wan2gp_loras_path?: string
   loras?: LoraFile[]
   lora_count?: number
   text_encoders?: TextEncoderPreset[]

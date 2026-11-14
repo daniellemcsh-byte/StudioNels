@@ -1519,6 +1519,20 @@ a {
   flex-wrap: wrap;
 }
 
+.gen-stage-timer,
+.gen-dock-timer {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Consolas, monospace;
+  font-size: 0.92rem;
+  letter-spacing: 0.04em;
+  color: var(--neon, #39ffc7);
+  font-weight: 600;
+}
+
+.gen-dock-timer {
+  margin-top: 2px;
+}
+
 .gen-live-status {
   margin-bottom: 12px;
   padding: 12px;

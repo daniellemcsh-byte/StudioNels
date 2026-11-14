@@ -300,7 +300,25 @@ export const api = {
   captionsSrtUrl: (id: string) => `/api/projects/${id}/captions.srt`,
   engine: () => req<EngineStatus>('/api/engine'),
   engineLoras: () =>
-    req<{ path: string; loras: import('./types').LoraFile[]; count: number }>('/api/engine/loras'),
+    req<{
+      path: string
+      roots?: string[]
+      wan2gp_loras_path?: string
+      loras: import('./types').LoraFile[]
+      count: number
+    }>('/api/engine/loras'),
+  engineLorasImport: (path: string) =>
+    req<{
+      ok: boolean
+      path: string
+      roots?: string[]
+      loras: import('./types').LoraFile[]
+      count: number
+      hint?: string
+    }>('/api/engine/loras/import', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
   engineModels: () => req<import('./types').EngineModelsPack>('/api/engine/models'),
   engineModelDownload: (modelId: string, force = false) =>
     req<Record<string, unknown>>(

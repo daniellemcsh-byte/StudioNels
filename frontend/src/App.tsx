@@ -54,17 +54,86 @@ import './styles.css'
 
 const GEN_STAGES = ['Queue', 'Load', 'Setup', 'Generate', 'Finish'] as const
 
+function formatElapsed(sec: number): string {
+  const s = Math.max(0, Math.floor(sec || 0))
+  const m = Math.floor(s / 60)
+  const r = s % 60
+  return m > 0 ? `${m}:${r.toString().padStart(2, '0')}` : `0:${r.toString().padStart(2, '0')}`
+}
+
+function formatEta(sec: number): string {
+  const s = Math.max(0, Math.floor(sec || 0))
+  if (s < 60) return `~${s}s`
+  const m = Math.floor(s / 60)
+  const r = s % 60
+  return r ? `~${m}m${r.toString().padStart(2, '0')}s` : `~${m}m`
+}
+
+function jobElapsedSec(job: EngineJob, nowMs = Date.now()): number {
+  if (typeof job.elapsed_sec === 'number' && job.status !== 'running') {
+    return Math.max(0, job.elapsed_sec)
+  }
+  const start = job.started_at || (job.status === 'running' ? job.created_at : null)
+  if (!start) return typeof job.elapsed_sec === 'number' ? job.elapsed_sec : 0
+  const t0 = Date.parse(start)
+  if (!Number.isFinite(t0)) return typeof job.elapsed_sec === 'number' ? job.elapsed_sec : 0
+  return Math.max(0, Math.floor((nowMs - t0) / 1000))
+}
+
+function jobEtaLabel(job: EngineJob): string {
+  if (typeof job.eta_sec === 'number' && job.eta_sec >= 0 && job.status === 'running') {
+    return formatEta(job.eta_sec)
+  }
+  const m =
+    (job.message || '').match(/~\s*(\d+)m(\d+)s\s*left/i) ||
+    (job.message || '').match(/~\s*(\d+)s\s*left/i)
+  if (!m) return ''
+  if (m[2] != null) return formatEta(Number(m[1]) * 60 + Number(m[2]))
+  return formatEta(Number(m[1]))
+}
+
+function useNowMs(active: boolean, intervalMs = 1000) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    setNow(Date.now())
+    const t = window.setInterval(() => setNow(Date.now()), intervalMs)
+    return () => window.clearInterval(t)
+  }, [active, intervalMs])
+  return now
+}
+
 /** Human-readable what a job is doing right now (queue / dock / status bar). */
-function describeJobActivity(job: EngineJob): {
+function describeJobActivity(job: EngineJob, nowMs = Date.now()): {
   phase: string
   detail: string
   tone: 'idle' | 'wait' | 'load' | 'run' | 'done' | 'fail' | 'stop'
   stageIndex: number
   stages: readonly string[]
+  elapsedLabel: string
+  stepLabel: string
+  etaLabel: string
+  timerLabel: string
 } {
   const msg = (job.message || '').toLowerCase()
   const pct = Math.round((job.progress || 0) * 100)
   const stages = GEN_STAGES
+  const elapsedLabel = formatElapsed(jobElapsedSec(job, nowMs))
+  const etaLabel = jobEtaLabel(job)
+  const stepFromJob =
+    job.step != null && job.steps_total != null
+      ? `step ${job.step}/${job.steps_total}`
+      : ''
+  const stepMatch =
+    (job.message || '').match(/step\s+(\d+)\s*\/\s*(\d+)/i) ||
+    (job.message || '').match(/step\s+(\d+)\s+of\s+(\d+)/i)
+  const stepLabel = stepFromJob || (stepMatch ? `step ${stepMatch[1]}/${stepMatch[2]}` : '')
+  const timerLabel =
+    job.status === 'queued'
+      ? ''
+      : etaLabel
+        ? `${elapsedLabel} · ${etaLabel} left`
+        : elapsedLabel
   const modeLabel =
     job.mode === 't2v' || job.mode === 'i2v' || job.mode === 'ref2v'
       ? 'video'
@@ -79,7 +148,17 @@ function describeJobActivity(job: EngineJob): {
     detail: string,
     tone: 'idle' | 'wait' | 'load' | 'run' | 'done' | 'fail' | 'stop',
     stageIndex: number,
-  ) => ({ phase, detail, tone, stageIndex, stages })
+  ) => ({
+    phase,
+    detail,
+    tone,
+    stageIndex,
+    stages,
+    elapsedLabel,
+    stepLabel,
+    etaLabel,
+    timerLabel,
+  })
 
   if (job.status === 'queued') {
     return pack('Waiting in queue', `Next up · ${job.model_label}`, 'wait', 0)
@@ -128,15 +207,19 @@ function describeJobActivity(job: EngineJob): {
   if (/preview/.test(msg)) {
     return pack(`Creating preview ${modeLabel}`, job.message || `${pct}%`, 'run', 3)
   }
-  if (/generat/.test(msg) || (job.progress || 0) >= 0.2) {
+  if (/generat|denois|step\s*\d/.test(msg) || (job.progress || 0) >= 0.2) {
+    const stepMatch =
+      (job.message || '').match(/step\s+(\d+)\s*\/\s*(\d+)/i) ||
+      (job.message || '').match(/step\s+(\d+)\s+of\s+(\d+)/i)
+    const stepLabel = stepMatch ? ` · step ${stepMatch[1]}/${stepMatch[2]}` : ''
     const phase =
       modeLabel === 'video'
-        ? 'Generating video'
+        ? `Generating video${stepLabel}`
         : modeLabel === 'audio'
-          ? 'Generating audio'
+          ? `Generating audio${stepLabel}`
           : modeLabel === 'upsample'
-            ? 'Upsampling'
-            : 'Generating image'
+            ? `Upsampling${stepLabel}`
+            : `Generating image${stepLabel}`
     return pack(phase, job.message || `${pct}%`, 'run', 3)
   }
   if (/start/.test(msg)) {
@@ -159,12 +242,12 @@ function GenerationStageBar({
   showTipsLink?: boolean
   onOpenTips?: () => void
 }) {
-  const act = describeJobActivity(job)
+  const live = job.status === 'running' || job.status === 'queued'
+  const nowMs = useNowMs(live)
+  const act = describeJobActivity(job, nowMs)
   const pct = Math.round((job.progress || 0) * 100)
   const slowLoad =
-    (job.status === 'running' || job.status === 'queued') &&
-    act.stageIndex <= 2 &&
-    (job.progress || 0) < 0.25
+    live && act.stageIndex <= 2 && (job.progress || 0) < 0.25
 
   return (
     <div className="gen-stage-bar">
@@ -181,8 +264,13 @@ function GenerationStageBar({
       </div>
       <div className="gen-stage-meta">
         <strong className={`job-phase tone-${act.tone}`}>{act.phase}</strong>
+        <span className="gen-stage-timer" title="Elapsed time">
+          {act.timerLabel || act.elapsedLabel}
+        </span>
         <span className="muted tiny">
-          {pct}% · {act.detail}
+          {pct}%
+          {act.stepLabel ? ` · ${act.stepLabel}` : ''}
+          {act.detail && act.detail !== act.phase ? ` · ${act.detail}` : ''}
         </span>
       </div>
       <div className="progress">
@@ -1177,6 +1265,8 @@ function GenerationDock({
   const [stopping, setStopping] = useState(false)
   const prevActive = useRef(0)
   const userMinimized = useRef(minimized)
+  const hasLiveJobs = jobs.some((j) => j.status === 'queued' || j.status === 'running')
+  const nowMs = useNowMs(hasLiveJobs)
 
   const setMinimizedPref = (next: boolean) => {
     userMinimized.current = next
@@ -1236,7 +1326,7 @@ function GenerationDock({
     (j) => j.workflow && (j.status === 'cancelled' || j.status === 'failed'),
   )
   const topJob = active[0] || recent[0]
-  const topAct = topJob ? describeJobActivity(topJob) : null
+  const topAct = topJob ? describeJobActivity(topJob, nowMs) : null
   const topProgress = active.length
     ? Math.round(Math.max(...active.map((j) => j.progress || 0)) * 100)
     : recent[0]
@@ -1256,7 +1346,9 @@ function GenerationDock({
           <span className="gen-dock-mini-dot" data-active={active.length > 0 ? '1' : '0'} />
           <span className="gen-dock-mini-label">
             {active.length > 0
-              ? `${topAct?.phase || 'Generating'} · ${topProgress}%`
+              ? `${topAct?.phase || 'Generating'} · ${topProgress}%${
+                  topAct?.timerLabel ? ` · ${topAct.timerLabel}` : ''
+                }`
               : topAct
                 ? topAct.phase
                 : 'Engine'}
@@ -1310,7 +1402,7 @@ function GenerationDock({
           </strong>
           <span className="muted tiny">
             {topAct && active.length > 0
-              ? topAct.detail
+              ? `${topAct.timerLabel ? `${topAct.timerLabel} · ` : ''}${topAct.detail}`
               : health?.will_preview
                 ? 'Preview mode (placeholders until ROCm PyTorch)'
                 : health?.device_name || 'built-in'}
@@ -1337,7 +1429,7 @@ function GenerationDock({
         ) : (
           <div className="gen-dock-list">
             {recent.map((job) => {
-              const act = describeJobActivity(job)
+              const act = describeJobActivity(job, nowMs)
               return (
               <div className="gen-dock-row" key={job.id}>
                 <div className="gen-dock-meta">
@@ -1345,6 +1437,14 @@ function GenerationDock({
                     {act.phase}
                     {job.preview ? ' · preview' : ''}
                   </span>
+                  {act.timerLabel ? (
+                    <div className="gen-dock-timer" title="Elapsed / ETA">
+                      {act.timerLabel}
+                    </div>
+                  ) : null}
+                  {act.detail && act.detail !== act.phase ? (
+                    <div className="muted tiny gen-dock-detail">{act.detail}</div>
+                  ) : null}
                   <div className="gen-dock-meta-actions">
                     <span className="muted tiny">{Math.round((job.progress || 0) * 100)}%</span>
                     <button
@@ -2917,17 +3017,20 @@ function GenerateTab({
   const [negative, setNegative] = useState('')
   const [shotId, setShotId] = useState('')
   const [imagePath, setImagePath] = useState<string | null>(null)
-  const [refPath, setRefPath] = useState<string | null>(null)
+  const [refSlots, setRefSlots] = useState<{ path: string | null; url: string | null }[]>(() =>
+    Array.from({ length: 5 }, () => ({ path: null, url: null })),
+  )
   const [videoPath, setVideoPath] = useState<string | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
-  const [refUrl, setRefUrl] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [videoLabel, setVideoLabel] = useState('')
   const [width, setWidth] = useState(project.width || 768)
-  const [height, setHeight] = useState(project.height || 432)
+  const [height, setHeight] = useState(project.height || 448)
+  const refPath = refSlots.find((s) => s.path)?.path || null
+  const refPaths = refSlots.map((s) => s.path).filter((p): p is string => !!p)
   const [quality, setQuality] = useState('balanced')
   const [durationSec, setDurationSec] = useState(3)
-  const [fps, setFps] = useState(24)
+  const [fps, setFps] = useState(16)
   const [frames, setFrames] = useState(0) // 0 = auto from duration × fps
   const [renderSeed, setRenderSeed] = useState<number>(() => Math.floor(Math.random() * 1_000_000_000))
   const [seedLocked, setSeedLocked] = useState(false)
@@ -2942,6 +3045,10 @@ function GenerateTab({
   const [loraScale, setLoraScale] = useState(0.8)
   const [loras, setLoras] = useState<LoraFile[]>([])
   const [lorasPath, setLorasPath] = useState('')
+  const [wan2gpLorasPath, setWan2gpLorasPath] = useState('')
+  const [loraImportPath, setLoraImportPath] = useState('')
+  const [loraRoots, setLoraRoots] = useState<string[]>([])
+  const [importingLoras, setImportingLoras] = useState(false)
   const [busy, setBusy] = useState(false)
   const [estimate, setEstimate] = useState<GpuEstimate | null>(null)
   const [estimating, setEstimating] = useState(false)
@@ -2986,9 +3093,22 @@ function GenerateTab({
       setImagePath(wf.image_path)
       setImageUrl(mediaUrl(wf.image_path) || null)
     }
-    if (typeof wf.reference_path === 'string') {
-      setRefPath(wf.reference_path)
-      setRefUrl(mediaUrl(wf.reference_path) || null)
+    if (Array.isArray(wf.reference_paths) && wf.reference_paths.length) {
+      const paths = wf.reference_paths.filter((p): p is string => typeof p === 'string')
+      setRefSlots(
+        Array.from({ length: 5 }, (_, i) => ({
+          path: paths[i] || null,
+          url: paths[i] ? mediaUrl(paths[i]) || null : null,
+        })),
+      )
+    } else if (typeof wf.reference_path === 'string') {
+      setRefSlots(
+        Array.from({ length: 5 }, (_, i) =>
+          i === 0
+            ? { path: wf.reference_path as string, url: mediaUrl(wf.reference_path as string) || null }
+            : { path: null, url: null },
+        ),
+      )
     }
     if (typeof wf.video_path === 'string') {
       setVideoPath(wf.video_path)
@@ -3024,6 +3144,19 @@ function GenerateTab({
     setRestorable(wf.jobs || [])
     setLoras(e.loras || [])
     setLorasPath(e.loras_path || '')
+    if (e.wan2gp_loras_path) setWan2gpLorasPath(e.wan2gp_loras_path)
+    try {
+      const pack = await api.engineLoras()
+      setLoras(pack.loras || e.loras || [])
+      setLorasPath(pack.path || e.loras_path || '')
+      setLoraRoots(pack.roots || [])
+      if (pack.wan2gp_loras_path) {
+        setWan2gpLorasPath(pack.wan2gp_loras_path)
+        setLoraImportPath((prev) => prev || pack.wan2gp_loras_path || '')
+      }
+    } catch {
+      /* keep engine.loras */
+    }
     if (!modelId) {
       const forMode = e.models.filter((m) => m.modes.includes(mode))
       const active = forMode.find((m) => m.id === e.active_model_id || m.active)
@@ -3140,19 +3273,31 @@ function GenerateTab({
   const models = engine?.models.filter((m) => m.modes.includes(mode)) || []
   const style = VISUAL_STYLES.find((s) => s.id === project.visual_style)
 
-  const upload = async (file: File, kind: 'image' | 'reference' | 'video') => {
+  const upload = async (file: File, kind: 'image' | 'reference' | 'video', refIndex = 0) => {
     const res = await api.engineUpload(file, kind)
     if (kind === 'image') {
       setImagePath(res.path)
       setImageUrl(res.url)
     } else if (kind === 'reference') {
-      setRefPath(res.path)
-      setRefUrl(res.url)
+      setRefSlots((prev) => {
+        const next = prev.map((s) => ({ ...s }))
+        const i = Math.max(0, Math.min(refIndex, next.length - 1))
+        next[i] = { path: res.path, url: res.url }
+        return next
+      })
     } else {
       setVideoPath(res.path)
       setVideoUrl(res.url)
       setVideoLabel(file.name)
     }
+  }
+
+  const clearRefSlot = (index: number) => {
+    setRefSlots((prev) => {
+      const next = prev.map((s) => ({ ...s }))
+      next[index] = { path: null, url: null }
+      return next
+    })
   }
 
   const showStartImage =
@@ -3204,7 +3349,8 @@ function GenerateTab({
           : styled,
         negative_prompt: negative || (useContinue ? 'cut, hard edit, flash, jump cut' : ''),
         image_path: imagePath,
-        reference_path: refPath,
+        reference_path: refPath || undefined,
+        reference_paths: refPaths.length ? refPaths : undefined,
         video_path: videoPath,
         project_id: project.id,
         shot_id: shotId || undefined,
@@ -3655,6 +3801,9 @@ function GenerateTab({
                   {' · '}seed {renderSeed}
                   {seedLocked ? ' locked' : ' (rolls after each run)'}
                   {' · '}TE {textEncoder}
+                  {durationSec <= 3 && effectiveFrames > 40
+                    ? ' · tip: 16 fps or fewer frames finishes a 3s clip much sooner'
+                    : ''}
                 </p>
               </>
             )}
@@ -3699,13 +3848,15 @@ function GenerateTab({
                     const pack = await api.engineLoras()
                     setLoras(pack.loras)
                     setLorasPath(pack.path)
+                    setLoraRoots(pack.roots || [])
+                    if (pack.wan2gp_loras_path) setWan2gpLorasPath(pack.wan2gp_loras_path)
                     if (loraPath && !pack.loras.some((l) => l.path === loraPath)) {
                       setLoraPath('')
                     }
                     notify(
                       pack.count
-                        ? `Found ${pack.count} LoRA${pack.count === 1 ? '' : 's'} in folder.`
-                        : 'No LoRAs yet — drop .safetensors into loras/.',
+                        ? `Found ${pack.count} LoRA${pack.count === 1 ? '' : 's'} across folders.`
+                        : 'No LoRAs yet — drop into loras/ or import Wan2GP loras.',
                     )
                   } catch (err) {
                     notify(String((err as Error).message || err))
@@ -3716,8 +3867,57 @@ function GenerateTab({
               </button>
             </div>
             <div className="muted tiny" style={{ marginBottom: 8 }}>
-              Auto-scans <code>loras/</code>
-              {lorasPath ? ` (${lorasPath})` : ''} — drop .safetensors / .pt files, then pick below.
+              Scans StudioNels <code>loras/</code>
+              {lorasPath ? ` (${lorasPath})` : ''}
+              {wan2gpLorasPath ? (
+                <>
+                  {' '}
+                  + Wan2GP <code>{wan2gpLorasPath}</code>
+                </>
+              ) : null}
+              . Pick below after Refresh / Import.
+            </div>
+            <div className="field" style={{ marginBottom: 8 }}>
+              <label>Wan2GP LoRA folder</label>
+              <div className="inline-actions" style={{ gap: 6, flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  value={loraImportPath}
+                  placeholder="C:\...\Wan2GP\loras  or  Wan2GP root"
+                  onChange={(e) => setLoraImportPath(e.target.value)}
+                  style={{ flex: 1, minWidth: 180 }}
+                  aria-label="Wan2GP LoRA folder path"
+                />
+                <button
+                  className="btn acid tiny"
+                  type="button"
+                  disabled={importingLoras || !loraImportPath.trim()}
+                  onClick={async () => {
+                    setImportingLoras(true)
+                    try {
+                      const pack = await api.engineLorasImport(loraImportPath.trim())
+                      setLoras(pack.loras || [])
+                      setLoraRoots(pack.roots || [])
+                      if (pack.path) {
+                        setWan2gpLorasPath(pack.path)
+                        setLoraImportPath(pack.path)
+                      }
+                      notify(pack.hint || `Imported ${pack.count} LoRA(s).`)
+                    } catch (err) {
+                      notify(String((err as Error).message || err))
+                    } finally {
+                      setImportingLoras(false)
+                    }
+                  }}
+                >
+                  {importingLoras ? 'Importing…' : 'Import Wan2GP LoRAs'}
+                </button>
+              </div>
+              {loraRoots.length > 1 ? (
+                <div className="muted tiny" style={{ marginTop: 4 }}>
+                  Scanning {loraRoots.length} roots
+                </div>
+              ) : null}
             </div>
             <select
               value={loraPath}
@@ -3727,13 +3927,15 @@ function GenerateTab({
               <option value="">— none —</option>
               {loras.map((l) => (
                 <option key={l.path} value={l.path}>
+                  {l.source === 'wan2gp' ? '[Wan2GP] ' : ''}
                   {l.name} ({l.size_mb} MB)
                 </option>
               ))}
             </select>
             {loras.length === 0 && (
               <div className="muted tiny" style={{ marginTop: 6 }}>
-                Folder empty. Add files to <code>loras/</code> and hit Refresh.
+                No LoRAs yet — paste your Wan2GP <code>loras</code> path above, or drop files into{' '}
+                <code>loras/</code>.
               </div>
             )}
             <div className="field" style={{ marginTop: 10 }}>
@@ -3799,37 +4001,53 @@ function GenerateTab({
                 </div>
               )}
               {showRefImage && (
-                <div className="field media-slot">
+                <div className="field media-slot" style={{ gridColumn: '1 / -1' }}>
                   <label>
-                    {mode === 'ref2i' ? 'Reference photo (look / identity)' : 'Reference photo'}
-                    {(mode === 'ref2i' || mode === 'ref2v') && !videoPath && (
-                      <span className="tiny"> · required unless you add a ref video</span>
+                    Reference photos
+                    {(mode === 'ref2i' || mode === 'ref2v') && !videoPath && refPaths.length === 0 && (
+                      <span className="tiny"> · add at least one (or a ref video)</span>
                     )}
                   </label>
-                  <input
-                    type="file"
-                    accept="image/*,.png,.jpg,.jpeg,.webp,.bmp"
-                    onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'reference')}
-                  />
-                  <div className="muted tiny" style={{ marginTop: 4 }}>
-                    Character or scene reference still for consistency.
+                  <div className="muted tiny" style={{ marginBottom: 8 }}>
+                    Up to 5 stills for look / identity — slot 1 is primary.
                   </div>
-                  {refUrl && (
-                    <div style={{ marginTop: 8 }}>
-                      <img className="upload-preview" src={refUrl} alt="reference" />
-                      <button
-                        type="button"
-                        className="btn ghost tiny"
-                        style={{ marginTop: 6 }}
-                        onClick={() => {
-                          setRefPath(null)
-                          setRefUrl(null)
-                        }}
-                      >
-                        Remove reference
-                      </button>
-                    </div>
-                  )}
+                  <div
+                    className="ref-slot-grid"
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
+                      gap: 10,
+                    }}
+                  >
+                    {refSlots.map((slot, i) => (
+                      <div key={`ref-${i}`} className="media-slot" style={{ margin: 0 }}>
+                        <label className="tiny">
+                          Ref {i + 1}
+                          {i === 0 ? ' · primary' : ''}
+                        </label>
+                        <input
+                          type="file"
+                          accept="image/*,.png,.jpg,.jpeg,.webp,.bmp"
+                          onChange={(e) =>
+                            e.target.files?.[0] && upload(e.target.files[0], 'reference', i)
+                          }
+                        />
+                        {slot.url && (
+                          <div style={{ marginTop: 6 }}>
+                            <img className="upload-preview" src={slot.url} alt={`ref ${i + 1}`} />
+                            <button
+                              type="button"
+                              className="btn ghost tiny"
+                              style={{ marginTop: 4 }}
+                              onClick={() => clearRefSlot(i)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
               {showRefVideo && (

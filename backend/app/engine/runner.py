@@ -106,10 +106,12 @@ def _dedupe_models(status: EngineStatus) -> EngineStatus:
 
 def engine_status_public() -> dict[str, Any]:
     from .models_manager import get_active_model_id, list_loras, list_models_with_status
+    from ..storage import load_settings
 
     st = _dedupe_models(engine_status())
     loras = list_loras()
     active = get_active_model_id()
+    settings = load_settings()
     # Merge download / active flags onto catalog models shown in Generate
     status_by_id = {m["id"]: m for m in list_models_with_status(active)}
     enriched = []
@@ -138,6 +140,7 @@ def engine_status_public() -> dict[str, Any]:
         "size_presets": SIZE_PRESETS,
         "quality_presets": QUALITY_PRESETS,
         "loras_path": str(loras_dir()),
+        "wan2gp_loras_path": getattr(settings, "wan2gp_loras_path", "") or "",
         "loras": loras,
         "lora_count": len(loras),
         "text_encoders": _text_encoder_presets(),
@@ -190,12 +193,22 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     if mode_meta.get("needs_image") and not payload.get("image_path"):
         raise ValueError("Image → Video needs a start photo / still. Add a file in Generate.")
     if mode_meta.get("needs_reference"):
-        has_ref = bool(payload.get("reference_path"))
+        ref_list = [
+            p
+            for p in (payload.get("reference_paths") or [])
+            if isinstance(p, str) and p.strip()
+        ]
+        if payload.get("reference_path") and payload["reference_path"] not in ref_list:
+            ref_list.insert(0, str(payload["reference_path"]))
+        if ref_list:
+            payload["reference_paths"] = ref_list
+            payload["reference_path"] = ref_list[0]
+        has_ref = bool(payload.get("reference_path") or ref_list)
         has_ref_video = bool(payload.get("video_path")) and mode_meta.get("accepts_ref_video")
         if not has_ref and not has_ref_video:
             raise ValueError(
-                "Reference mode needs a reference photo"
-                + (" or reference video." if mode_meta.get("accepts_ref_video") else ".")
+                "Reference mode needs at least one reference photo"
+                + (" or a reference video." if mode_meta.get("accepts_ref_video") else ".")
             )
     if mode_meta.get("needs_video") and not payload.get("video_path"):
         raise ValueError("Upsample video needs a video/clip — add a file in Generate.")
@@ -211,9 +224,20 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     frames = payload.get("frames")
     fps = int(payload.get("fps") or gen.get("fps") or model.get("fps") or 16)
     if duration_sec and not frames and mode in ("t2v", "i2v", "ref2v", "upsample_video"):
-        frames = max(8, int(float(duration_sec) * fps))
+        dur = float(duration_sec)
+        # Short clips: don't inflate to 72+ frames @ 24fps — keeps 3s jobs lean
+        use_fps = fps
+        if dur <= 4 and fps > 16 and model.get("distilled"):
+            use_fps = 16
+        frames = max(8, int(round(dur * use_fps)))
+        # Soft cap for very short drafts so first ROCm runs finish sooner
+        if dur <= 3:
+            frames = min(int(frames), 49)
+        fps = use_fps
     if not frames:
         frames = int(gen.get("default_frames") or model.get("default_frames") or 49)
+        if model.get("distilled"):
+            frames = min(int(frames), 81)
     if mode == "t2a" and not duration_sec:
         duration_sec = float(model.get("default_duration_sec") or 8)
 
@@ -295,6 +319,8 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         "preset_id": mem.get("preset_id") or settings.preset_id,
         "image_path": payload.get("image_path"),
         "reference_path": payload.get("reference_path"),
+        "reference_paths": list(payload.get("reference_paths") or [])
+        or ([payload["reference_path"]] if payload.get("reference_path") else []),
         "video_path": payload.get("video_path"),
         "lora_path": payload.get("lora_path"),
         "lora_scale": float(payload.get("lora_scale") if payload.get("lora_scale") is not None else 0.8),
@@ -432,6 +458,8 @@ def _run_one(job: dict[str, Any]) -> None:
     job["status"] = "running"
     job["message"] = "Starting"
     job["progress"] = 0.01
+    job["started_at"] = utc_now()
+    job["elapsed_sec"] = 0
     job["updated_at"] = utc_now()
     upsert_job(job)
 
@@ -441,6 +469,27 @@ def _run_one(job: dict[str, Any]) -> None:
         job["message"] = message
         job["progress"] = frac
         job["updated_at"] = utc_now()
+        try:
+            from datetime import datetime
+
+            start = job.get("started_at")
+            if isinstance(start, str) and start:
+                t0 = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                job["elapsed_sec"] = max(0, int((datetime.now(t0.tzinfo) - t0).total_seconds()))
+        except Exception:
+            pass
+        import re
+
+        m = re.search(r"step\s+(\d+)\s*/\s*(\d+)", message or "", re.I)
+        if m:
+            job["step"] = int(m.group(1))
+            job["steps_total"] = int(m.group(2))
+        eta_m = re.search(r"~\s*(\d+)m(\d+)s\s*left", message or "", re.I)
+        eta_s = re.search(r"~\s*(\d+)s\s*left", message or "", re.I)
+        if eta_m:
+            job["eta_sec"] = int(eta_m.group(1)) * 60 + int(eta_m.group(2))
+        elif eta_s:
+            job["eta_sec"] = int(eta_s.group(1))
         upsert_job(job)
 
     out_dir = MEDIA_DIR / (job.get("project_id") or "standalone")
@@ -508,6 +557,16 @@ def _run_one(job: dict[str, Any]) -> None:
             if job.get("continue_from_previous"):
                 msg = "Complete (continued from previous)"
             job["message"] = msg
+        try:
+            from datetime import datetime
+
+            start = job.get("started_at")
+            if isinstance(start, str) and start:
+                t0 = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                job["elapsed_sec"] = max(0, int((datetime.now(t0.tzinfo) - t0).total_seconds()))
+        except Exception:
+            pass
+        job["eta_sec"] = 0
         job["updated_at"] = utc_now()
         upsert_job(job)
 

@@ -176,16 +176,35 @@ async def engine():
 
 @app.get("/api/engine/loras")
 async def engine_loras():
-    """Scan the app loras/ folder for dropdown picks — no path pasting."""
+    """Scan StudioNels/loras + Wan2GP loras folders for Generate dropdown."""
     from .engine.models_manager import list_loras
     from .engine.queue_store import loras_dir
+    from .engine.wan2gp_assets import lora_roots
+    from .storage import load_settings
 
     items = list_loras()
+    s = load_settings()
     return {
         "path": str(loras_dir()),
+        "roots": [str(r) for r in lora_roots()],
+        "wan2gp_loras_path": s.wan2gp_loras_path or "",
         "loras": items,
         "count": len(items),
     }
+
+
+@app.post("/api/engine/loras/import")
+async def engine_loras_import(body: dict):
+    """Point at a Wan2GP loras (or Wan2GP root) folder — no copy of weights."""
+    from .engine.wan2gp_assets import import_loras_path
+
+    path = str(body.get("path") or "").strip()
+    if not path:
+        raise HTTPException(400, "path is required (Wan2GP\\loras or Wan2GP root)")
+    try:
+        return import_loras_path(path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/engine/models")
