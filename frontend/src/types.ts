@@ -91,6 +91,12 @@ export interface EngineJob {
   preview?: boolean
   error?: string | null
   created_at: string
+  started_at?: string | null
+  updated_at?: string
+  elapsed_sec?: number
+  eta_sec?: number
+  step?: number
+  steps_total?: number
   workflow?: Record<string, unknown>
   cancel_requested?: boolean
   text_encoder?: string

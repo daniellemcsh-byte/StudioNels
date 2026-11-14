@@ -2464,3 +2464,53 @@ a {
   background: #000;
   display: block;
 }
+
+.gen-timer-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.gen-timer-clock {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(57, 255, 199, 0.28);
+  background: rgba(0, 0, 0, 0.35);
+  text-align: center;
+}
+
+.gen-timer-label {
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.gen-timer-clock strong {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 1.05rem;
+  color: var(--neon);
+}
+
+.gen-dock-timer {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  color: var(--neon);
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-top: 2px;
+}
+
+.gen-stage-detail {
+  word-break: break-word;
+}
+
+@media (max-width: 640px) {
+  .gen-timer-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -54,17 +54,74 @@ import './styles.css'
 
 const GEN_STAGES = ['Queue', 'Load', 'Setup', 'Generate', 'Finish'] as const
 
+function formatClock(sec: number): string {
+  const s = Math.max(0, Math.floor(sec || 0))
+  const m = Math.floor(s / 60)
+  const r = s % 60
+  return `${m}:${r.toString().padStart(2, '0')}`
+}
+
+function jobElapsedSec(job: EngineJob, nowMs = Date.now()): number {
+  if (job.status !== 'running' && typeof job.elapsed_sec === 'number') {
+    return Math.max(0, job.elapsed_sec)
+  }
+  const start = job.started_at || (job.status === 'running' || job.status === 'queued' ? job.created_at : null)
+  if (start) {
+    const t0 = Date.parse(start)
+    if (Number.isFinite(t0)) return Math.max(0, Math.floor((nowMs - t0) / 1000))
+  }
+  return typeof job.elapsed_sec === 'number' ? job.elapsed_sec : 0
+}
+
+function jobEtaSec(job: EngineJob): number | null {
+  if (typeof job.eta_sec === 'number' && job.eta_sec >= 0) return job.eta_sec
+  const m =
+    (job.message || '').match(/~\s*(\d+)m(\d+)s\s*left/i) ||
+    (job.message || '').match(/~\s*(\d+)s\s*left/i)
+  if (!m) return null
+  if (m[2] != null) return Number(m[1]) * 60 + Number(m[2])
+  return Number(m[1])
+}
+
+function useNowMs(active: boolean, ms = 1000) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    setNow(Date.now())
+    const t = window.setInterval(() => setNow(Date.now()), ms)
+    return () => window.clearInterval(t)
+  }, [active, ms])
+  return now
+}
+
 /** Human-readable what a job is doing right now (queue / dock / status bar). */
-function describeJobActivity(job: EngineJob): {
+function describeJobActivity(job: EngineJob, nowMs = Date.now()): {
   phase: string
   detail: string
   tone: 'idle' | 'wait' | 'load' | 'run' | 'done' | 'fail' | 'stop'
   stageIndex: number
   stages: readonly string[]
+  elapsedLabel: string
+  etaLabel: string
+  stepLabel: string
+  timerLabel: string
 } {
   const msg = (job.message || '').toLowerCase()
   const pct = Math.round((job.progress || 0) * 100)
   const stages = GEN_STAGES
+  const elapsedLabel = formatClock(jobElapsedSec(job, nowMs))
+  const eta = jobEtaSec(job)
+  const etaLabel = eta != null ? `~${formatClock(eta)} left` : ''
+  const stepFromJob =
+    job.step != null && job.steps_total != null ? `step ${job.step}/${job.steps_total}` : ''
+  const stepMatch =
+    (job.message || '').match(/step\s+(\d+)\s*\/\s*(\d+)/i) ||
+    (job.message || '').match(/step\s+(\d+)\s+of\s+(\d+)/i)
+  const stepLabel = stepFromJob || (stepMatch ? `step ${stepMatch[1]}/${stepMatch[2]}` : '')
+  const timerLabel =
+    job.status === 'queued'
+      ? `waiting ${elapsedLabel}`
+      : [elapsedLabel, etaLabel].filter(Boolean).join(' · ')
   const modeLabel =
     job.mode === 't2v' || job.mode === 'i2v' || job.mode === 'ref2v'
       ? 'video'
@@ -79,7 +136,7 @@ function describeJobActivity(job: EngineJob): {
     detail: string,
     tone: 'idle' | 'wait' | 'load' | 'run' | 'done' | 'fail' | 'stop',
     stageIndex: number,
-  ) => ({ phase, detail, tone, stageIndex, stages })
+  ) => ({ phase, detail, tone, stageIndex, stages, elapsedLabel, etaLabel, stepLabel, timerLabel })
 
   if (job.status === 'queued') {
     return pack('Waiting in queue', `Next up · ${job.model_label}`, 'wait', 0)
@@ -164,12 +221,12 @@ function GenerationStageBar({
   showTipsLink?: boolean
   onOpenTips?: () => void
 }) {
-  const act = describeJobActivity(job)
+  const live = job.status === 'running' || job.status === 'queued'
+  const nowMs = useNowMs(live)
+  const act = describeJobActivity(job, nowMs)
   const pct = Math.round((job.progress || 0) * 100)
   const slowLoad =
-    (job.status === 'running' || job.status === 'queued') &&
-    act.stageIndex <= 2 &&
-    (job.progress || 0) < 0.25
+    live && act.stageIndex <= 2 && (job.progress || 0) < 0.25
   const slowGen =
     job.status === 'running' &&
     act.stageIndex === 3 &&
@@ -177,6 +234,24 @@ function GenerationStageBar({
 
   return (
     <div className="gen-stage-bar">
+      <div className="gen-timer-row" aria-live="polite">
+        <div className="gen-timer-clock" title="Elapsed">
+          <span className="gen-timer-label">Elapsed</span>
+          <strong>{act.elapsedLabel || '0:00'}</strong>
+        </div>
+        <div className="gen-timer-clock" title="Estimated time remaining">
+          <span className="gen-timer-label">ETA</span>
+          <strong>{act.etaLabel ? act.etaLabel.replace(' left', '') : '—'}</strong>
+        </div>
+        <div className="gen-timer-clock" title="Denoise step">
+          <span className="gen-timer-label">Step</span>
+          <strong>{act.stepLabel ? act.stepLabel.replace(/^step\s+/i, '') : '—'}</strong>
+        </div>
+        <div className="gen-timer-clock" title="Progress">
+          <span className="gen-timer-label">Done</span>
+          <strong>{pct}%</strong>
+        </div>
+      </div>
       <div className="gen-stage-track" role="list" aria-label="Generation stages">
         {act.stages.map((label, i) => {
           const state = i < act.stageIndex ? 'done' : i === act.stageIndex ? 'active' : 'todo'
@@ -190,9 +265,7 @@ function GenerationStageBar({
       </div>
       <div className="gen-stage-meta">
         <strong className={`job-phase tone-${act.tone}`}>{act.phase}</strong>
-        <span className="muted tiny">
-          {pct}% · {act.detail}
-        </span>
+        <span className="muted tiny gen-stage-detail">{act.detail}</span>
       </div>
       <div className="progress">
         <div style={{ width: `${pct}%` }} />
@@ -201,7 +274,7 @@ function GenerationStageBar({
         <div className="gen-speed-tips">
           <p className="muted tiny">
             {slowGen
-              ? 'Still working — ROCm often sits near 20% until the first denoise step reports. Elapsed time above means it is not frozen; 98% VRAM is normal.'
+              ? 'Still working — the Elapsed clock ticking means it is not frozen. First denoise step on AMD can take a while; 98% VRAM is normal.'
               : 'First AMD load can take several minutes while weights move into VRAM. Want it faster next time?'}
           </p>
           <button type="button" className="btn acid tiny" onClick={onOpenTips}>
@@ -1187,6 +1260,8 @@ function GenerationDock({
   const [stopping, setStopping] = useState(false)
   const prevActive = useRef(0)
   const userMinimized = useRef(minimized)
+  const hasLive = jobs.some((j) => j.status === 'queued' || j.status === 'running')
+  const nowMs = useNowMs(hasLive)
 
   const setMinimizedPref = (next: boolean) => {
     userMinimized.current = next
@@ -1233,7 +1308,7 @@ function GenerationDock({
       }
     }
     void tick()
-    const t = window.setInterval(() => void tick(), 1500)
+    const t = window.setInterval(() => void tick(), 1000)
     return () => {
       cancelled = true
       window.clearInterval(t)
@@ -1246,7 +1321,7 @@ function GenerationDock({
     (j) => j.workflow && (j.status === 'cancelled' || j.status === 'failed'),
   )
   const topJob = active[0] || recent[0]
-  const topAct = topJob ? describeJobActivity(topJob) : null
+  const topAct = topJob ? describeJobActivity(topJob, nowMs) : null
   const topProgress = active.length
     ? Math.round(Math.max(...active.map((j) => j.progress || 0)) * 100)
     : recent[0]
@@ -1266,7 +1341,9 @@ function GenerationDock({
           <span className="gen-dock-mini-dot" data-active={active.length > 0 ? '1' : '0'} />
           <span className="gen-dock-mini-label">
             {active.length > 0
-              ? `${topAct?.phase || 'Generating'} · ${topProgress}%`
+              ? `${topAct?.phase || 'Generating'} · ${topProgress}%${
+                  topAct?.timerLabel ? ` · ${topAct.timerLabel}` : ''
+                }`
               : topAct
                 ? topAct.phase
                 : 'Engine'}
@@ -1320,7 +1397,7 @@ function GenerationDock({
           </strong>
           <span className="muted tiny">
             {topAct && active.length > 0
-              ? topAct.detail
+              ? `${topAct.timerLabel ? `${topAct.timerLabel} · ` : ''}${topAct.detail}`
               : health?.will_preview
                 ? 'Preview mode (placeholders until ROCm PyTorch)'
                 : health?.device_name || 'built-in'}
@@ -1347,7 +1424,7 @@ function GenerationDock({
         ) : (
           <div className="gen-dock-list">
             {recent.map((job) => {
-              const act = describeJobActivity(job)
+              const act = describeJobActivity(job, nowMs)
               return (
               <div className="gen-dock-row" key={job.id}>
                 <div className="gen-dock-meta">
@@ -1355,6 +1432,12 @@ function GenerationDock({
                     {act.phase}
                     {job.preview ? ' · preview' : ''}
                   </span>
+                  {act.timerLabel ? (
+                    <div className="gen-dock-timer" title="Elapsed / ETA">
+                      {act.timerLabel}
+                      {act.stepLabel ? ` · ${act.stepLabel}` : ''}
+                    </div>
+                  ) : null}
                   <div className="gen-dock-meta-actions">
                     <span className="muted tiny">{Math.round((job.progress || 0) * 100)}%</span>
                     <button
@@ -3066,7 +3149,7 @@ function GenerateTab({
           setEngine(e)
         })
         .catch(() => undefined)
-    }, 2000)
+    }, 1000)
     return () => window.clearInterval(t)
   }, [])
 
