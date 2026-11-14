@@ -14,7 +14,7 @@ module.exports = {
       },
     },
     // Spawn API daemon; continue as soon as python is launched.
-    // Real readiness is /api/ready via wait-api (avoids Ollama-slow /api/health).
+    // Real readiness is TCP :8787 via wait-api (avoids Ollama-slow /api/health).
     {
       method: "shell.run",
       params: {
@@ -36,18 +36,16 @@ module.exports = {
     {
       method: "shell.run",
       params: {
-        path: "frontend",
-        // Extra allow for Tailscale MagicDNS if Vite ignores allowedHosts: true
-        env: {
-          __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: ".ts.net",
-        },
-        message: [
-          // 0.0.0.0 + allowedHosts in vite.config.ts = phone / Tailscale access
-          "npm run dev -- --host 0.0.0.0 --port 5173 --strictPort",
-        ],
+        message: ["node scripts/run-frontend.js"],
         on: [
           {
-            event: "/(Local|Network):\\s+http:\\/\\/(127\\.0\\.0\\.1|0\\.0\\.0\\.0|localhost):5173\\//i",
+            // Match any Vite ready line that mentions port 5173 (Local/Network/IP/Tailscale)
+            event: "/:5173\\/?/i",
+            done: true,
+          },
+          {
+            // Vite classic banner
+            event: "/VITE\\s+v?\\d/i",
             done: true,
           },
         ],
@@ -57,6 +55,13 @@ module.exports = {
       method: "local.set",
       params: {
         url: "http://127.0.0.1:5173/",
+      },
+    },
+    {
+      method: "notify",
+      params: {
+        html:
+          "StudioNels is running. Open <b>Web UI</b>, or on your phone: <code>http://&lt;your-tailscale-name&gt;:5173</code>",
       },
     },
   ],

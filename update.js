@@ -30,7 +30,8 @@ module.exports = {
     {
       method: "notify",
       params: {
-        html: "StudioNels updated to latest main. Click <b>Stop</b>, then <b>Start</b>. Waiter now uses TCP :8787 (no Ollama health hang).",
+        html:
+          "StudioNels updated. If it is not running, click <b>Start</b> (or <b>Stop</b> then <b>Start</b>). Then open <b>Web UI</b>.",
       },
     },
   ],
