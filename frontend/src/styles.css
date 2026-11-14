@@ -1586,6 +1586,55 @@ a {
   transition: width 0.3s ease;
 }
 
+.download-progress {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(57, 255, 199, 0.28);
+  background: linear-gradient(160deg, rgba(12, 28, 36, 0.92), rgba(8, 18, 24, 0.88));
+}
+
+.download-progress.compact {
+  margin-top: 8px;
+  padding: 10px 12px;
+}
+
+.download-progress.tone-fail {
+  border-color: rgba(255, 120, 100, 0.4);
+}
+
+.download-progress.tone-stop {
+  border-color: rgba(255, 200, 90, 0.35);
+}
+
+.download-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.download-progress-head strong {
+  font-size: 0.95rem;
+}
+
+.download-progress-pct {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--neon);
+  font-size: 1.05rem;
+}
+
+.download-progress-bar {
+  height: 12px;
+}
+
+.download-progress-meta {
+  margin-top: 8px;
+  line-height: 1.35;
+}
+
 .lora-box {
   border: 1px dashed rgba(184, 255, 61, 0.35);
   border-radius: 14px;

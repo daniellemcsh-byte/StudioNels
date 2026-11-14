@@ -387,6 +387,59 @@ function describeDownloadActivity(m: EngineModel): {
   }
 }
 
+function ModelDownloadProgress({
+  model,
+  compact = false,
+  onCancel,
+  onRetry,
+}: {
+  model: EngineModel
+  compact?: boolean
+  onCancel?: () => void
+  onRetry?: () => void
+}) {
+  const st = model.download_status || ''
+  const pct = Math.max(0, Math.min(100, Math.round((model.download_progress || 0) * 100)))
+  const act = describeDownloadActivity(model)
+  const live = st === 'downloading' || st === 'stalled'
+  if (!live && st !== 'failed' && st !== 'cancelled') return null
+
+  return (
+    <div
+      className={`download-progress ${compact ? 'compact' : ''} tone-${act.tone}`}
+      role="status"
+      aria-live="polite"
+      aria-label={`${act.phase} ${pct}%`}
+    >
+      <div className="download-progress-head">
+        <strong>{act.phase}</strong>
+        <span className="download-progress-pct">{pct}%</span>
+      </div>
+      <div className="progress download-progress-bar" aria-hidden>
+        <div style={{ width: `${pct}%` }} />
+      </div>
+      <div className="download-progress-meta muted tiny">
+        {model.label}
+        {model.download_message ? ` · ${model.download_message}` : act.detail ? ` · ${act.detail}` : ''}
+      </div>
+      {(onCancel || onRetry) && (
+        <div className="inline-actions" style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
+          {live && onCancel ? (
+            <button type="button" className="btn ghost tiny" onClick={onCancel}>
+              Cancel download
+            </button>
+          ) : null}
+          {(st === 'failed' || st === 'stalled' || st === 'cancelled') && onRetry ? (
+            <button type="button" className="btn acid tiny" onClick={onRetry}>
+              Retry download
+            </button>
+          ) : null}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const NAV_GROUPS: { id: string; label: string; items: { id: TabId; label: string }[] }[] = [
   {
     id: 'cut',
@@ -1277,6 +1330,7 @@ function GenerationDock({
   onRestoreWorkflow: () => void
 }) {
   const [jobs, setJobs] = useState<EngineJob[]>([])
+  const [downloads, setDownloads] = useState<EngineModel[]>([])
   const [minimized, setMinimized] = useState(() => {
     try {
       return window.localStorage.getItem(GEN_DOCK_MIN_KEY) === '1'
@@ -1287,7 +1341,9 @@ function GenerationDock({
   const [stopping, setStopping] = useState(false)
   const prevActive = useRef(0)
   const userMinimized = useRef(minimized)
-  const hasLive = jobs.some((j) => j.status === 'queued' || j.status === 'running')
+  const hasLive =
+    jobs.some((j) => j.status === 'queued' || j.status === 'running') ||
+    downloads.some((m) => m.download_status === 'downloading' || m.download_status === 'stalled')
   const nowMs = useNowMs(hasLive)
 
   const setMinimizedPref = (next: boolean) => {
@@ -1304,10 +1360,22 @@ function GenerationDock({
     let cancelled = false
     const tick = async () => {
       try {
-        const list = await api.engineJobs()
+        const [list, pack] = await Promise.all([
+          api.engineJobs(),
+          api.engineModels().catch(() => null),
+        ])
         if (cancelled) return
         setJobs(list.slice(0, 12))
+        const dls = (pack?.models || []).filter(
+          (m) =>
+            m.download_status === 'downloading' ||
+            m.download_status === 'stalled' ||
+            m.download_status === 'failed' ||
+            m.download_status === 'cancelled',
+        )
+        setDownloads(dls)
         const active = list.filter((j) => j.status === 'queued' || j.status === 'running').length
+        const dlActive = dls.filter((m) => m.download_status === 'downloading').length
         const doneNow = list.filter(
           (j) => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled',
         ).length
@@ -1325,8 +1393,11 @@ function GenerationDock({
             )
           }
         }
-        // Only auto-expand when a new job starts AND the user did not minimize.
-        if (active > prevActive.current && !userMinimized.current) {
+        // Only auto-expand when a new job/download starts AND the user did not minimize.
+        if (
+          (active > prevActive.current || dlActive > 0) &&
+          !userMinimized.current
+        ) {
           setMinimized(false)
         }
         prevActive.current = active
@@ -1347,14 +1418,17 @@ function GenerationDock({
   const hasRestorable = jobs.some(
     (j) => j.workflow && (j.status === 'cancelled' || j.status === 'failed'),
   )
+  const topDl = downloads.find((m) => m.download_status === 'downloading') || downloads[0]
   const topJob = active[0] || recent[0]
   const topAct = topJob ? describeJobActivity(topJob, nowMs) : null
-  const topProgress = active.length
-    ? Math.round(Math.max(...active.map((j) => j.progress || 0)) * 100)
-    : recent[0]
-      ? Math.round((recent[0].progress || 0) * 100)
-      : 0
-  if (recent.length === 0 && !health?.will_preview) return null
+  const topProgress = topDl
+    ? Math.round((topDl.download_progress || 0) * 100)
+    : active.length
+      ? Math.round(Math.max(...active.map((j) => j.progress || 0)) * 100)
+      : recent[0]
+        ? Math.round((recent[0].progress || 0) * 100)
+        : 0
+  if (recent.length === 0 && downloads.length === 0 && !health?.will_preview) return null
 
   if (minimized) {
     return (
@@ -1365,15 +1439,20 @@ function GenerationDock({
           onClick={() => setMinimizedPref(false)}
           title="Expand generation box"
         >
-          <span className="gen-dock-mini-dot" data-active={active.length > 0 ? '1' : '0'} />
+          <span
+            className="gen-dock-mini-dot"
+            data-active={active.length > 0 || downloads.some((d) => d.download_status === 'downloading') ? '1' : '0'}
+          />
           <span className="gen-dock-mini-label">
-            {active.length > 0
-              ? `${topAct?.phase || 'Generating'} · ${topProgress}%${
-                  topAct?.timerLabel ? ` · ${topAct.timerLabel}` : ''
-                }`
-              : topAct
-                ? topAct.phase
-                : 'Engine'}
+            {topDl && topDl.download_status === 'downloading'
+              ? `Download · ${topProgress}%`
+              : active.length > 0
+                ? `${topAct?.phase || 'Generating'} · ${topProgress}%${
+                    topAct?.timerLabel ? ` · ${topAct.timerLabel}` : ''
+                  }`
+                : topAct
+                  ? topAct.phase
+                  : 'Engine'}
           </span>
           {active.length > 0 ? (
             <span className="gen-dock-mini-bar" aria-hidden>
@@ -1418,16 +1497,20 @@ function GenerationDock({
           title="Minimize generation box"
         >
           <strong>
-            {active.length > 0
-              ? `${topAct?.phase || 'Generating'} · ${active.length} active`
-              : topAct?.phase || (recent.length ? 'Generation' : 'Engine')}
+            {topDl && topDl.download_status === 'downloading'
+              ? `Downloading model · ${topProgress}%`
+              : active.length > 0
+                ? `${topAct?.phase || 'Generating'} · ${active.length} active`
+                : topAct?.phase || (recent.length || downloads.length ? 'Generation' : 'Engine')}
           </strong>
           <span className="muted tiny">
-            {topAct && active.length > 0
-              ? `${topAct.timerLabel ? `${topAct.timerLabel} · ` : ''}${topAct.detail}`
-              : health?.will_preview
-                ? 'Preview mode (placeholders until ROCm PyTorch)'
-                : health?.device_name || 'built-in'}
+            {topDl && topDl.download_status === 'downloading'
+              ? topDl.download_message || topDl.label
+              : topAct && active.length > 0
+                ? `${topAct.timerLabel ? `${topAct.timerLabel} · ` : ''}${topAct.detail}`
+                : health?.will_preview
+                  ? 'Preview mode (placeholders until ROCm PyTorch)'
+                  : health?.device_name || 'built-in'}
           </span>
         </button>
         <button
@@ -1446,9 +1529,47 @@ function GenerationDock({
             yet. Takes show up in Sampling when each job finishes.
           </p>
         ) : null}
-        {recent.length === 0 ? (
+        {downloads.length > 0 ? (
+          <div className="gen-dock-list" style={{ marginBottom: 10 }}>
+            {downloads.map((m) => (
+              <div className="gen-dock-row" key={`dl-${m.id}`}>
+                <ModelDownloadProgress
+                  model={m}
+                  compact
+                  onCancel={async () => {
+                    try {
+                      await api.engineModelCancel(m.id)
+                      notify('Download cancelled')
+                      const pack = await api.engineModels()
+                      setDownloads(
+                        pack.models.filter(
+                          (x) =>
+                            x.download_status === 'downloading' ||
+                            x.download_status === 'stalled' ||
+                            x.download_status === 'failed' ||
+                            x.download_status === 'cancelled',
+                        ),
+                      )
+                    } catch (err) {
+                      notify(String((err as Error).message || err))
+                    }
+                  }}
+                  onRetry={async () => {
+                    try {
+                      await api.engineModelDownload(m.id, true)
+                      notify(`Downloading ${m.label}…`)
+                    } catch (err) {
+                      notify(String((err as Error).message || err))
+                    }
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {recent.length === 0 && downloads.length === 0 ? (
           <p className="muted tiny">No jobs yet. Film night / Generate will show progress here.</p>
-        ) : (
+        ) : recent.length === 0 ? null : (
           <div className="gen-dock-list">
             {recent.map((job) => {
               const act = describeJobActivity(job, nowMs)
@@ -3495,14 +3616,48 @@ function GenerateTab({
                       Clear stuck
                     </button>
                   )}
-                  {st === 'downloading' && (
-                    <span className="muted tiny">
-                      Downloading… {pct}% {cur.download_message || ''}
-                    </span>
-                  )}
                   {st === 'installed' && <span className="muted tiny">Ready on disk — selected for this mode.</span>}
                   {cur.notes && <span className="muted tiny">{cur.notes}</span>}
                 </div>
+              )
+            })()}
+            {(() => {
+              const cur = models.find((m) => m.id === modelId)
+              if (!cur) return null
+              const st = cur.download_status || (cur.installed ? 'installed' : 'not_downloaded')
+              if (
+                st !== 'downloading' &&
+                st !== 'stalled' &&
+                st !== 'failed' &&
+                st !== 'cancelled'
+              ) {
+                return null
+              }
+              return (
+                <ModelDownloadProgress
+                  model={cur}
+                  onCancel={async () => {
+                    try {
+                      await api.engineModelCancel(cur.id)
+                      notify('Download cancelled')
+                      await refresh()
+                    } catch (err) {
+                      notify(String((err as Error).message || err))
+                    }
+                  }}
+                  onRetry={async () => {
+                    setBusy(true)
+                    try {
+                      await api.engineModelDownload(cur.id, true)
+                      notify(`Downloading ${cur.label}…`)
+                      await refresh()
+                    } catch (err) {
+                      notify(String((err as Error).message || err))
+                    } finally {
+                      setBusy(false)
+                    }
+                  }}
+                />
               )
             })()}
           </div>
@@ -4165,21 +4320,9 @@ function GenerateTab({
               )
               .map((m) => {
                 const act = describeDownloadActivity(m)
-                const pct = Math.round((m.download_progress || 0) * 100)
                 return (
                   <div className={`job-item activity-${act.tone}`} key={`dl-${m.id}`}>
-                    <header>
-                      <strong>{act.phase}</strong>
-                      <div className="job-item-actions">
-                        <span className={`badge ${m.download_status}`}>{m.download_status}</span>
-                        <span className="muted tiny">{pct}%</span>
-                      </div>
-                    </header>
-                    <div className={`job-phase tone-${act.tone}`}>{m.label}</div>
-                    <div className="progress">
-                      <div style={{ width: `${pct}%` }} />
-                    </div>
-                    <div className="muted tiny">{act.detail}</div>
+                    <ModelDownloadProgress model={m} compact />
                   </div>
                 )
               })}
@@ -6464,13 +6607,33 @@ function ModelsTab({
                 {m.local_path ? ' · on disk' : ''}
                 {m.notes ? ` — ${m.notes}` : ''}
               </div>
-              {(st === 'downloading' || st === 'stalled') && (
-                <div className="progress" style={{ marginTop: 8 }}>
-                  <div style={{ width: `${pct}%` }} />
-                </div>
+              {(st === 'downloading' ||
+                st === 'stalled' ||
+                st === 'failed' ||
+                st === 'cancelled') && (
+                <ModelDownloadProgress
+                  model={m}
+                  compact
+                  onCancel={
+                    st === 'downloading' || st === 'stalled'
+                      ? () => void act(m.id, () => api.engineModelCancel(m.id), 'Download cancelled')
+                      : undefined
+                  }
+                  onRetry={
+                    st === 'failed' || st === 'stalled' || st === 'cancelled'
+                      ? () =>
+                          void act(
+                            m.id,
+                            () => api.engineModelDownload(m.id, true),
+                            `Downloading ${m.label}…`,
+                          )
+                      : undefined
+                  }
+                />
               )}
-              {m.download_message && <div className="muted tiny">{m.download_message}</div>}
-              {m.download_error && <div className="fit-warn tiny">{m.download_error}</div>}
+              {m.download_error && st === 'installed' && (
+                <div className="fit-warn tiny">{m.download_error}</div>
+              )}
               <div className="inline-actions" style={{ marginTop: 10, flexWrap: 'wrap', gap: 8 }}>
                 <button
                   className="btn acid tiny"

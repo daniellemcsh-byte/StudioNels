@@ -241,26 +241,31 @@ def download_model(model_id: str, *, force: bool = False) -> dict[str, Any]:
                     pass
                 return total
 
-            # Rough expected size from catalog VRAM hint (GB weights ≈ min_vram * 0.6) — floor 2GB
-            expect = max(2.0, float(model.get("min_vram_gb") or 4) * 0.75) * (1024**3)
+            # Rough expected pack size from catalog (weights often ≈ min_vram × 0.55–0.9)
+            expect = max(1.5, float(model.get("min_vram_gb") or 4) * 0.7) * (1024**3)
 
             def heartbeat() -> None:
-                while not stop_beat.wait(2.0):
+                while not stop_beat.wait(1.0):
                     if _is_cancelled(model_id):
                         return
                     cur = _DOWNLOADS.get(model_id) or {}
                     if cur.get("status") != "downloading":
                         return
                     have = _dir_bytes(dest)
-                    by_size = 0.08 + 0.82 * min(1.0, have / expect)
+                    by_size = 0.08 + 0.84 * min(1.0, have / expect)
                     elapsed = int(time.time() - started)
-                    # Never go backwards; never claim 100% until snapshot finishes
-                    tick = min(0.92, max(float(cur.get("progress") or 0.05), by_size))
-                    mb = have / (1024 * 1024)
+                    # Soft crawl so the bar never looks frozen while HF is quiet
+                    crawl = 0.08 + min(0.35, elapsed / 600.0)
+                    tick = min(0.95, max(float(cur.get("progress") or 0.05), by_size, crawl))
+                    if have >= 1024**3:
+                        size_lbl = f"{have / (1024**3):.2f} GB"
+                    else:
+                        size_lbl = f"{have / (1024 * 1024):.0f} MB"
+                    pct = int(tick * 100)
                     _set_download(
                         model_id,
                         progress=tick,
-                        message=f"Downloading… {mb:.0f} MB on disk · {elapsed}s",
+                        message=f"{pct}% · {size_lbl} on disk · {elapsed}s",
                     )
 
             beat = threading.Thread(target=heartbeat, name=f"dl-beat-{model_id}", daemon=True)
