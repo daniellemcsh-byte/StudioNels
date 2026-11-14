@@ -13,9 +13,8 @@ module.exports = {
         message: ["node scripts/check-backend.js"],
       },
     },
-    // Start API as a daemon. Do NOT wait on uvicorn log text here —
-    // Pinokio can race past that on Windows before the port is bound.
-    // Proceed as soon as run-api.js has spawned python, then poll /api/health.
+    // Spawn API daemon; continue as soon as python is launched.
+    // Real readiness is /api/ready via wait-api (avoids Ollama-slow /api/health).
     {
       method: "shell.run",
       params: {
@@ -49,7 +48,6 @@ module.exports = {
         ],
       },
     },
-    // Sets kernel.memory.local[start.js].url — pinokio.js uses this for in-app Web UI
     {
       method: "local.set",
       params: {

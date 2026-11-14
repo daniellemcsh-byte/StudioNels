@@ -106,6 +106,12 @@ def _startup_engine_worker() -> None:
         pass
 
 
+@app.get("/api/ready")
+async def ready():
+    """Lightweight readiness for Pinokio wait-api — no torch/Ollama probes."""
+    return {"ok": True, "ready": True}
+
+
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     settings = load_settings()
