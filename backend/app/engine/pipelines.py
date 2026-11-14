@@ -106,11 +106,14 @@ def _call_pipe_with_progress(
                 _report(i)
                 continue
             # Soft crawl before first callback fires (ROCm can sit quiet a while)
-            soft = 0.22 + min(0.5, elapsed / 480.0)
+            soft = 0.22 + min(0.45, elapsed / 180.0)
+            hint = ""
+            if elapsed >= 90:
+                hint = " · still no step — check Memory=GPU VRAM; Diffusers ≠ Wan2GP speed"
             _progress(
                 cb,
-                f"{label} · step 0/{total} · starting denoise · {elapsed}s · high VRAM is normal",
-                min(0.72, soft),
+                f"{label} · step 0/{total} · starting denoise · {elapsed}s{hint}",
+                min(0.65, soft),
             )
 
     if cb:
@@ -525,6 +528,31 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         generator = torch.Generator(device=device if device != "cpu" else "cpu").manual_seed(int(seed))
 
     kind = model["kind"]
+    # Big AMD cards often keep the Low-VRAM preset by mistake — sequential offload
+    # can sit at 20% for tens of minutes while Wan2GP finishes in ~1 min.
+    vram = device_info.get("vram_gb")
+    placement = str(mem.get("placement") or "")
+    # Large cards: Low-VRAM sequential offload can look "stuck at 20%" for 40+ min
+    # while Wan2GP finishes in ~1 min. Prefer resident GPU unless already on GPU/CPU.
+    if (
+        isinstance(vram, (int, float))
+        and float(vram) >= 20
+        and placement in {"sequential_cpu_offload", "model_cpu_offload"}
+    ):
+        mem = dict(mem)
+        mem["placement"] = "gpu"
+        mem["placement_label"] = "GPU VRAM (auto — large card)"
+        mem["cpu_offload"] = False
+        mem["attention_slicing"] = False
+        mem["vae_slicing"] = False
+        mem["vae_tiling"] = False
+        mem["text_encoder_on_cpu"] = False
+        cpu_offload = False
+        _progress(
+            cb,
+            f"Auto memory → GPU VRAM ({vram} GB detected; offload was stalling Wan/LTX)",
+            0.03,
+        )
     _progress(
         cb,
         f"Memory: {mem.get('placement_label') or mem.get('placement')} · {dtype_name}",
@@ -651,19 +679,30 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     tried_errors: list[str] = []
     result = None
     attempts = []
-    # LTX-2 / modern video pipes often want frame_rate + num_frames + size together
-    base_video = {
+    # Wan first (no frame_rate) — LTX may accept frame_rate but Wan can hang/mis-route on it
+    wan_like = "wan" in pipe_name or "wan" in str(model.get("id") or "").lower()
+    sized = {
         **kwargs,
         "num_frames": frames_n,
         "height": height,
         "width": width,
-        "frame_rate": float(fps),
     }
+    ltx_video = {**sized, "frame_rate": float(fps)}
     if mode in ("i2v", "ref2v") and conditioning is not None:
-        attempts.append({**base_video, "image": conditioning})
-        attempts.append({**kwargs, "image": conditioning, "num_frames": frames_n})
+        if wan_like:
+            attempts.append({**sized, "image": conditioning})
+            attempts.append({**kwargs, "image": conditioning, "num_frames": frames_n})
+        else:
+            attempts.append({**ltx_video, "image": conditioning})
+            attempts.append({**sized, "image": conditioning})
+            attempts.append({**kwargs, "image": conditioning, "num_frames": frames_n})
         attempts.append({**kwargs, "image": conditioning})
-    attempts.append(base_video)
+    if wan_like:
+        attempts.append(sized)
+        attempts.append(ltx_video)
+    else:
+        attempts.append(ltx_video)
+        attempts.append(sized)
     attempts.append({**kwargs, "num_frames": frames_n, "height": height, "width": width})
     attempts.append(kwargs)
 
@@ -799,6 +838,18 @@ def _build_pipeline(
             }
         )
     placement = apply_memory_to_pipeline(pipe, device, mem)
+    # Prefer SDPA when available — faster than sliced attention on big AMD cards
+    try:
+        if hasattr(pipe, "set_attention_backend"):
+            pipe.set_attention_backend("sdpa")
+        elif hasattr(pipe, "enable_xformers_memory_efficient_attention"):
+            pass
+    except Exception:
+        pass
+    try:
+        pipe.set_progress_bar_config(disable=True)
+    except Exception:
+        pass
     try:
         pipe._studionels_placement = placement  # type: ignore[attr-defined]
     except Exception:

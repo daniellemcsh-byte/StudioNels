@@ -185,21 +185,33 @@ function describeJobActivity(job: EngineJob, nowMs = Date.now()): {
   if (/preview/.test(msg)) {
     return pack(`Creating preview ${modeLabel}`, job.message || `${pct}%`, 'run', 3)
   }
-  if (/generat|denois|step\s*\d/.test(msg) || (job.progress || 0) >= 0.2) {
+  if (/generat|denois|step\s*\d|waiting on gpu/.test(msg) || (job.progress || 0) >= 0.2) {
     const stepMatch =
       (job.message || '').match(/step\s+(\d+)\s*\/\s*(\d+)/i) ||
       (job.message || '').match(/step\s+(\d+)\s+of\s+(\d+)/i)
     const stepBit = stepMatch ? ` · step ${stepMatch[1]}/${stepMatch[2]}` : ''
-    const phase =
-      modeLabel === 'video'
+    const staleSec = (() => {
+      if (!job.updated_at) return 0
+      const t = Date.parse(job.updated_at)
+      return Number.isFinite(t) ? Math.max(0, Math.floor((nowMs - t) / 1000)) : 0
+    })()
+    const hung =
+      job.status === 'running' &&
+      ((staleSec >= 90 && !(job.step && job.step > 0)) ||
+        (jobElapsedSec(job, nowMs) >= 600 && !(job.step && job.step > 0)))
+    const phase = hung
+      ? 'Stuck — Stop & retry'
+      : modeLabel === 'video'
         ? `Generating video${stepBit}`
         : modeLabel === 'audio'
           ? `Generating audio${stepBit}`
           : modeLabel === 'upsample'
             ? `Upsampling${stepBit}`
             : `Generating image${stepBit}`
-    // Prefer full backend message (includes elapsed / ETA) so 20% doesn't look frozen
-    return pack(phase, job.message || `${pct}%`, 'run', 3)
+    const detail = hung
+      ? `${job.message || `${pct}%`} · Built-in Diffusers is not Wan2GP (~1 min). Stop, set Memory to GPU VRAM / amd-r9700, fewer frames, then retry.`
+      : job.message || `${pct}%`
+    return pack(phase, detail, hung ? 'fail' : 'run', 3)
   }
   if (/start/.test(msg)) {
     return pack('Starting job', `${job.model_label} · ${pct}%`, 'wait', 0)
@@ -230,7 +242,9 @@ function GenerationStageBar({
   const slowGen =
     job.status === 'running' &&
     act.stageIndex === 3 &&
-    /starting denoise|Generating…|step 0\//i.test(job.message || '')
+    /starting denoise|Generating…|step 0\/|Waiting on GPU/i.test(job.message || '')
+  const noStepYet =
+    job.status === 'running' && !(job.step && job.step > 0) && (job.progress || 0) >= 0.18
 
   return (
     <div className="gen-stage-bar">
@@ -252,6 +266,13 @@ function GenerationStageBar({
           <strong>{pct}%</strong>
         </div>
       </div>
+      {noStepYet && jobElapsedSec(job, nowMs) >= 120 ? (
+        <p className="fit-warn tiny gen-stall-hint">
+          Still before step 1 after {act.elapsedLabel}. StudioNels uses Diffusers (not Wan2GP’s
+          ~1‑min path). Hit Stop, set preset/Memory to <strong>Max VRAM / GPU</strong>, try Wan
+          1.3B or LTX Distilled with fewer frames.
+        </p>
+      ) : null}
       <div className="gen-stage-track" role="list" aria-label="Generation stages">
         {act.stages.map((label, i) => {
           const state = i < act.stageIndex ? 'done' : i === act.stageIndex ? 'active' : 'todo'

@@ -184,7 +184,7 @@ export const LEARN_TOPICS: LearnTopic[] = [
       'Loading once is slow; generating after the model is warm is much faster.',
       'Preview mode is instant but fake — install ROCm + Diffusers for real frames.',
     ],
-    tip: 'If progress text shows elapsed seconds climbing past ~5 minutes on first load, check Models for a stalled download, then Stop and retry one Draft job.',
+    tip: 'Stuck near 20% with no Step count? Built-in Diffusers is not Wan2GP (~1 min). Stop, switch Memory/preset to Max VRAM (GPU), use Wan 1.3B or LTX Distilled + fewer frames, then retry. Jobs now auto-fail if the first denoise step never starts.',
   },
   {
     id: 'characters',

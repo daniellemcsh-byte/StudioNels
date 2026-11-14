@@ -124,6 +124,28 @@ def resolve_memory_for_job(payload: dict[str, Any] | None = None) -> dict[str, A
             mem["placement"] = "gpu"
             mem["cpu_offload"] = False
             mem["placement_label"] = PLACEMENT_LABELS["gpu"]
+    # Auto-upgrade Low VRAM offload when the live GPU is large (R9700-class).
+    # Sequential offload is the usual cause of "stuck at 20% for 40 minutes".
+    try:
+        from .device import detect_device
+
+        vram = detect_device().get("vram_gb")
+        if (
+            isinstance(vram, (int, float))
+            and float(vram) >= 20
+            and mem.get("placement") in {"sequential_cpu_offload", "model_cpu_offload"}
+            and not payload.get("memory_placement")
+        ):
+            mem["placement"] = "gpu"
+            mem["placement_label"] = PLACEMENT_LABELS["gpu"]
+            mem["cpu_offload"] = False
+            mem["attention_slicing"] = False
+            mem["vae_slicing"] = False
+            mem["vae_tiling"] = False
+            mem["text_encoder_on_cpu"] = False
+            mem["auto_upgraded_from_offload"] = True
+    except Exception:
+        pass
     mem["preset_id"] = preset.get("id") or preset_id
     return mem
 

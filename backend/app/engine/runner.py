@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 import threading
+import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +36,15 @@ _QUEUE: list[str] = []
 _CV = threading.Condition()
 _CANCEL: dict[str, bool] = {}
 _CURRENT_JOB_ID: str | None = None
+_CURRENT_PROC: subprocess.Popen | None = None
+_PROC_LOCK = threading.Lock()
+
+# If Diffusers/ROCm stops writing progress this long, treat as hung (Wan2GP ≈1min).
+_STALL_SEC = 120
+# Hard cap — Diffusers Wan is slower than Wan2GP, but 40min stuck is never OK.
+_MAX_JOB_SEC = 20 * 60
+# First denoise step should arrive well before this on a healthy GPU path.
+_FIRST_STEP_SEC = 8 * 60
 
 
 def _text_encoder_presets() -> list[dict[str, Any]]:
@@ -333,6 +347,18 @@ def cancel_job(job_id: str) -> dict[str, Any]:
     with _CV:
         if job_id in _QUEUE:
             _QUEUE[:] = [j for j in _QUEUE if j != job_id]
+    # Kill isolated Diffusers subprocess if this is the live job
+    with _PROC_LOCK:
+        global _CURRENT_PROC
+        if _CURRENT_JOB_ID == job_id and _CURRENT_PROC is not None:
+            try:
+                _CURRENT_PROC.terminate()
+            except Exception:
+                pass
+            try:
+                _CURRENT_PROC.kill()
+            except Exception:
+                pass
     status = job.get("status")
     if status in ("queued", "running"):
         job["cancel_requested"] = True
@@ -345,6 +371,172 @@ def cancel_job(job_id: str) -> dict[str, Any]:
         job["progress"] = float(job.get("progress") or 0)
         upsert_job(job)
     return job
+
+
+def _run_diffusers_isolated(
+    job: dict[str, Any],
+    out_path: Path,
+    cb,
+) -> dict[str, Any]:
+    """Run Diffusers in a child process so ROCm hangs can't freeze the API."""
+    global _CURRENT_PROC
+    ensure_dirs()
+    work = MEDIA_DIR / "_workers" / str(job["id"])
+    work.mkdir(parents=True, exist_ok=True)
+    job_file = work / "job.json"
+    progress_file = work / "progress.json"
+    result_file = work / "result.json"
+    for p in (progress_file, result_file):
+        if p.exists():
+            try:
+                p.unlink()
+            except Exception:
+                pass
+    job_file.write_text(json.dumps(job), encoding="utf-8")
+
+    # Launch as module from backend/ so `app.*` imports resolve
+    backend_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    # Avoid torch inductor hanging forever on first ROCm compile in some builds
+    env.setdefault("TORCHINDUCTOR_DISABLE", "1")
+    env.setdefault("TORCH_COMPILE_DISABLE", "1")
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "app.engine.gen_worker",
+        "--job-file",
+        str(job_file),
+        "--progress-file",
+        str(progress_file),
+        "--result-file",
+        str(result_file),
+        "--out-path",
+        str(out_path),
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(backend_root),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    with _PROC_LOCK:
+        _CURRENT_PROC = proc
+
+    started = time.time()
+    last_child_touch = started
+    last_parent_pulse = 0.0
+    last_payload: dict[str, Any] = {}
+    saw_step = False
+    gen_started_at: float | None = None
+
+    try:
+        while True:
+            if _CANCEL.get(job["id"]):
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+                raise JobCancelled("Stopped by user")
+
+            # Mirror child progress into the job store (API stays responsive)
+            if progress_file.exists():
+                try:
+                    payload = json.loads(progress_file.read_text(encoding="utf-8"))
+                    if payload != last_payload:
+                        last_payload = payload
+                        last_child_touch = time.time()
+                        msg = str(payload.get("message") or "")
+                        frac = float(payload.get("progress") or 0)
+                        if "step " in msg.lower() and "step 0/" not in msg.lower():
+                            saw_step = True
+                        if gen_started_at is None and (
+                            frac >= 0.2
+                            or "generating" in msg.lower()
+                            or "denoise" in msg.lower()
+                        ):
+                            gen_started_at = time.time()
+                        cb(msg, frac)
+                except Exception:
+                    pass
+
+            code = proc.poll()
+            if code is not None:
+                break
+
+            now = time.time()
+            elapsed = now - started
+            child_silent = now - last_child_touch
+
+            # Parent-side pulse so UI never sits mute if the child is wedged in HIP
+            if child_silent >= 5 and (now - last_parent_pulse) >= 5:
+                soft = min(0.55, 0.2 + child_silent / 600.0)
+                cb(
+                    f"Waiting on GPU… {int(elapsed)}s elapsed · no new step — "
+                    f"built-in Diffusers ≠ Wan2GP (~1 min). Stop if past ~10 min",
+                    max(float(job.get("progress") or 0.2), soft),
+                )
+                last_parent_pulse = now
+
+            if child_silent >= _STALL_SEC and not saw_step:
+                proc.kill()
+                raise RuntimeError(
+                    "Generation stalled — GPU made no denoise progress for "
+                    f"{_STALL_SEC // 60} minutes. This Diffusers path is not Wan2GP "
+                    "(Wan2GP ~1 min). Switch Memory to GPU VRAM (amd-r9700), "
+                    "use Wan 1.3B or LTX Distilled, fewer frames, then retry."
+                )
+            if (
+                gen_started_at
+                and not saw_step
+                and (now - gen_started_at) >= _FIRST_STEP_SEC
+            ):
+                proc.kill()
+                raise RuntimeError(
+                    "First denoise step never started (8+ min). "
+                    "Likely stuck in ROCm/offload — use preset Max VRAM (amd-r9700), "
+                    "or a lighter model. Wan2GP uses a different engine and will be faster."
+                )
+            if elapsed >= _MAX_JOB_SEC:
+                proc.kill()
+                raise RuntimeError(
+                    f"Job exceeded {_MAX_JOB_SEC // 60} minutes and was stopped. "
+                    "Use fewer frames / Draft quality / GPU-resident memory, or generate in Wan2GP."
+                )
+            time.sleep(0.75)
+
+        stderr = ""
+        try:
+            err_bytes = proc.stderr.read() if proc.stderr else b""
+            stderr = (err_bytes or b"")[-2000:].decode("utf-8", errors="replace")
+        except Exception:
+            stderr = ""
+
+        if result_file.exists():
+            data = json.loads(result_file.read_text(encoding="utf-8"))
+            if data.get("ok"):
+                return dict(data.get("result") or {})
+            err = data.get("error") or "Worker failed"
+            tb = data.get("traceback") or ""
+            raise RuntimeError(f"{err}\n{tb}\n{stderr}".strip())
+
+        if code not in (0, None):
+            raise RuntimeError(
+                f"Diffusers worker exited {code}. {stderr or 'No stderr — GPU may have hung.'}"
+            )
+        raise RuntimeError("Diffusers worker finished with no result file.")
+    finally:
+        with _PROC_LOCK:
+            if _CURRENT_PROC is proc:
+                _CURRENT_PROC = None
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:
+            pass
 
 
 def cancel_all_jobs() -> dict[str, Any]:
@@ -477,8 +669,9 @@ def _run_one(job: dict[str, Any]) -> None:
 
     try:
         if use_real:
-            result = run_diffusers_job(job, out_path, cb)
-            job["preview"] = False
+            # Isolated process: API/polling keep working; Stop can kill a hung GPU call.
+            result = _run_diffusers_isolated(job, out_path, cb)
+            job["preview"] = bool(result.get("preview"))
         else:
             result = run_preview_job(job, out_path, cb)
             job["preview"] = True
