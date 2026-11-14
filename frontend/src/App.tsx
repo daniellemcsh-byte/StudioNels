@@ -2204,6 +2204,14 @@ function GenerateTab({
   const [height, setHeight] = useState(project.height || 432)
   const [quality, setQuality] = useState('balanced')
   const [durationSec, setDurationSec] = useState(3)
+  const [fps, setFps] = useState(24)
+  const [frames, setFrames] = useState(0) // 0 = auto from duration × fps
+  const [renderSeed, setRenderSeed] = useState<number>(() => Math.floor(Math.random() * 1_000_000_000))
+  const [seedLocked, setSeedLocked] = useState(false)
+  const [steps, setSteps] = useState(0) // 0 = model/quality default
+  const [guidance, setGuidance] = useState(-1) // -1 = model default
+  const [strength, setStrength] = useState(0.85)
+  const [showAdvanced, setShowAdvanced] = useState(true)
   const [loraPath, setLoraPath] = useState('')
   const [loraScale, setLoraScale] = useState(0.8)
   const [loras, setLoras] = useState<LoraFile[]>([])
@@ -2213,6 +2221,9 @@ function GenerateTab({
   const [estimating, setEstimating] = useState(false)
   const [continuePrev, setContinuePrev] = useState(project.continue_from_previous !== false)
   const [continueInfo, setContinueInfo] = useState<string | null>(null)
+
+  const effectiveFrames =
+    frames > 0 ? frames : Math.max(8, Math.round(Math.max(0.5, durationSec) * Math.max(1, fps)))
 
   useEffect(() => {
     if (!seed) return
@@ -2264,6 +2275,9 @@ function GenerateTab({
     height,
     quality,
     duration_sec: durationSec,
+    fps,
+    frames: frames > 0 ? frames : effectiveFrames,
+    steps: steps > 0 ? steps : undefined,
     cpu_offload: true,
     preset_id: project.preset_id,
   })
@@ -2287,7 +2301,20 @@ function GenerateTab({
     return () => {
       cancelled = true
     }
-  }, [mode, modelId, width, height, quality, durationSec, project.preset_id, continuePrev])
+  }, [
+    mode,
+    modelId,
+    width,
+    height,
+    quality,
+    durationSec,
+    fps,
+    frames,
+    steps,
+    effectiveFrames,
+    project.preset_id,
+    continuePrev,
+  ])
 
   useEffect(() => {
     if (!continuePrev || !shotId) {
@@ -2356,6 +2383,13 @@ function GenerateTab({
         height,
         quality,
         duration_sec: durationSec,
+        fps,
+        frames: frames > 0 ? frames : effectiveFrames,
+        seed: renderSeed,
+        steps: steps > 0 ? steps : undefined,
+        guidance: guidance >= 0 ? guidance : undefined,
+        strength:
+          mode === 'i2v' || mode === 'ref2v' || useContinue ? strength : undefined,
         lora_path: loraPath || undefined,
         lora_scale: loraPath ? loraScale : undefined,
         image_format: project.image_format,
@@ -2368,9 +2402,12 @@ function GenerateTab({
       const eta = estimate?.eta_label ? ` · ETA ${estimate.eta_label}` : ''
       notify(
         useContinue
-          ? `Queued continuation i2v · ${job.model_label}${eta}`
-          : `Queued ${job.mode.toUpperCase()} · ${job.model_label}${eta}`,
+          ? `Queued continuation i2v · ${job.model_label} · seed ${renderSeed}${eta}`
+          : `Queued ${job.mode.toUpperCase()} · ${job.model_label} · seed ${renderSeed}${eta}`,
       )
+      if (!seedLocked) {
+        setRenderSeed(Math.floor(Math.random() * 1_000_000_000))
+      }
       await refresh()
       if (shotId) {
         const p = await api.getProject(project.id)
@@ -2551,12 +2588,129 @@ function GenerateTab({
               <label>Clip length (sec)</label>
               <input
                 type="number"
-                min={1}
+                min={0.5}
                 step={0.5}
                 value={durationSec}
                 onChange={(e) => setDurationSec(Number(e.target.value))}
               />
             </div>
+          </div>
+
+          <div className="panel" style={{ marginTop: 14, padding: 12 }}>
+            <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+              <strong>Video / render edits</strong>
+              <button
+                className="btn ghost tiny"
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+              >
+                {showAdvanced ? 'Hide' : 'Show'}
+              </button>
+            </div>
+            {showAdvanced && (
+              <>
+                <div className="controls-grid">
+                  <div className="field">
+                    <label>FPS</label>
+                    <select value={fps} onChange={(e) => setFps(Number(e.target.value))}>
+                      {[8, 12, 16, 24, 25, 30].map((n) => (
+                        <option key={n} value={n}>
+                          {n} fps
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Frames {frames <= 0 ? `(auto ${effectiveFrames})` : ''}</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={frames}
+                      onChange={(e) => setFrames(Math.max(0, Number(e.target.value) || 0))}
+                      title="0 = duration × fps"
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Seed</label>
+                    <div className="inline-actions" style={{ gap: 6 }}>
+                      <input
+                        type="number"
+                        min={0}
+                        value={renderSeed}
+                        onChange={(e) => {
+                          setRenderSeed(Math.max(0, Number(e.target.value) || 0))
+                          setSeedLocked(true)
+                        }}
+                        style={{ flex: 1, minWidth: 0 }}
+                      />
+                      <button
+                        className="btn ghost tiny"
+                        type="button"
+                        title="New random seed"
+                        onClick={() => {
+                          setRenderSeed(Math.floor(Math.random() * 1_000_000_000))
+                          setSeedLocked(true)
+                        }}
+                      >
+                        Random
+                      </button>
+                    </div>
+                    <label className="muted tiny" style={{ display: 'flex', gap: 6, marginTop: 6, alignItems: 'center' }}>
+                      <input
+                        type="checkbox"
+                        checked={seedLocked}
+                        onChange={(e) => setSeedLocked(e.target.checked)}
+                      />
+                      Lock seed (reuse across runs)
+                    </label>
+                  </div>
+                  <div className="field">
+                    <label>Steps {steps <= 0 ? '(auto)' : ''}</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={80}
+                      step={1}
+                      value={steps}
+                      onChange={(e) => setSteps(Math.max(0, Number(e.target.value) || 0))}
+                      title="0 = model + quality default"
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Guidance {guidance < 0 ? '(auto)' : guidance.toFixed(1)}</label>
+                    <input
+                      type="number"
+                      min={-1}
+                      max={20}
+                      step={0.5}
+                      value={guidance}
+                      onChange={(e) => setGuidance(Number(e.target.value))}
+                      title="-1 = model default"
+                    />
+                  </div>
+                  {(mode === 'i2v' || mode === 'ref2v' || continuePrev) && (
+                    <div className="field">
+                      <label>Denoise strength {strength.toFixed(2)}</label>
+                      <input
+                        type="range"
+                        min={0.2}
+                        max={1}
+                        step={0.05}
+                        value={strength}
+                        onChange={(e) => setStrength(Number(e.target.value))}
+                      />
+                    </div>
+                  )}
+                </div>
+                <p className="muted tiny" style={{ marginTop: 8 }}>
+                  ≈ {effectiveFrames} frames @ {fps} fps · {durationSec}s
+                  {frames > 0 ? ' (manual frame count)' : ' (from length × fps)'}
+                  {' · '}seed {renderSeed}
+                  {seedLocked ? ' locked' : ' (rolls after each run)'}
+                </p>
+              </>
+            )}
           </div>
 
           <div className="lora-box">
@@ -4070,6 +4224,7 @@ function AudioTab({
   const [lyrics, setLyrics] = useState('')
   const [prompt, setPrompt] = useState('rainy neon city underscore with soft synth pulses')
   const [durationSec, setDurationSec] = useState(8)
+  const [seed, setSeed] = useState(() => Math.floor(Math.random() * 1_000_000_000))
   const [shotId, setShotId] = useState('')
   const [busy, setBusy] = useState(false)
   const [jobs, setJobs] = useState<EngineJob[]>([])
@@ -4116,12 +4271,14 @@ function AudioTab({
         model_id: modelId,
         prompt: buildPrompt(),
         duration_sec: durationSec,
+        seed,
         project_id: project.id,
         shot_id: shotId || undefined,
         audio_format: project.audio_format || 'wav',
         quality: 'balanced',
       })
-      notify(`Audio queued · ${kindMeta.label}`)
+      notify(`Audio queued · ${kindMeta.label} · seed ${seed}`)
+      setSeed(Math.floor(Math.random() * 1_000_000_000))
       setJobs((prev) => [job, ...prev])
       if (shotId) {
         const p = await api.getProject(project.id)
@@ -4194,6 +4351,25 @@ function AudioTab({
                 value={durationSec}
                 onChange={(e) => setDurationSec(Number(e.target.value))}
               />
+            </div>
+            <div className="field">
+              <label>Seed</label>
+              <div className="inline-actions" style={{ gap: 6 }}>
+                <input
+                  type="number"
+                  min={0}
+                  value={seed}
+                  onChange={(e) => setSeed(Math.max(0, Number(e.target.value) || 0))}
+                  style={{ flex: 1, minWidth: 0 }}
+                />
+                <button
+                  className="btn ghost tiny"
+                  type="button"
+                  onClick={() => setSeed(Math.floor(Math.random() * 1_000_000_000))}
+                >
+                  Random
+                </button>
+              </div>
             </div>
           </div>
 
