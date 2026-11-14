@@ -215,7 +215,7 @@ MODELS: list[dict[str, Any]] = [
         "default_frames": 49,
         "fps": 16,
         "supports_lora": True,
-        "notes": "Uses Wan2GP engine when linked (t2v_1.3B).",
+        "notes": "Download in Models → Ready, then Generate (StudioNels engine).",
     },
     {
         "id": "wan21-i2v-14b-480p",
@@ -232,7 +232,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 16,
         "supports_lora": True,
         "tier": "mid",
-        "notes": "Wan2GP engine: i2v when linked.",
+        "notes": "Download in Models → Ready, then Generate (StudioNels engine).",
     },
     {
         "id": "wan21-t2v-14b",
@@ -249,7 +249,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 16,
         "supports_lora": True,
         "tier": "big",
-        "notes": "Wan2GP engine: t2v when linked.",
+        "notes": "Download in Models → Ready, then Generate (StudioNels engine).",
     },
     {
         "id": "wan21-i2v-14b-720p",
@@ -266,7 +266,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 16,
         "supports_lora": True,
         "tier": "big",
-        "notes": "Wan2GP engine: i2v_720p when linked.",
+        "notes": "Download in Models → Ready, then Generate (StudioNels engine).",
     },
     {
         "id": "wan21-flf2v-14b-720p",
@@ -283,7 +283,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 16,
         "supports_lora": True,
         "tier": "big",
-        "notes": "Wan2GP engine: flf2v_720p when linked.",
+        "notes": "Download in Models → Ready, then Generate (StudioNels engine).",
     },
     {
         "id": "wan22-t2v-a14b",
@@ -300,7 +300,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 16,
         "supports_lora": True,
         "tier": "big",
-        "notes": "Wan2GP engine: t2v_2_2 when linked.",
+        "notes": "Download in Models → Ready, then Generate (StudioNels engine).",
     },
     {
         "id": "wan22-i2v-a14b",
@@ -317,7 +317,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 16,
         "supports_lora": True,
         "tier": "big",
-        "notes": "Wan2GP engine: i2v_2_2 when linked.",
+        "notes": "Download in Models → Ready, then Generate (StudioNels engine).",
     },
     {
         "id": "wan22-ti2v-5b",
@@ -334,7 +334,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 24,
         "supports_lora": True,
         "tier": "mid",
-        "notes": "Wan2GP engine: ti2v_2_2 when linked.",
+        "notes": "Download in Models → Ready, then Generate (StudioNels engine).",
     },
     {
         "id": "minimax-h3",
@@ -504,7 +504,7 @@ MODELS: list[dict[str, Any]] = [
         "tier": "big",
         "distilled": True,
         "notes": (
-            "Prefers Wan2GP engine (ltx2_22B_distilled) when linked. "
+            "Download in Models → Ready, then Generate. "
             "Diffusers twin fallback: models/diffusers__LTX-2.3-Distilled-Diffusers/."
         ),
     },
@@ -524,7 +524,7 @@ MODELS: list[dict[str, Any]] = [
         "supports_lora": True,
         "tier": "big",
         "distilled": True,
-        "notes": "Wan2GP engine: ltx2_22B_distilled_1_1 when linked.",
+        "notes": "Download in Models → Ready, then Generate (StudioNels engine).",
     },
     {
         "id": "stable-audio-open",
@@ -1010,26 +1010,24 @@ def _all_models() -> list[dict[str, Any]]:
                 known_hf.add(str(m["hf_id"]))
     except Exception:
         pass
-    # Full Wan2GP architecture list (every model the linked install knows)
-    try:
-        from .wan2gp_runtime import scan_engine_models
-
-        for m in scan_engine_models():
-            existing = by_id.get(m["id"])
-            if existing:
-                # Keep richer labels from ckpts packs; always keep wan2gp_model_type
-                for k, v in m.items():
-                    if v is not None and (k not in existing or k in {"wan2gp_model_type", "wan2gp", "format"}):
-                        existing[k] = v
-            else:
-                by_id[m["id"]] = m
-    except Exception:
-        pass
+    # Wan2GP engine-only architectures are no longer merged into the Generate catalog.
+    # StudioNels uses its own Diffusers downloads (hf_id) — Import Wan2GP is optional/legacy.
     return list(by_id.values())
 
 
+def _is_studionels_runnable(m: dict[str, Any]) -> bool:
+    """Models Generate can run without Wan2GP (have Diffusers / local weights)."""
+    if str(m.get("format") or "") == "wan2gp-engine":
+        return False
+    if str(m.get("id") or "").startswith("wgp-"):
+        return False
+    if m.get("wan2gp") and not m.get("hf_id") and not m.get("local_path"):
+        return False
+    return True
+
+
 def list_models_for_mode(mode: str) -> list[dict[str, Any]]:
-    return [m for m in _all_models() if mode in m["modes"]]
+    return [m for m in _all_models() if mode in m["modes"] and _is_studionels_runnable(m)]
 
 
 def get_model(model_id: str) -> dict[str, Any] | None:

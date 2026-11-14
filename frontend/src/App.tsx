@@ -175,9 +175,6 @@ function describeJobActivity(job: EngineJob, nowMs = Date.now()): {
   ) {
     return pack('Loading model weights', job.message || `${pct}%`, 'load', 1)
   }
-  if (/wan2gp engine|starting linked wan2gp/.test(msg)) {
-    return pack('Wan2GP engine', job.message || `${pct}%`, 'run', 2)
-  }
   if (/text encoder/.test(msg)) {
     return pack('Loading text encoder', job.message || `${pct}%`, 'load', 2)
   }
@@ -278,7 +275,7 @@ function GenerationStageBar({
         <p className="fit-warn tiny gen-stall-hint">
           Still before step 1 after {act.elapsedLabel}
           {pct < 20
-            ? ' — Diffusers is still loading (VRAM stays 0). Stop, Update, and retry — linked Wan2GP is used automatically for Wan/LTX when available.'
+            ? ' — still loading your StudioNels weights (VRAM stays 0 until RAM load finishes). Prefer Wan 1.3B / LTX Distilled after Download → Ready.'
             : ' — Stop and retry with Max VRAM + Wan 1.3B / LTX Distilled if this keeps climbing with no Step.'}
         </p>
       ) : null}
@@ -3379,8 +3376,8 @@ function GenerateTab({
     <div>
       <p className="hint">
         {engine?.mmgp?.available
-          ? 'StudioNels native mmgp is on — fast Generate without linking Wan2GP.'
-          : 'For native speed: Pinokio Update (installs mmgp via requirements-engine). Wan2GP import stays optional for extra architectures.'}
+          ? 'StudioNels engine is ready — Download models in Models, then Generate.'
+          : 'Pinokio Update installs the StudioNels engine (mmgp). Then Download a model in Models until Ready.'}
         {health?.gpu
           ? ` GPU: ${health.device_name}.`
           : ' Running preview until ROCm PyTorch + weights are installed.'}
@@ -6246,8 +6243,8 @@ function ModelsTab({
       <div className="panel" style={{ marginTop: 16 }}>
         <h3>Choose a model</h3>
         <p className="hint">
-          Filter by Generate tab (t2v, i2v, ref2v…). Folders already in <code>models/</code> show as Ready.
-          Import Wan2GP once below — video, image, audio, upsample, LoRAs, TEs, VAEs.
+          Filter by Generate tab (t2v, i2v, ref2v…). Pick a model and press Download —
+          StudioNels stores weights under <code>models/</code> and marks them Ready. No Wan2GP needed.
         </p>
         <div className="mode-grid" style={{ marginTop: 10 }}>
           {(
@@ -6287,13 +6284,10 @@ function ModelsTab({
       </div>
 
       <div className="panel" style={{ marginTop: 16 }}>
-        <h3>Generation assets (Wan2GP)</h3>
+        <h3>Advanced · legacy Wan2GP import</h3>
         <p className="muted tiny">
-          Optional: point at a Wan2GP <strong>root</strong> (<code>wgp.py</code>,{' '}
-          <code>ckpts/</code>, <code>loras/</code>) only for extra architectures. Everyday gens
-          use StudioNels’ own mmgp engine. You can also paste just{' '}
-          <code>ckpts</code>. Imports models for every Generate tab — t2v, i2v, ref2v, t2i, t2a, upsample —
-          plus LoRAs, text encoders, VAEs, and upscalers. No need to copy huge weights.
+          Not required. Everyday Generate uses StudioNels Downloads only. Leave this blank unless
+          you deliberately want to scan an old Wan2GP folder for LoRAs / extras.
         </p>
         <div className="field" style={{ marginTop: 10 }}>
           <label>Wan2GP folder path</label>
@@ -6366,8 +6360,8 @@ function ModelsTab({
       <div className="panel" style={{ marginTop: 16 }}>
         <h3>Add Hugging Face Diffusers model</h3>
         <p className="muted tiny">
-          Register any Diffusers repo for any Generate tab. After Wan2GP import, download the LTX twin{' '}
-          <code>rootonchair/LTX-2.3-Distilled-v1.1-Diffusers</code> once under <code>models/</code>.
+          Register any Diffusers repo, then Download it under Models until Ready. Example:{' '}
+          <code>rootonchair/LTX-2.3-Distilled-v1.1-Diffusers</code>.
         </p>
         <div className="controls-grid" style={{ marginTop: 10 }}>
           <div className="field" style={{ gridColumn: '1 / -1' }}>

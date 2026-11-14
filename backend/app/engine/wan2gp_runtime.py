@@ -1,8 +1,7 @@
-"""Drive Wan2GP's real generate path (mmgp + kernels) from StudioNels.
+"""Optional Wan2GP bridge (legacy / opt-in only).
 
-When a Wan2GP install is linked, Generate prefers `wgp.py --process` for every
-model that maps onto a Wan2GP architecture (video, image, audio) — not only Wan/LTX.
-Diffusers stays the fallback for unmapped / pure-local tools (e.g. Lanczos).
+StudioNels Generate uses Diffusers + native mmgp and Models → Download by default.
+This module is only used when STUDIONELS_PREFER_WAN2GP=1 (or job.prefer_wan2gp).
 """
 
 from __future__ import annotations

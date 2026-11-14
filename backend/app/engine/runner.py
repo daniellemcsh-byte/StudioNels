@@ -696,49 +696,41 @@ def _run_one(job: dict[str, Any]) -> None:
     force_preview = bool(job.get("force_preview"))
     from .catalog import get_model
     from .mmgp_accel import mmgp_status
-    from .wan2gp_runtime import wan2gp_available, run_wan2gp_job
 
     model_meta = get_model(str(job.get("model_id") or "")) or {}
-    wan = wan2gp_available()
-    prefer_external = (
-        os.environ.get("STUDIONELS_PREFER_WAN2GP", "").strip().lower() in {"1", "true", "yes"}
-        or bool(job.get("prefer_wan2gp"))
-    )
-    force_diffusers = (
-        os.environ.get("STUDIONELS_PREFER_DIFFUSERS", "").strip().lower() in {"1", "true", "yes"}
-        or bool(job.get("prefer_diffusers"))
-    )
-    # Models that only exist as Wan2GP architectures (no Diffusers twin)
+    # StudioNels owns Generate: Diffusers + native mmgp. Wan2GP is opt-in only
+    # (STUDIONELS_PREFER_WAN2GP=1) — not used for everyday downloads / Generate.
     wan_only = (
         str(model_meta.get("format") or "") == "wan2gp-engine"
         or str(job.get("model_id") or "").startswith("wgp-")
         or (model_meta.get("wan2gp") and not model_meta.get("hf_id"))
     )
-    # When Wan2GP is linked, use it for any catalog model that maps onto a Wan2GP
-    # architecture. Diffusers Wan 14B first-load often sits at ~18% with 0 VRAM on
-    # AMD; the linked engine is the ~1 min path the user already trusts.
-    mapped_wgp = False
-    if wan.get("available") and not force_diffusers:
-        try:
-            from .wan2gp_runtime import map_model_type
-
-            mapped_wgp = bool(map_model_type(job, model_meta))
-        except Exception:
-            mapped_wgp = bool(model_meta.get("wan2gp_model_type"))
-
-    use_wan2gp = not force_preview and bool(wan.get("available")) and (
-        wan_only or prefer_external or mapped_wgp
+    prefer_external = (
+        os.environ.get("STUDIONELS_PREFER_WAN2GP", "").strip().lower() in {"1", "true", "yes"}
+        or bool(job.get("prefer_wan2gp"))
     )
+
     use_diffusers = (
         not force_preview
         and not wan_only
-        and not use_wan2gp
+        and bool(model_meta.get("hf_id") or model_meta.get("local_path") or model_meta.get("pipeline"))
         and device.get("ready_for_inference")
         and device.get("diffusers_available")
     )
+    use_wan2gp = False
+    if prefer_external and not force_preview:
+        try:
+            from .wan2gp_runtime import wan2gp_available, run_wan2gp_job
+
+            wan = wan2gp_available()
+            use_wan2gp = bool(wan.get("available"))
+        except Exception:
+            use_wan2gp = False
     use_real = use_diffusers or use_wan2gp
 
     def _run_external_wan() -> dict[str, Any] | None:
+        from .wan2gp_runtime import run_wan2gp_job
+
         holder: dict[str, Any] = {}
 
         def _cancel() -> bool:
@@ -772,39 +764,18 @@ def _run_one(job: dict[str, Any]) -> None:
                     _CURRENT_PROC = None
 
     try:
-        if use_wan2gp:
-            job["engine"] = "wan2gp"
-            job["message"] = "Starting linked Wan2GP engine (fast AMD path)…"
-            upsert_job(job)
-            cb("Starting linked Wan2GP engine (fast AMD path)…", 0.03)
-            result = _run_external_wan()
-            if result is None:
-                if wan_only:
-                    raise RuntimeError(
-                        "This model needs a linked Wan2GP install (no Diffusers twin). "
-                        "Import Wan2GP in Models, or pick a Diffusers catalog model."
-                    )
-                # Mapped twin failed — fall through to native Diffusers/mmgp
-                cb("Wan2GP unavailable for this job — falling back to StudioNels engine…", 0.04)
-                if not (
-                    device.get("ready_for_inference") and device.get("diffusers_available")
-                ):
-                    raise RuntimeError(
-                        "Wan2GP could not run this model and Diffusers is not ready."
-                    )
-                mm = mmgp_status()
-                job["engine"] = "studionels-mmgp" if mm.get("available") else "diffusers"
-                result = _run_diffusers_isolated(job, out_path, cb)
-            elif result.get("engine") == "wan2gp":
-                job["engine"] = "wan2gp"
-            job["preview"] = bool(result.get("preview"))
-        elif use_diffusers:
-            # Native StudioNels path when Wan2GP is not linked / not mapped
+        if wan_only and not use_wan2gp:
+            raise RuntimeError(
+                "That model is Wan2GP-only. Pick a StudioNels catalog model with a "
+                "Hugging Face id (e.g. Wan 1.3B, Wan I2V, LTX Distilled), Download it "
+                "in Models until Ready, then Generate."
+            )
+        if use_diffusers:
             mm = mmgp_status()
             job["engine"] = "studionels-mmgp" if mm.get("available") else "diffusers"
             cb(
                 (
-                    "StudioNels engine · mmgp acceleration"
+                    "StudioNels engine · downloading/loading your models"
                     if mm.get("available")
                     else "StudioNels Diffusers · install requirements-engine.txt for mmgp speed"
                 ),
@@ -812,13 +783,25 @@ def _run_one(job: dict[str, Any]) -> None:
             )
             result = _run_diffusers_isolated(job, out_path, cb)
             job["preview"] = bool(result.get("preview"))
+        elif use_wan2gp:
+            job["engine"] = "wan2gp"
+            job["message"] = "Starting Wan2GP (opt-in)…"
+            upsert_job(job)
+            cb("Starting Wan2GP (opt-in)…", 0.03)
+            result = _run_external_wan()
+            if result is None:
+                raise RuntimeError(
+                    "Wan2GP opt-in failed. Unset STUDIONELS_PREFER_WAN2GP and use "
+                    "Models → Download with a StudioNels catalog model."
+                )
+            job["preview"] = bool(result.get("preview"))
         else:
             result = run_preview_job(job, out_path, cb)
             job["preview"] = True
             if not device.get("torch_available"):
                 job["message"] = (
                     "Preview only — install ROCm PyTorch + requirements-engine.txt, "
-                    "then download a model."
+                    "then download a model in Models."
                 )
             elif not device.get("diffusers_available"):
                 job["message"] = "Preview only — pip install -r requirements-engine.txt (includes mmgp)."
