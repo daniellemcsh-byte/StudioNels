@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import struct
+import threading
+import time
 import wave
 from pathlib import Path
 from typing import Any, Callable
@@ -11,6 +13,7 @@ import subprocess
 
 from .catalog import get_model, get_text_encoder_preset
 from .device import detect_device
+from .queue_store import models_dir
 
 
 ProgressCb = Callable[[str, float], None]
@@ -19,6 +22,39 @@ ProgressCb = Callable[[str, float], None]
 def _progress(cb: ProgressCb | None, message: str, frac: float) -> None:
     if cb:
         cb(message, max(0.0, min(1.0, frac)))
+
+
+def _heartbeat_while(
+    cb: ProgressCb | None,
+    label: str,
+    start_frac: float,
+    end_frac: float,
+    fn: Callable[[], Any],
+) -> Any:
+    """Keep job progress moving while a long blocking load runs (ROCm first load)."""
+    if not cb:
+        return fn()
+    stop = threading.Event()
+    started = time.time()
+
+    def beat() -> None:
+        frac = start_frac
+        while not stop.wait(2.0):
+            elapsed = int(time.time() - started)
+            frac = min(end_frac, frac + (end_frac - start_frac) / 40.0)
+            _progress(
+                cb,
+                f"{label} ({elapsed}s — first load can take several minutes on AMD)…",
+                frac,
+            )
+
+    t = threading.Thread(target=beat, name="studionels-load-beat", daemon=True)
+    t.start()
+    try:
+        return fn()
+    finally:
+        stop.set()
+        t.join(timeout=0.2)
 
 
 def _load_image(path: str | None):
@@ -79,14 +115,31 @@ def _apply_lora(pipe, job: dict[str, Any], cb: ProgressCb | None) -> None:
     lora = job.get("lora_path")
     if not lora:
         return
-    scale = float(job.get("lora_scale") or 0.8)
-    _progress(cb, f"Loading LoRA ({scale})…", 0.12)
+    scale = float(job.get("lora_scale") if job.get("lora_scale") is not None else 0.8)
+    scale = max(0.0, min(2.0, scale))
+    if scale <= 0.001:
+        _progress(cb, "LoRA strength 0 — skipped", 0.12)
+        return
+    _progress(cb, f"Loading LoRA (strength {scale:.2f})…", 0.12)
     try:
         pipe.load_lora_weights(lora)
-        if hasattr(pipe, "fuse_lora"):
-            pipe.fuse_lora(lora_scale=scale)
-        elif hasattr(pipe, "set_adapters"):
-            pipe.set_adapters(["default"], adapter_weights=[scale])
+        applied = False
+        if hasattr(pipe, "set_adapters"):
+            try:
+                pipe.set_adapters(["default"], adapter_weights=[scale])
+                applied = True
+            except Exception:
+                pass
+        if not applied and hasattr(pipe, "fuse_lora"):
+            try:
+                pipe.fuse_lora(lora_scale=scale)
+                applied = True
+            except TypeError:
+                pipe.fuse_lora()
+                applied = True
+        # Stash for callers that honor cross_attention_kwargs at inference time
+        job["_lora_scale"] = scale
+        _progress(cb, f"LoRA ready · strength {scale:.2f}", 0.15)
     except Exception as exc:  # noqa: BLE001
         _progress(cb, f"LoRA skipped: {exc}", 0.15)
 
@@ -355,7 +408,13 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             return {"media_path": media, "thumb_path": None, "frames": 0, "preview": True}
 
     _progress(cb, "Loading pipeline weights…", 0.05)
-    pipe = _build_pipeline(model, device, dtype, cpu_offload)
+    pipe = _heartbeat_while(
+        cb,
+        "Loading pipeline weights",
+        0.05,
+        0.18,
+        lambda: _build_pipeline(model, device, dtype, cpu_offload),
+    )
     _apply_text_encoder(pipe, job, device, dtype, cb)
     _apply_lora(pipe, job, cb)
     _progress(cb, "Generating…", 0.2)
@@ -363,6 +422,10 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     image_in = _load_image(job.get("image_path"))
     ref_in = _load_image(job.get("reference_path"))
     conditioning = image_in or ref_in
+
+    lora_kw = None
+    if job.get("_lora_scale") is not None:
+        lora_kw = {"scale": float(job["_lora_scale"])}
 
     if kind == "image":
         kwargs: dict[str, Any] = {
@@ -376,6 +439,8 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             kwargs["guidance_scale"] = guidance
         if negative:
             kwargs["negative_prompt"] = negative
+        if lora_kw is not None:
+            kwargs["cross_attention_kwargs"] = lora_kw
         if mode in ("ref2i",) and conditioning is not None:
             try:
                 result = pipe(
@@ -403,6 +468,8 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     }
     if negative:
         kwargs["negative_prompt"] = negative
+    if lora_kw is not None:
+        kwargs["cross_attention_kwargs"] = lora_kw
 
     tried_errors: list[str] = []
     result = None
@@ -441,16 +508,50 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     }
 
 
+def _resolve_model_source(model: dict[str, Any]) -> tuple[str, bool]:
+    """Prefer local StudioNels models/ mirror so loads don't re-hit Hugging Face."""
+    hf_id = str(model.get("hf_id") or "")
+    if not hf_id:
+        return hf_id, False
+    mirror = models_dir() / hf_id.replace("/", "__")
+    if mirror.exists() and any(mirror.iterdir()):
+        # Require a pipeline index when present in mirror
+        if (mirror / "model_index.json").exists() or any(mirror.glob("*.safetensors")) or any(
+            mirror.glob("**/*.safetensors")
+        ):
+            return str(mirror), True
+    # Download status may record an absolute local_path
+    try:
+        from .models_manager import list_models_with_status
+
+        for row in list_models_with_status():
+            if row.get("id") == model.get("id") and row.get("local_path"):
+                p = Path(str(row["local_path"]))
+                if p.exists():
+                    return str(p), True
+    except Exception:
+        pass
+    return hf_id, False
+
+
 def _build_pipeline(model: dict[str, Any], device: str, dtype, cpu_offload: bool):
     from diffusers import DiffusionPipeline
 
-    hf_id = model["hf_id"]
+    source, is_local = _resolve_model_source(model)
+    load_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+    if is_local:
+        load_kwargs["local_files_only"] = True
     try:
-        pipe = DiffusionPipeline.from_pretrained(hf_id, torch_dtype=dtype)
+        pipe = DiffusionPipeline.from_pretrained(source, **load_kwargs)
     except Exception:
         import torch
 
-        pipe = DiffusionPipeline.from_pretrained(hf_id, torch_dtype=torch.float32)
+        # Retry without local-only / with float32 if dtype or partial cache fails
+        retry_kwargs: dict[str, Any] = {"torch_dtype": torch.float32}
+        try:
+            pipe = DiffusionPipeline.from_pretrained(source, **retry_kwargs)
+        except Exception:
+            pipe = DiffusionPipeline.from_pretrained(model["hf_id"], torch_dtype=torch.float32)
 
     if cpu_offload and device.startswith("cuda"):
         try:

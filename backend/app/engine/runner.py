@@ -23,6 +23,7 @@ from .pipelines import mux_audio_onto_video, run_diffusers_job, run_preview_job
 from .queue_store import get_job as store_get
 from .queue_store import list_jobs as store_list
 from .queue_store import loras_dir, models_dir
+from .queue_store import remove_job as store_remove
 from .queue_store import upsert_job
 
 _WORKER_STARTED = False
@@ -308,6 +309,32 @@ def cancel_all_jobs() -> dict[str, Any]:
     ]
     stopped = [cancel_job(j["id"]) for j in active]
     return {"ok": True, "stopped": len(stopped), "jobs": stopped}
+
+
+def dismiss_job(job_id: str) -> dict[str, Any]:
+    """Remove a job from the generation list UI. Cancels first if still active.
+    Does not delete Sampling takes / media files.
+    """
+    job = store_get(job_id)
+    if not job:
+        raise ValueError("Job not found")
+    if job.get("status") in ("queued", "running"):
+        cancel_job(job_id)
+    removed = store_remove(job_id)
+    if not removed:
+        raise ValueError("Job not found")
+    return {"ok": True, "id": job_id, "removed": removed}
+
+
+def dismiss_finished_jobs() -> dict[str, Any]:
+    """Remove done / failed / cancelled jobs from the queue list."""
+    removed_ids: list[str] = []
+    for job in store_list(200):
+        if job.get("status") in ("done", "failed", "cancelled"):
+            jid = str(job.get("id") or "")
+            if jid and store_remove(jid):
+                removed_ids.append(jid)
+    return {"ok": True, "removed": len(removed_ids), "ids": removed_ids}
 
 
 def list_restorable_jobs(limit: int = 20) -> list[dict[str, Any]]:

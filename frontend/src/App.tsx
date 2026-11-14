@@ -909,6 +909,8 @@ export default function App() {
   )
 }
 
+const GEN_DOCK_MIN_KEY = 'studionels_gen_dock_minimized'
+
 function GenerationDock({
   projectId,
   health,
@@ -927,9 +929,26 @@ function GenerationDock({
   onRestoreWorkflow: () => void
 }) {
   const [jobs, setJobs] = useState<EngineJob[]>([])
-  const [open, setOpen] = useState(true)
+  const [minimized, setMinimized] = useState(() => {
+    try {
+      return window.localStorage.getItem(GEN_DOCK_MIN_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
   const [stopping, setStopping] = useState(false)
   const prevActive = useRef(0)
+  const userMinimized = useRef(minimized)
+
+  const setMinimizedPref = (next: boolean) => {
+    userMinimized.current = next
+    setMinimized(next)
+    try {
+      window.localStorage.setItem(GEN_DOCK_MIN_KEY, next ? '1' : '0')
+    } catch {
+      /* ignore */
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -956,8 +975,11 @@ function GenerationDock({
             )
           }
         }
+        // Only auto-expand when a new job starts AND the user did not minimize.
+        if (active > prevActive.current && !userMinimized.current) {
+          setMinimized(false)
+        }
         prevActive.current = active
-        if (active > 0) setOpen(true)
       } catch {
         /* api down */
       }
@@ -975,61 +997,124 @@ function GenerationDock({
   const hasRestorable = jobs.some(
     (j) => j.workflow && (j.status === 'cancelled' || j.status === 'failed'),
   )
+  const topProgress = active.length
+    ? Math.round(Math.max(...active.map((j) => j.progress || 0)) * 100)
+    : recent[0]
+      ? Math.round((recent[0].progress || 0) * 100)
+      : 0
   if (recent.length === 0 && !health?.will_preview) return null
 
-  return (
-    <div className={`gen-dock ${open ? 'open' : 'collapsed'}`}>
-      <button type="button" className="gen-dock-head" onClick={() => setOpen((v) => !v)}>
-        <strong>
-          {active.length > 0
-            ? `Generating · ${active.length} active`
-            : recent.length
-              ? 'Generation'
-              : 'Engine'}
-        </strong>
-        <span className="muted tiny">
-          {health?.will_preview
-            ? 'Preview mode (placeholders until ROCm PyTorch)'
-            : health?.device_name || 'built-in'}
-          {open ? ' · ▾' : ' · ▸'}
-        </span>
-      </button>
-      {open ? (
-        <div className="gen-dock-body">
-          {health?.will_preview ? (
-            <p className="muted tiny">
-              Jobs still run — you get preview clips (color bars + prompt text), not full AI video
-              yet. Takes show up in Sampling when each job finishes.
-            </p>
+  if (minimized) {
+    return (
+      <div className="gen-dock gen-dock-mini" role="status" aria-live="polite">
+        <button
+          type="button"
+          className="gen-dock-mini-btn"
+          onClick={() => setMinimizedPref(false)}
+          title="Expand generation box"
+        >
+          <span className="gen-dock-mini-dot" data-active={active.length > 0 ? '1' : '0'} />
+          <span className="gen-dock-mini-label">
+            {active.length > 0
+              ? `Gen · ${active.length} · ${topProgress}%`
+              : recent.length
+                ? 'Generation'
+                : 'Engine'}
+          </span>
+          {active.length > 0 ? (
+            <span className="gen-dock-mini-bar" aria-hidden>
+              <span style={{ width: `${topProgress}%` }} />
+            </span>
           ) : null}
-          {recent.length === 0 ? (
-            <p className="muted tiny">No jobs yet. Film night / Generate will show progress here.</p>
-          ) : (
-            <div className="gen-dock-list">
-              {recent.map((job) => (
-                <div className="gen-dock-row" key={job.id}>
-                  <div className="gen-dock-meta">
-                    <span>
-                      {job.mode.toUpperCase()} · {job.status}
-                      {job.preview ? ' · preview' : ''}
-                    </span>
+          <span className="gen-dock-mini-expand">Expand</span>
+        </button>
+        {active.length > 0 ? (
+          <button
+            type="button"
+            className="gen-dock-mini-stop"
+            disabled={stopping}
+            title="Stop all jobs"
+            onClick={async () => {
+              setStopping(true)
+              try {
+                const r = await api.engineCancelAll()
+                notify(`Stopped ${r.stopped} job(s) — workflow kept.`)
+                setJobs(await api.engineJobs())
+              } catch (err) {
+                notify(String((err as Error).message || err))
+              } finally {
+                setStopping(false)
+              }
+            }}
+          >
+            Stop
+          </button>
+        ) : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="gen-dock open">
+      <div className="gen-dock-head">
+        <button
+          type="button"
+          className="gen-dock-title"
+          onClick={() => setMinimizedPref(true)}
+          title="Minimize generation box"
+        >
+          <strong>
+            {active.length > 0
+              ? `Generating · ${active.length} active`
+              : recent.length
+                ? 'Generation'
+                : 'Engine'}
+          </strong>
+          <span className="muted tiny">
+            {health?.will_preview
+              ? 'Preview mode (placeholders until ROCm PyTorch)'
+              : health?.device_name || 'built-in'}
+          </span>
+        </button>
+        <button
+          type="button"
+          className="btn ghost tiny gen-dock-min-btn"
+          onClick={() => setMinimizedPref(true)}
+          title="Minimize"
+        >
+          Minimize
+        </button>
+      </div>
+      <div className="gen-dock-body">
+        {health?.will_preview ? (
+          <p className="muted tiny">
+            Jobs still run — you get preview clips (color bars + prompt text), not full AI video
+            yet. Takes show up in Sampling when each job finishes.
+          </p>
+        ) : null}
+        {recent.length === 0 ? (
+          <p className="muted tiny">No jobs yet. Film night / Generate will show progress here.</p>
+        ) : (
+          <div className="gen-dock-list">
+            {recent.map((job) => (
+              <div className="gen-dock-row" key={job.id}>
+                <div className="gen-dock-meta">
+                  <span>
+                    {job.mode.toUpperCase()} · {job.status}
+                    {job.preview ? ' · preview' : ''}
+                  </span>
+                  <div className="gen-dock-meta-actions">
                     <span className="muted tiny">{Math.round((job.progress || 0) * 100)}%</span>
-                  </div>
-                  <div className="progress">
-                    <div style={{ width: `${Math.round((job.progress || 0) * 100)}%` }} />
-                  </div>
-                  <div className="muted tiny truncate">{job.message || job.prompt || job.id}</div>
-                  {job.error ? <div className="fit-warn tiny">{job.error.slice(0, 160)}</div> : null}
-                  {(job.status === 'queued' || job.status === 'running') && (
                     <button
-                      className="btn ghost tiny"
                       type="button"
+                      className="gen-dock-x"
+                      title="Remove from queue"
+                      aria-label="Remove from queue"
                       disabled={stopping}
                       onClick={async () => {
                         setStopping(true)
                         try {
-                          await api.engineCancelJob(job.id)
-                          notify('Stopped — your prompt/settings are saved.')
+                          await api.engineDismissJob(job.id)
                           setJobs(await api.engineJobs())
                         } catch (err) {
                           notify(String((err as Error).message || err))
@@ -1038,49 +1123,75 @@ function GenerationDock({
                         }
                       }}
                     >
-                      Stop
+                      ×
                     </button>
-                  )}
+                  </div>
                 </div>
-              ))}
-            </div>
-          )}
-          <div className="cta-row" style={{ marginTop: 8, flexWrap: 'wrap', gap: 6 }}>
-            {active.length > 0 && (
-              <button
-                className="btn secondary tiny"
-                type="button"
-                disabled={stopping}
-                onClick={async () => {
-                  setStopping(true)
-                  try {
-                    const r = await api.engineCancelAll()
-                    notify(`Stopped ${r.stopped} job(s) — workflow kept.`)
-                    setJobs(await api.engineJobs())
-                  } catch (err) {
-                    notify(String((err as Error).message || err))
-                  } finally {
-                    setStopping(false)
-                  }
-                }}
-              >
-                Stop all
-              </button>
-            )}
-            {hasRestorable && (
-              <button className="btn acid tiny" type="button" onClick={onRestoreWorkflow}>
-                Restore workflow
-              </button>
-            )}
-            <button className="btn ghost tiny" type="button" onClick={onOpenGenerate}>
-              Generate
-            </button>
-            <button className="btn ghost tiny" type="button" onClick={onOpenSampling}>
-              Sampling
-            </button>
+                <div className="progress">
+                  <div style={{ width: `${Math.round((job.progress || 0) * 100)}%` }} />
+                </div>
+                <div className="muted tiny truncate">{job.message || job.prompt || job.id}</div>
+                {job.error ? <div className="fit-warn tiny">{job.error.slice(0, 160)}</div> : null}
+                {(job.status === 'queued' || job.status === 'running') && (
+                  <button
+                    className="btn ghost tiny"
+                    type="button"
+                    disabled={stopping}
+                    onClick={async () => {
+                      setStopping(true)
+                      try {
+                        await api.engineCancelJob(job.id)
+                        notify('Stopped — your prompt/settings are saved.')
+                        setJobs(await api.engineJobs())
+                      } catch (err) {
+                        notify(String((err as Error).message || err))
+                      } finally {
+                        setStopping(false)
+                      }
+                    }}
+                  >
+                    Stop
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
+        )}
+        <div className="cta-row" style={{ marginTop: 8, flexWrap: 'wrap', gap: 6 }}>
+          {active.length > 0 && (
+            <button
+              className="btn secondary tiny"
+              type="button"
+              disabled={stopping}
+              onClick={async () => {
+                setStopping(true)
+                try {
+                  const r = await api.engineCancelAll()
+                  notify(`Stopped ${r.stopped} job(s) — workflow kept.`)
+                  setJobs(await api.engineJobs())
+                } catch (err) {
+                  notify(String((err as Error).message || err))
+                } finally {
+                  setStopping(false)
+                }
+              }}
+            >
+              Stop all
+            </button>
+          )}
+          {hasRestorable && (
+            <button className="btn acid tiny" type="button" onClick={onRestoreWorkflow}>
+              Restore workflow
+            </button>
+          )}
+          <button className="btn ghost tiny" type="button" onClick={onOpenGenerate}>
+            Generate
+          </button>
+          <button className="btn ghost tiny" type="button" onClick={onOpenSampling}>
+            Sampling
+          </button>
         </div>
-      ) : null}
+      </div>
     </div>
   )
 }
@@ -3258,19 +3369,24 @@ function GenerateTab({
                 Folder empty. Add files to <code>loras/</code> and hit Refresh.
               </div>
             )}
-            {loraPath && (
-              <div className="field" style={{ marginTop: 10 }}>
-                <label>LoRA strength {loraScale.toFixed(2)}</label>
-                <input
-                  type="range"
-                  min={0.1}
-                  max={1.2}
-                  step={0.05}
-                  value={loraScale}
-                  onChange={(e) => setLoraScale(Number(e.target.value))}
-                />
+            <div className="field" style={{ marginTop: 10 }}>
+              <label>
+                LoRA strength {loraScale.toFixed(2)}
+                {!loraPath ? ' (pick a LoRA above to apply)' : ''}
+              </label>
+              <input
+                type="range"
+                min={0}
+                max={2}
+                step={0.05}
+                value={loraScale}
+                disabled={!loraPath}
+                onChange={(e) => setLoraScale(Number(e.target.value))}
+              />
+              <div className="muted tiny" style={{ marginTop: 4 }}>
+                0 = off · 0.8 typical · above 1.0 is strong
               </div>
-            )}
+            </div>
           </div>
 
           {modeMeta?.needs_image && (
@@ -3395,9 +3511,29 @@ function GenerateTab({
         </div>
 
         <div className="panel">
-          <h3>Queue</h3>
+          <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+            <h3 style={{ margin: 0 }}>Queue</h3>
+            {jobs.some((j) => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') && (
+              <button
+                className="btn ghost tiny"
+                type="button"
+                onClick={async () => {
+                  try {
+                    const r = await api.engineClearFinishedJobs()
+                    notify(`Removed ${r.removed} finished job(s) from queue`)
+                    setJobs(await api.engineJobs())
+                  } catch (err) {
+                    notify(String((err as Error).message || err))
+                  }
+                }}
+              >
+                Clear finished
+              </button>
+            )}
+          </div>
           <div className="muted tiny" style={{ marginBottom: 10 }}>
-            Models folder: {engine?.models_path || '…'} · backend {engine?.backend}
+            Models folder: {engine?.models_path || '…'} · backend {engine?.backend}. × removes from
+            queue (does not delete Sampling takes).
           </div>
           <div className="job-list">
             {jobs.length === 0 && <div className="empty">No jobs yet.</div>}
@@ -3407,7 +3543,24 @@ function GenerateTab({
                   <strong>
                     {job.mode.toUpperCase()} · {job.model_label}
                   </strong>
-                  <span className={`badge ${job.status}`}>{job.status}</span>
+                  <div className="job-item-actions">
+                    <span className={`badge ${job.status}`}>{job.status}</span>
+                    <button
+                      type="button"
+                      className="btn ghost tiny"
+                      title="Remove from queue"
+                      onClick={async () => {
+                        try {
+                          await api.engineDismissJob(job.id)
+                          setJobs(await api.engineJobs())
+                        } catch (err) {
+                          notify(String((err as Error).message || err))
+                        }
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
                 </header>
                 <div className="muted">{job.prompt || '(no prompt)'}</div>
                 <div className="progress">
@@ -4948,14 +5101,50 @@ function AudioTab({
         </div>
 
         <div className="panel">
-          <h3>Audio queue</h3>
+          <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+            <h3 style={{ margin: 0 }}>Audio queue</h3>
+            {jobs.some((j) => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') && (
+              <button
+                className="btn ghost tiny"
+                type="button"
+                onClick={async () => {
+                  try {
+                    const r = await api.engineClearFinishedJobs()
+                    notify(`Removed ${r.removed} finished job(s)`)
+                    setJobs((await api.engineJobs()).filter((j) => j.mode === 't2a'))
+                  } catch (err) {
+                    notify(String((err as Error).message || err))
+                  }
+                }}
+              >
+                Clear finished
+              </button>
+            )}
+          </div>
           <div className="job-list">
             {jobs.length === 0 && <div className="empty">No audio jobs yet.</div>}
             {jobs.map((job) => (
               <div className="job-item" key={job.id}>
                 <header>
                   <strong>{job.model_label}</strong>
-                  <span className={`badge ${job.status}`}>{job.status}</span>
+                  <div className="job-item-actions">
+                    <span className={`badge ${job.status}`}>{job.status}</span>
+                    <button
+                      type="button"
+                      className="btn ghost tiny"
+                      title="Remove from queue"
+                      onClick={async () => {
+                        try {
+                          await api.engineDismissJob(job.id)
+                          setJobs((await api.engineJobs()).filter((j) => j.mode === 't2a'))
+                        } catch (err) {
+                          notify(String((err as Error).message || err))
+                        }
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
                 </header>
                 <div className="muted">{job.prompt}</div>
                 <div className="progress">

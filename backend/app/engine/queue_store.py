@@ -54,6 +54,22 @@ def upsert_job(job: dict[str, Any]) -> dict[str, Any]:
         return job
 
 
+def remove_job(job_id: str) -> dict[str, Any] | None:
+    """Drop a job from the visible queue history (does not delete media takes)."""
+    with _LOCK:
+        jobs = _load()
+        kept: list[dict[str, Any]] = []
+        removed: dict[str, Any] | None = None
+        for job in jobs:
+            if job.get("id") == job_id:
+                removed = job
+            else:
+                kept.append(job)
+        if removed is not None:
+            _save(kept)
+        return removed
+
+
 def models_dir() -> Path:
     ensure_dirs()
     return MODELS_DIR

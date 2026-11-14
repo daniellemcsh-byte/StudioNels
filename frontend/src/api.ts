@@ -327,6 +327,15 @@ export const api = {
       method: 'POST',
       body: '{}',
     }),
+  engineDismissJob: (id: string) =>
+    req<{ ok: boolean; id: string }>(`/api/engine/jobs/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  engineClearFinishedJobs: () =>
+    req<{ ok: boolean; removed: number }>('/api/engine/jobs/clear-finished', {
+      method: 'POST',
+      body: '{}',
+    }),
   engineWorkflows: () =>
     req<{ jobs: EngineJob[] }>('/api/engine/workflows'),
   engineGenerate: (body: Record<string, unknown>) =>

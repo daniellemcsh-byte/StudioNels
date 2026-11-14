@@ -15,6 +15,8 @@ from .engine.device import detect_device
 from .engine.runner import (
     cancel_all_jobs,
     cancel_job,
+    dismiss_finished_jobs,
+    dismiss_job,
     engine_status_public,
     enqueue_job,
     get_job,
@@ -260,6 +262,21 @@ async def engine_job_cancel(job_id: str):
 @app.post("/api/engine/jobs/cancel-all")
 async def engine_jobs_cancel_all():
     return cancel_all_jobs()
+
+
+@app.delete("/api/engine/jobs/{job_id}")
+async def engine_job_dismiss(job_id: str):
+    """Hide/remove a job from the generation list (cancels if still running)."""
+    try:
+        return dismiss_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/engine/jobs/clear-finished")
+async def engine_jobs_clear_finished():
+    """Remove finished / failed / cancelled jobs from the queue list."""
+    return dismiss_finished_jobs()
 
 
 @app.get("/api/engine/workflows")

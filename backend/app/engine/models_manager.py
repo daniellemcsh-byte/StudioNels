@@ -213,22 +213,43 @@ def download_model(model_id: str, *, force: bool = False) -> dict[str, Any]:
             if _is_cancelled(model_id):
                 raise RuntimeError("cancelled")
 
-            # Soft heartbeat while snapshot_download blocks (no reliable % from HF).
+            # Soft heartbeat + folder-size estimate while snapshot_download blocks.
             stop_beat = threading.Event()
+            started = time.time()
+
+            def _dir_bytes(root: Path) -> int:
+                total = 0
+                try:
+                    for p in root.rglob("*"):
+                        if p.is_file():
+                            try:
+                                total += p.stat().st_size
+                            except OSError:
+                                pass
+                except OSError:
+                    pass
+                return total
+
+            # Rough expected size from catalog VRAM hint (GB weights ≈ min_vram * 0.6) — floor 2GB
+            expect = max(2.0, float(model.get("min_vram_gb") or 4) * 0.75) * (1024**3)
 
             def heartbeat() -> None:
-                tick = 0.08
-                while not stop_beat.wait(2.5):
+                while not stop_beat.wait(2.0):
                     if _is_cancelled(model_id):
                         return
-                    tick = min(0.85, tick + 0.03)
                     cur = _DOWNLOADS.get(model_id) or {}
                     if cur.get("status") != "downloading":
                         return
+                    have = _dir_bytes(dest)
+                    by_size = 0.08 + 0.82 * min(1.0, have / expect)
+                    elapsed = int(time.time() - started)
+                    # Never go backwards; never claim 100% until snapshot finishes
+                    tick = min(0.92, max(float(cur.get("progress") or 0.05), by_size))
+                    mb = have / (1024 * 1024)
                     _set_download(
                         model_id,
-                        progress=max(float(cur.get("progress") or 0), tick),
-                        message="Downloading from Hugging Face… (large models take a while)",
+                        progress=tick,
+                        message=f"Downloading… {mb:.0f} MB on disk · {elapsed}s",
                     )
 
             beat = threading.Thread(target=heartbeat, name=f"dl-beat-{model_id}", daemon=True)
@@ -238,6 +259,7 @@ def download_model(model_id: str, *, force: bool = False) -> dict[str, Any]:
                     repo_id=model["hf_id"],
                     local_dir=str(dest),
                     local_dir_use_symlinks=False,
+                    resume_download=True,
                 )
             finally:
                 stop_beat.set()
