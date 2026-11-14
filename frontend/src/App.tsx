@@ -3368,9 +3368,9 @@ function GenerateTab({
   return (
     <div>
       <p className="hint">
-        {engine?.wan2gp?.available
-          ? `Wan2GP engine linked (${engine.wan2gp.model_count || '?'} models) — video, image, and audio gens use mmgp across the catalog.`
-          : 'Import your Wan2GP folder in Models to run the full model list on mmgp. Until then Diffusers is the slower fallback.'}
+        {engine?.mmgp?.available
+          ? 'StudioNels native mmgp is on — fast Generate without linking Wan2GP.'
+          : 'For native speed: Pinokio Update (installs mmgp via requirements-engine). Wan2GP import stays optional for extra architectures.'}
         {health?.gpu
           ? ` GPU: ${health.device_name}.`
           : ' Running preview until ROCm PyTorch + weights are installed.'}
@@ -6279,9 +6279,9 @@ function ModelsTab({
       <div className="panel" style={{ marginTop: 16 }}>
         <h3>Generation assets (Wan2GP)</h3>
         <p className="muted tiny">
-          Point at your Wan2GP <strong>root</strong> (folder with <code>wgp.py</code>,{' '}
-          <code>ckpts/</code>, <code>loras/</code>). After import, Generate lists every Wan2GP
-          architecture and runs video/image/audio through mmgp. You can also paste just{' '}
+          Optional: point at a Wan2GP <strong>root</strong> (<code>wgp.py</code>,{' '}
+          <code>ckpts/</code>, <code>loras/</code>) only for extra architectures. Everyday gens
+          use StudioNels’ own mmgp engine. You can also paste just{' '}
           <code>ckpts</code>. Imports models for every Generate tab — t2v, i2v, ref2v, t2i, t2a, upsample —
           plus LoRAs, text encoders, VAEs, and upscalers. No need to copy huge weights.
         </p>

@@ -184,7 +184,7 @@ export const LEARN_TOPICS: LearnTopic[] = [
       'Loading once is slow; generating after the model is warm is much faster.',
       'Preview mode is instant but fake — install ROCm + Diffusers for real frames.',
     ],
-    tip: 'Models → Import Wan2GP root (wgp.py). Generate then offers the full Wan2GP model list and runs video/image/audio on mmgp. Unmapped tools (e.g. Lanczos) still use the local path.',
+    tip: 'StudioNels runs mmgp natively after engine extras install — no Wan2GP link required. Import Wan2GP only if you want its extra architectures. Stuck gens: Stop, Max VRAM, fewer frames.',
   },
   {
     id: 'characters',

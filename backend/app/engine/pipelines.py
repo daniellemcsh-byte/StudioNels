@@ -808,6 +808,16 @@ def _build_pipeline(
     cpu_offload: bool,
     memory: dict[str, Any] | None = None,
 ):
+    # mmgp redirects safetensors — import early when present
+    try:
+        from .mmgp_accel import apply_runtime_env, mmgp_available
+
+        apply_runtime_env()
+        if mmgp_available():
+            from mmgp import offload as _mmgp_offload  # noqa: F401
+    except Exception:
+        pass
+
     from diffusers import DiffusionPipeline
 
     from .memory import apply_memory_to_pipeline, memory_from_preset
@@ -816,6 +826,7 @@ def _build_pipeline(
     load_kwargs: dict[str, Any] = {"torch_dtype": dtype}
     if is_local:
         load_kwargs["local_files_only"] = True
+    # Always materialize on CPU first so mmgp can own device placement
     try:
         pipe = DiffusionPipeline.from_pretrained(source, **load_kwargs)
     except Exception:
@@ -827,6 +838,11 @@ def _build_pipeline(
             pipe = DiffusionPipeline.from_pretrained(source, **retry_kwargs)
         except Exception:
             pipe = DiffusionPipeline.from_pretrained(model["hf_id"], torch_dtype=torch.float32)
+
+    try:
+        pipe.to("cpu")
+    except Exception:
+        pass
 
     mem = dict(memory or {})
     if not mem:

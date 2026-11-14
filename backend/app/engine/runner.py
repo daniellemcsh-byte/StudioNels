@@ -146,6 +146,13 @@ def engine_status_public() -> dict[str, Any]:
         wan_info = wan2gp_available()
     except Exception:
         wan_info = {"available": False}
+    try:
+        from .mmgp_accel import mmgp_status
+
+        mmgp_info = mmgp_status()
+    except Exception:
+        mmgp_info = {"available": False}
+    backend = "studionels-mmgp" if mmgp_info.get("available") else "builtin"
     return {
         "device": st.device,
         "modes": st.modes,
@@ -154,7 +161,8 @@ def engine_status_public() -> dict[str, Any]:
         "queue_length": st.queue_length,
         "preset_id": st.preset_id,
         "models_path": st.models_path,
-        "backend": "wan2gp" if wan_info.get("available") else "builtin",
+        "backend": backend,
+        "mmgp": mmgp_info,
         "wan2gp": wan_info,
         "size_presets": SIZE_PRESETS,
         "quality_presets": QUALITY_PRESETS,
@@ -668,81 +676,92 @@ def _run_one(job: dict[str, Any]) -> None:
     out_path = out_dir / job["id"]
     device = detect_device()
     force_preview = bool(job.get("force_preview"))
+    from .catalog import get_model
+    from .mmgp_accel import mmgp_status
     from .wan2gp_runtime import wan2gp_available, run_wan2gp_job
 
+    model_meta = get_model(str(job.get("model_id") or "")) or {}
     wan = wan2gp_available()
-    use_wan2gp = not force_preview and bool(wan.get("available"))
+    prefer_external = (
+        os.environ.get("STUDIONELS_PREFER_WAN2GP", "").strip().lower() in {"1", "true", "yes"}
+        or bool(job.get("prefer_wan2gp"))
+    )
+    # Models that only exist as Wan2GP architectures (no Diffusers twin)
+    wan_only = (
+        str(model_meta.get("format") or "") == "wan2gp-engine"
+        or str(job.get("model_id") or "").startswith("wgp-")
+        or (model_meta.get("wan2gp") and not model_meta.get("hf_id"))
+    )
     use_diffusers = (
         not force_preview
+        and not wan_only
         and device.get("ready_for_inference")
         and device.get("diffusers_available")
     )
-    use_real = use_wan2gp or use_diffusers
+    use_wan2gp = not force_preview and bool(wan.get("available")) and (wan_only or prefer_external)
+    use_real = use_diffusers or use_wan2gp
+
+    def _run_external_wan() -> dict[str, Any] | None:
+        holder: dict[str, Any] = {}
+
+        def _cancel() -> bool:
+            return bool(_CANCEL.get(job["id"]))
+
+        class _HolderProc:
+            def terminate(self) -> None:
+                p = holder.get("proc")
+                if p:
+                    p.terminate()
+
+            def kill(self) -> None:
+                p = holder.get("proc")
+                if p:
+                    p.kill()
+
+        with _PROC_LOCK:
+            global _CURRENT_PROC
+            _CURRENT_PROC = _HolderProc()
+        try:
+            return run_wan2gp_job(
+                job,
+                out_path,
+                cb,
+                cancel_check=_cancel,
+                proc_holder=holder,
+            )
+        finally:
+            with _PROC_LOCK:
+                if _CURRENT_PROC is not None:
+                    _CURRENT_PROC = None
 
     try:
-        if use_wan2gp:
-            # Prefer Wan2GP's mmgp path (~1 min) over stock Diffusers
+        if use_diffusers:
+            # Native StudioNels path (mmgp inside our engine — no Wan2GP link required)
+            mm = mmgp_status()
+            job["engine"] = "studionels-mmgp" if mm.get("available") else "diffusers"
+            cb(
+                (
+                    "StudioNels engine · mmgp acceleration"
+                    if mm.get("available")
+                    else "StudioNels Diffusers · install requirements-engine.txt for mmgp speed"
+                ),
+                0.03,
+            )
+            result = _run_diffusers_isolated(job, out_path, cb)
+            job["preview"] = bool(result.get("preview"))
+        elif use_wan2gp:
             job["engine"] = "wan2gp"
-            job["message"] = "Starting Wan2GP engine…"
+            job["message"] = "Starting linked Wan2GP engine…"
             upsert_job(job)
-            holder: dict[str, Any] = {}
-            with _PROC_LOCK:
-                # Reuse cancel hook via holder; cancel_job kills _CURRENT_PROC
-                pass
-
-            def _cancel() -> bool:
-                return bool(_CANCEL.get(job["id"]))
-
-            # Track child for Stop
-            def _run_wan() -> dict[str, Any] | None:
-                global _CURRENT_PROC
-                result_w = run_wan2gp_job(
-                    job,
-                    out_path,
-                    cb,
-                    cancel_check=_cancel,
-                    proc_holder=holder,
-                )
-                return result_w
-
-            # Wrap so Stop can terminate the wgp.py process
-            class _HolderProc:
-                def terminate(self) -> None:
-                    p = holder.get("proc")
-                    if p:
-                        p.terminate()
-
-                def kill(self) -> None:
-                    p = holder.get("proc")
-                    if p:
-                        p.kill()
-
-            with _PROC_LOCK:
-                _CURRENT_PROC = _HolderProc()  # type: ignore[assignment]
-            try:
-                result = _run_wan()
-            finally:
-                with _PROC_LOCK:
-                    if _CURRENT_PROC is not None:
-                        _CURRENT_PROC = None
-
-            if result is None and use_diffusers:
-                job["engine"] = "diffusers"
-                cb("Wan2GP unavailable for this model — falling back to Diffusers…", 0.05)
-                result = _run_diffusers_isolated(job, out_path, cb)
-            elif result is None:
+            result = _run_external_wan()
+            if result is None:
                 raise RuntimeError(
-                    "Wan2GP is linked but cannot run this model. "
-                    "Pick a Wan/LTX model mapped to Wan2GP, or install Diffusers extras."
+                    "This model needs a linked Wan2GP install (no Diffusers twin). "
+                    "Import Wan2GP in Models, or pick a Diffusers catalog model."
                 )
             job["preview"] = bool(result.get("preview"))
             if result.get("engine") == "wan2gp":
                 job["engine"] = "wan2gp"
-        elif use_diffusers:
-            job["engine"] = "diffusers"
-            # Isolated process: API/polling keep working; Stop can kill a hung GPU call.
-            result = _run_diffusers_isolated(job, out_path, cb)
-            job["preview"] = bool(result.get("preview"))
         else:
             result = run_preview_job(job, out_path, cb)
             job["preview"] = True
@@ -752,7 +771,7 @@ def _run_one(job: dict[str, Any]) -> None:
                     "then download a model."
                 )
             elif not device.get("diffusers_available"):
-                job["message"] = "Preview only — pip install diffusers transformers accelerate."
+                job["message"] = "Preview only — pip install -r requirements-engine.txt (includes mmgp)."
             else:
                 job["message"] = "Preview only — no GPU visible; install AMD ROCm PyTorch."
 

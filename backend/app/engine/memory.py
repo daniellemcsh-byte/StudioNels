@@ -151,9 +151,22 @@ def resolve_memory_for_job(payload: dict[str, Any] | None = None) -> dict[str, A
 
 
 def apply_memory_to_pipeline(pipe: Any, device: str, mem: dict[str, Any]) -> str:
-    """Place a Diffusers pipeline according to the memory profile. Returns placement used."""
+    """Place a Diffusers pipeline according to the memory profile. Returns placement used.
+
+    Prefers StudioNels-native mmgp (same library Wan2GP uses) when installed —
+    no external Wan2GP link required.
+    """
     placement = mem.get("placement") or "model_cpu_offload"
     used = placement
+
+    # Detect VRAM for mmgp profile selection
+    vram_gb = None
+    try:
+        from .device import detect_device
+
+        vram_gb = detect_device().get("vram_gb")
+    except Exception:
+        pass
 
     if not str(device).startswith("cuda") or placement == "cpu":
         try:
@@ -161,29 +174,49 @@ def apply_memory_to_pipeline(pipe: Any, device: str, mem: dict[str, Any]) -> str
         except Exception:
             pass
         used = "cpu"
-    elif placement == "sequential_cpu_offload":
+    else:
+        # Native mmgp path (fast) — load on CPU then profile
+        mmgp_info = None
         try:
-            pipe.enable_sequential_cpu_offload()
-            used = "sequential_cpu_offload"
+            from .mmgp_accel import apply_mmgp_to_pipeline, apply_runtime_env
+
+            apply_runtime_env()
+            mmgp_info = apply_mmgp_to_pipeline(
+                pipe, device=device, mem=mem, vram_gb=vram_gb if isinstance(vram_gb, (int, float)) else None
+            )
         except Exception:
+            mmgp_info = {"used": False}
+
+        if mmgp_info and mmgp_info.get("used"):
+            used = f"mmgp:{mmgp_info.get('profile') or 'on'}"
+            try:
+                pipe._studionels_placement = used  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        elif placement == "sequential_cpu_offload":
+            try:
+                pipe.enable_sequential_cpu_offload()
+                used = "sequential_cpu_offload"
+            except Exception:
+                try:
+                    pipe.enable_model_cpu_offload()
+                    used = "model_cpu_offload"
+                except Exception:
+                    pipe.to(device)
+                    used = "gpu"
+        elif placement == "model_cpu_offload":
             try:
                 pipe.enable_model_cpu_offload()
                 used = "model_cpu_offload"
             except Exception:
                 pipe.to(device)
                 used = "gpu"
-    elif placement == "model_cpu_offload":
-        try:
-            pipe.enable_model_cpu_offload()
-            used = "model_cpu_offload"
-        except Exception:
+        else:
             pipe.to(device)
             used = "gpu"
-    else:
-        pipe.to(device)
-        used = "gpu"
 
-    if mem.get("attention_slicing"):
+    # Skip attention slicing when mmgp is managing the pipe (it fights SDPA speed)
+    if mem.get("attention_slicing") and not str(used).startswith("mmgp"):
         try:
             pipe.enable_attention_slicing()
         except Exception:

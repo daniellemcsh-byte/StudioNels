@@ -191,6 +191,11 @@ export interface Wan2gpInventory {
 
 export interface EngineStatus {
   backend: string
+  mmgp?: {
+    available?: boolean
+    package?: string
+    blurb?: string
+  }
   wan2gp?: {
     available?: boolean
     root?: string

@@ -36,17 +36,19 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-engine.txt
 
 .\.venv\Scripts\python.exe -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+.\.venv\Scripts\python.exe -c "import mmgp; print('mmgp ok')"
 ```
 
-Expect: `True` and something like `AMD Radeon AI PRO R9700`.
+Expect: `True` and something like `AMD Radeon AI PRO R9700`, plus `mmgp ok`.
 
 Official guide: https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/install/installrad/windows/install-pytorch.html
 
 ## After install
 
+- StudioNels Generate uses **mmgp natively** (same library as Wan2GP) — you do **not** need to link Wan2GP for speed.
 - First Generate may download model weights (Wan 1.3B / SDXL Turbo, etc.) into the HF cache — that can take a while.
 - Keep **one job at a time** (default).
-- On R9700 you can leave CPU offload off (preset does).
+- On R9700 use preset **Max VRAM / amd-r9700**.
 
 ## Still preview?
 

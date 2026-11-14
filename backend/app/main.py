@@ -102,6 +102,12 @@ app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 def _startup_engine_worker() -> None:
     """Warm the built-in job worker so Generate/Film night don't sit idle."""
     try:
+        from .engine.mmgp_accel import apply_runtime_env
+
+        apply_runtime_env()
+    except Exception:
+        pass
+    try:
         from .engine.runner import _ensure_worker
 
         _ensure_worker()

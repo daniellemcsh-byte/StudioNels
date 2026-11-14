@@ -85,7 +85,7 @@ if (process.platform === "win32") {
   console.log("Non-Windows: install ROCm PyTorch from AMD docs first, then continuing with engine extras…")
 }
 
-run(["-m", "pip", "install", "-r", "requirements-engine.txt"], "Diffusers / engine extras")
+run(["-m", "pip", "install", "-r", "requirements-engine.txt"], "Diffusers + mmgp (native StudioNels speed)")
 
 const check = spawnSync(
   py,

@@ -54,17 +54,18 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     try:
-        # Wan2GP / ROCm defaults (same as wgp.py) even on Diffusers fallback
-        import os
+        # Native StudioNels accel (mmgp) — import early so safetensors is patched
+        from .mmgp_accel import apply_runtime_env, mmgp_available
 
-        os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
-        os.environ.setdefault("OPENBLAS_NUM_THREADS", str(min(8, os.cpu_count() or 8)))
-        os.environ.setdefault("TRITON_DEFAULT_FP_FUSION", "1")
+        apply_runtime_env()
+        if mmgp_available():
+            from mmgp import offload as _mmgp_offload  # noqa: F401
 
         # Ensure imports resolve when launched as `python -m app.engine.gen_worker`
         from .pipelines import run_diffusers_job
 
-        cb("Worker started — loading Diffusers engine…", 0.02)
+        label = "mmgp" if mmgp_available() else "Diffusers"
+        cb(f"Worker started — StudioNels {label} engine…", 0.02)
         result = run_diffusers_job(job, out_path, cb)
         _atomic_write(
             result_path,
