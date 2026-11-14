@@ -171,6 +171,13 @@ function describeJobActivity(job: EngineJob, nowMs = Date.now()): {
     return pack('Downloading model files', job.message || `${pct}%`, 'load', 1)
   }
   if (
+    /boot(?:ing)?|checking gpu|pytorch|starting (?:gpu )?worker|warm engine|worker boot|importing/.test(
+      msg,
+    )
+  ) {
+    return pack('Booting engine', job.message || `${pct}%`, 'load', 1)
+  }
+  if (
     /loading pipeline|loading.*weights|loading.*model|first amd load|reading weights/.test(msg)
   ) {
     return pack('Loading model weights', job.message || `${pct}%`, 'load', 1)
@@ -219,7 +226,7 @@ function describeJobActivity(job: EngineJob, nowMs = Date.now()): {
     return pack(phase, detail, hung ? 'fail' : 'run', 3)
   }
   if (/start/.test(msg)) {
-    return pack('Starting job', `${job.model_label} · ${pct}%`, 'wait', 0)
+    return pack('Booting engine', job.message || `${job.model_label} · ${pct}%`, 'load', 1)
   }
   return pack(
     job.status === 'running' ? `Working on ${modeLabel}` : job.status,
@@ -3428,6 +3435,16 @@ function GenerateTab({
     }
     if (estimate && !estimate.can_queue) {
       notify(estimate.warnings[0] || 'This job will not fit on your GPU. Lower settings first.')
+      return
+    }
+    const selected = models.find((m) => m.id === modelId)
+    const dl = selected?.download_status || (selected?.installed ? 'installed' : 'not_downloaded')
+    if (selected?.hf_id && dl !== 'installed') {
+      notify(
+        dl === 'downloading'
+          ? `Still downloading ${selected.label} — wait for the progress bar to hit Ready.`
+          : `${selected.label} is not Ready. Tap Download model and wait for the bar to finish first.`,
+      )
       return
     }
     setBusy(true)

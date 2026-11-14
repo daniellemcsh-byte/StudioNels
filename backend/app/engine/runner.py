@@ -435,8 +435,15 @@ def _daemon_alive() -> bool:
 
 
 def _ensure_warm_daemon() -> bool:
-    """Start the warm engine daemon if needed. Returns True when a daemon is usable."""
+    """Start the warm engine daemon if needed. Returns True when a daemon is usable.
+
+    Off by default — a wedged warm daemon left jobs stuck at 3% with no progress.
+    Opt in with STUDIONELS_WARM_ENGINE=1 after the first cold gen succeeds.
+    """
     if os.environ.get("STUDIONELS_COLD_WORKER", "").strip().lower() in {"1", "true", "yes"}:
+        return False
+    warm = os.environ.get("STUDIONELS_WARM_ENGINE", "").strip().lower() in {"1", "true", "yes"}
+    if not warm:
         return False
     if _daemon_alive():
         return True
@@ -662,9 +669,18 @@ def _run_diffusers_isolated(
                 )
                 last_parent_pulse = now
 
-            # Load-phase watchdog: heartbeats alone used to keep ~18% alive forever
+            # Boot watchdog — jobs stuck at ~3% "Starting…" with no worker pulse
             last_msg = str((last_payload or {}).get("message") or job.get("message") or "")
             last_frac = float((last_payload or {}).get("progress") or job.get("progress") or 0)
+            if (not saw_step) and last_frac < 0.08 and elapsed >= 90:
+                _stop_worker(kill=True)
+                raise RuntimeError(
+                    "Engine never left boot (stuck near 3%). "
+                    "Stop → Models → confirm the model is Ready → Pinokio Update / Install AMD engine → "
+                    "Stop → Start, then Generate again."
+                )
+
+            # Load-phase watchdog: heartbeats alone used to keep ~18% alive forever
             still_loading = (not saw_step) and (
                 last_frac < 0.2
                 or "loading pipeline" in last_msg.lower()
@@ -820,7 +836,7 @@ def _run_one(job: dict[str, Any]) -> None:
         return
 
     job["status"] = "running"
-    job["message"] = "Starting"
+    job["message"] = "Booting engine…"
     job["progress"] = 0.01
     job["started_at"] = utc_now()
     job["elapsed_sec"] = 0
@@ -857,12 +873,55 @@ def _run_one(job: dict[str, Any]) -> None:
 
     out_dir = MEDIA_DIR / (job.get("project_id") or "standalone")
     out_path = out_dir / job["id"]
-    device = detect_device()
+
+    # detect_device() imports torch — can take 1–2 min on first AMD load with no UI pulse
+    cb("Checking GPU / PyTorch (first boot can take 1–2 min)…", 0.02)
+    device_box: dict[str, Any] = {}
+
+    def _detect() -> None:
+        device_box["device"] = detect_device()
+
+    det_t = threading.Thread(target=_detect, name="studionels-detect-device", daemon=True)
+    det_t.start()
+    det_started = time.time()
+    while det_t.is_alive():
+        if _CANCEL.get(job["id"]):
+            raise JobCancelled("Stopped by user")
+        elapsed = int(time.time() - det_started)
+        if elapsed >= 3 and elapsed % 3 == 0:
+            cb(f"Checking GPU / PyTorch… {elapsed}s (first AMD import is slow)…", 0.02)
+        if elapsed >= 180:
+            raise RuntimeError(
+                "PyTorch/GPU check hung for 3+ minutes. In Pinokio run Install AMD engine, "
+                "then Stop → Start StudioNels."
+            )
+        det_t.join(timeout=1.0)
+    device = device_box.get("device") or detect_device()
+
     force_preview = bool(job.get("force_preview"))
     from .catalog import get_model
     from .mmgp_accel import mmgp_status
+    from .models_manager import list_models_with_status
 
     model_meta = get_model(str(job.get("model_id") or "")) or {}
+    # Block silent HF fetches during Generate — that looks like a stuck download at 3%
+    try:
+        status_row = next(
+            (m for m in list_models_with_status() if m.get("id") == model_meta.get("id")),
+            None,
+        )
+    except Exception:
+        status_row = None
+    if (
+        model_meta.get("hf_id")
+        and status_row is not None
+        and not status_row.get("installed")
+        and str(status_row.get("download_status") or "") != "installed"
+    ):
+        raise RuntimeError(
+            f"{model_meta.get('label') or model_meta.get('id')} is not Ready on disk. "
+            "Open Models → Download until the progress bar finishes (Ready), then Generate."
+        )
     # StudioNels owns Generate: Diffusers + native mmgp. Wan2GP is opt-in only
     # (STUDIONELS_PREFER_WAN2GP=1) — not used for everyday downloads / Generate.
     wan_only = (
