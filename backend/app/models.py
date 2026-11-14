@@ -192,7 +192,7 @@ class Project(BaseModel):
     frame_size_id: str = "16:9-draft"
     aspect_ratio: str = "16:9"
     width: int = 768
-    height: int = 432
+    height: int = 448
     world_bible: str = ""
     continuity_rules: list[str] = Field(default_factory=list)
     auto_reject_below: float = 0.55

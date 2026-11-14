@@ -4422,18 +4422,43 @@ function SettingsTab({
         agent (Ollama / built-in) or plug in a paid LLM API for smarter shot planning.
       </p>
       <div className="settings-grid panel">
-        <div className="field">
-          <label>Compute preset</label>
-          <select
-            value={draft.preset_id}
-            onChange={(e) => setDraft({ ...draft, preset_id: e.target.value })}
-          >
-            {presets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label} (~{p.target_vram_gb} GB)
-              </option>
-            ))}
-          </select>
+        <div className="field" style={{ gridColumn: '1 / -1' }}>
+          <label>Memory profile (where models sit)</label>
+          <p className="muted tiny" style={{ marginTop: 4 }}>
+            Pick low→high VRAM. Low profiles keep weights in system RAM and stream layers to the GPU;
+            high profiles keep the whole model in VRAM for speed.
+          </p>
+          <div className="mode-grid" style={{ marginTop: 10 }}>
+            {presets.map((p) => {
+              const mem = (p as Preset & { memory?: { placement_label?: string; blurb?: string } }).memory
+              const active = draft.preset_id === p.id
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  className={`mode-chip ${active ? 'active' : ''}`}
+                  onClick={() =>
+                    setDraft({
+                      ...draft,
+                      preset_id: p.id,
+                      cpu_offload: p.target_vram_gb < 20,
+                    })
+                  }
+                >
+                  <strong>{p.label}</strong>
+                  <span>
+                    ~{p.target_vram_gb} GB
+                    {mem?.placement_label ? ` · ${mem.placement_label}` : ''}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          {presets.find((p) => p.id === draft.preset_id)?.notes && (
+            <p className="muted tiny" style={{ marginTop: 8 }}>
+              {presets.find((p) => p.id === draft.preset_id)?.notes}
+            </p>
+          )}
         </div>
 
         <h3 style={{ gridColumn: '1 / -1', margin: '8px 0 0' }}>Agent LLM</h3>

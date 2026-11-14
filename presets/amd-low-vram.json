@@ -1,7 +1,16 @@
 {
   "id": "amd-low-vram",
-  "label": "AMD Low VRAM (shareable)",
+  "label": "Low VRAM (~8 GB)",
   "target_vram_gb": 8,
+  "memory": {
+    "placement": "sequential_cpu_offload",
+    "dtype": "bfloat16",
+    "attention_slicing": true,
+    "vae_slicing": true,
+    "vae_tiling": true,
+    "text_encoder_on_cpu": true,
+    "blurb": "Layer-by-layer RAM↔VRAM — safest for 6–8 GB cards."
+  },
   "agent": {
     "provider": "ollama",
     "base_url": "http://127.0.0.1:11434",
@@ -12,7 +21,7 @@
     "backend": "builtin",
     "max_concurrent_jobs": 1,
     "default_width": 768,
-    "default_height": 432,
+    "default_height": 448,
     "default_frames": 49,
     "fps": 16,
     "default_t2v": "wan21-t2v-1.3b",

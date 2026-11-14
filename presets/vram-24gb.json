@@ -1,0 +1,37 @@
+{
+  "id": "vram-24gb",
+  "label": "Very high VRAM (~24 GB)",
+  "target_vram_gb": 22,
+  "memory": {
+    "placement": "gpu",
+    "dtype": "bfloat16",
+    "attention_slicing": false,
+    "vae_slicing": false,
+    "vae_tiling": false,
+    "text_encoder_on_cpu": false,
+    "blurb": "Keep the pipeline resident in VRAM for speed."
+  },
+  "agent": {
+    "provider": "ollama",
+    "base_url": "http://127.0.0.1:11434",
+    "model": "llama3.1:8b",
+    "max_tokens": 2200
+  },
+  "generation": {
+    "backend": "builtin",
+    "max_concurrent_jobs": 1,
+    "default_width": 1280,
+    "default_height": 720,
+    "default_frames": 81,
+    "fps": 24,
+    "default_t2v": "ltx2.3-22b-distilled-v11-diffusers",
+    "default_t2i": "flux-schnell",
+    "default_i2v": "wan21-i2v-14b-480p",
+    "default_ref2i": "flux-dev",
+    "default_ref2v": "wan21-i2v-14b-720p",
+    "cpu_offload": false,
+    "attention_slicing": false,
+    "sequential": false
+  },
+  "notes": "24 GB cards — LTX distilled / Wan mid packs on GPU."
+}

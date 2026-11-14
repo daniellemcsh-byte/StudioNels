@@ -535,9 +535,35 @@ export interface RecipeInfo {
   tags: string[]
 }
 
+export interface MemoryProfile {
+  id: string
+  label: string
+  target_vram_gb: number
+  notes?: string
+  memory: {
+    placement: string
+    placement_label: string
+    dtype: string
+    attention_slicing: boolean
+    vae_slicing: boolean
+    vae_tiling: boolean
+    text_encoder_on_cpu: boolean
+    cpu_offload: boolean
+    blurb: string
+  }
+  generation?: {
+    default_width?: number
+    default_height?: number
+    default_frames?: number
+    fps?: number
+    cpu_offload?: boolean
+  }
+}
+
 export interface Preset {
   id: string
   label: string
   target_vram_gb: number
   notes?: string
+  memory?: MemoryProfile['memory']
 }

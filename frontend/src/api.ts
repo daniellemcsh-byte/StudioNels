@@ -70,6 +70,10 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => req<Health>('/api/health'),
   presets: () => req<Preset[]>('/api/presets'),
+  memoryProfiles: () =>
+    req<{ profiles: import('./types').MemoryProfile[]; active_id: string; count: number }>(
+      '/api/engine/memory-profiles',
+    ),
   getSettings: () => req<Settings>('/api/settings'),
   putSettings: (body: Settings) =>
     req<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(body) }),

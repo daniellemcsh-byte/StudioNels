@@ -42,6 +42,25 @@ def _text_encoder_presets() -> list[dict[str, Any]]:
         return list(TEXT_ENCODER_PRESETS)
 
 
+def _memory_profiles_public() -> list[dict[str, Any]]:
+    try:
+        from .memory import list_memory_profiles
+
+        return list_memory_profiles()
+    except Exception:
+        return []
+
+
+def _snap_job_dim(value: Any, multiple: int = 32) -> int:
+    """LTX / Wan need width & height divisible by 32."""
+    from .pipelines import snap_dim
+
+    try:
+        return snap_dim(int(value), multiple)
+    except Exception:
+        return snap_dim(768 if multiple else 768, multiple)
+
+
 class JobCancelled(Exception):
     """Raised when the user stops a generation job."""
 
@@ -122,6 +141,7 @@ def engine_status_public() -> dict[str, Any]:
         "loras": loras,
         "lora_count": len(loras),
         "text_encoders": _text_encoder_presets(),
+        "memory_profiles": _memory_profiles_public(),
         "current_job_id": _CURRENT_JOB_ID,
     }
 
@@ -147,9 +167,14 @@ def _ensure_worker() -> None:
 def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     """Queue a built-in generation job."""
     _ensure_worker()
+    from .memory import resolve_memory_for_job
+
     settings = load_settings()
     preset = get_preset(payload.get("preset_id") or settings.preset_id)
     gen = preset.get("generation", {})
+    mem = resolve_memory_for_job(
+        {**payload, "preset_id": payload.get("preset_id") or settings.preset_id}
+    )
     mode = payload["mode"]
     model_id = payload.get("model_id")
     model = get_model(model_id) if model_id else None
@@ -251,8 +276,8 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         "model_label": model["label"],
         "prompt": prompt,
         "negative_prompt": negative,
-        "width": int(payload.get("width") or gen.get("default_width") or 768),
-        "height": int(payload.get("height") or gen.get("default_height") or 432),
+        "width": _snap_job_dim(payload.get("width") or gen.get("default_width") or 768),
+        "height": _snap_job_dim(payload.get("height") or gen.get("default_height") or 448),
         "steps": steps,
         "guidance": guidance,
         "quality": quality,
@@ -261,7 +286,13 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         "duration_sec": float(duration_sec) if duration_sec is not None else None,
         "seed": payload.get("seed"),
         "strength": payload.get("strength"),
-        "cpu_offload": payload.get("cpu_offload", gen.get("cpu_offload", True)),
+        "cpu_offload": mem.get(
+            "cpu_offload",
+            payload.get("cpu_offload", gen.get("cpu_offload", True)),
+        ),
+        "memory": mem,
+        "memory_placement": mem.get("placement"),
+        "preset_id": mem.get("preset_id") or settings.preset_id,
         "image_path": payload.get("image_path"),
         "reference_path": payload.get("reference_path"),
         "video_path": payload.get("video_path"),

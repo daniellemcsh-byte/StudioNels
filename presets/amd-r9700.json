@@ -1,7 +1,16 @@
 {
   "id": "amd-r9700",
-  "label": "AMD Radeon AI PRO R9700 32GB",
+  "label": "Max VRAM — R9700 32GB",
   "target_vram_gb": 28,
+  "memory": {
+    "placement": "gpu",
+    "dtype": "bfloat16",
+    "attention_slicing": false,
+    "vae_slicing": false,
+    "vae_tiling": false,
+    "text_encoder_on_cpu": false,
+    "blurb": "Full GPU residency — fastest on R9700-class 32GB cards."
+  },
   "agent": {
     "provider": "ollama",
     "base_url": "http://127.0.0.1:11434",

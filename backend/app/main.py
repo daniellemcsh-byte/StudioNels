@@ -448,6 +448,21 @@ async def presets():
     return list_presets()
 
 
+@app.get("/api/engine/memory-profiles")
+async def engine_memory_profiles():
+    """Low→high VRAM profiles: where weights sit (RAM / offload / GPU)."""
+    from .engine.memory import list_memory_profiles
+    from .storage import load_settings
+
+    s = load_settings()
+    profiles = list_memory_profiles()
+    return {
+        "profiles": profiles,
+        "active_id": s.preset_id,
+        "count": len(profiles),
+    }
+
+
 @app.get("/api/settings")
 async def get_settings():
     return settings_public()

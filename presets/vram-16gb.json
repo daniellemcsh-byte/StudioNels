@@ -1,0 +1,37 @@
+{
+  "id": "vram-16gb",
+  "label": "High VRAM (~16 GB)",
+  "target_vram_gb": 16,
+  "memory": {
+    "placement": "model_cpu_offload",
+    "dtype": "bfloat16",
+    "attention_slicing": false,
+    "vae_slicing": true,
+    "vae_tiling": false,
+    "text_encoder_on_cpu": false,
+    "blurb": "Most weights fit; light module offload for bigger video packs."
+  },
+  "agent": {
+    "provider": "ollama",
+    "base_url": "http://127.0.0.1:11434",
+    "model": "llama3.1:8b",
+    "max_tokens": 1800
+  },
+  "generation": {
+    "backend": "builtin",
+    "max_concurrent_jobs": 1,
+    "default_width": 1024,
+    "default_height": 576,
+    "default_frames": 49,
+    "fps": 16,
+    "default_t2v": "cogvideox-2b",
+    "default_t2i": "flux-schnell",
+    "default_i2v": "wan21-i2v-14b-480p",
+    "default_ref2i": "flux-schnell",
+    "default_ref2v": "wan21-i2v-14b-480p",
+    "cpu_offload": true,
+    "attention_slicing": false,
+    "sequential": false
+  },
+  "notes": "16 GB class — mid/big models with optional offload."
+}

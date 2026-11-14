@@ -1,7 +1,16 @@
 {
   "id": "cpu-fallback",
-  "label": "CPU / preview engine",
+  "label": "CPU / system RAM only",
   "target_vram_gb": 0,
+  "memory": {
+    "placement": "cpu",
+    "dtype": "float32",
+    "attention_slicing": true,
+    "vae_slicing": true,
+    "vae_tiling": true,
+    "text_encoder_on_cpu": true,
+    "blurb": "Everything in system RAM — preview / no usable GPU."
+  },
   "agent": {
     "provider": "builtin",
     "base_url": null,
@@ -12,7 +21,7 @@
     "backend": "builtin",
     "max_concurrent_jobs": 1,
     "default_width": 640,
-    "default_height": 360,
+    "default_height": 352,
     "default_frames": 16,
     "fps": 12,
     "default_t2v": "wan21-t2v-1.3b",

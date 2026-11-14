@@ -19,6 +19,22 @@ from .queue_store import models_dir
 ProgressCb = Callable[[str, float], None]
 
 
+def snap_dim(value: int, multiple: int = 32, minimum: int = 64) -> int:
+    """Round size to nearest multiple (LTX / Wan need ÷32). Prefer round-up when mid."""
+    value = max(int(value or minimum), minimum)
+    if multiple <= 1:
+        return value
+    down = (value // multiple) * multiple
+    up = down + multiple
+    if value - down < up - value and down >= minimum:
+        return down
+    return max(up, minimum)
+
+
+def snap_frame_size(width: int, height: int, *, multiple: int = 32) -> tuple[int, int]:
+    return snap_dim(width, multiple), snap_dim(height, multiple)
+
+
 def _progress(cb: ProgressCb | None, message: str, frac: float) -> None:
     if cb:
         cb(message, max(0.0, min(1.0, frac)))
@@ -350,14 +366,40 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
 
     import torch
 
+    from .memory import resolve_memory_for_job
+
     device_info = detect_device()
     device = device_info["device"] if device_info["ready_for_inference"] else "cpu"
-    dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
+    mem = resolve_memory_for_job(job)
+    dtype_name = str(mem.get("dtype") or "bfloat16")
+    if not device.startswith("cuda"):
+        dtype = torch.float32
+        mem["placement"] = "cpu"
+    elif dtype_name in ("float16", "fp16"):
+        dtype = torch.float16
+    elif dtype_name in ("float32", "fp32"):
+        dtype = torch.float32
+    else:
+        dtype = torch.bfloat16
 
     prompt = job.get("prompt") or ""
     negative = job.get("negative_prompt") or ""
-    width = int(job.get("width") or 768)
-    height = int(job.get("height") or 432)
+    raw_w = int(job.get("width") or 768)
+    raw_h = int(job.get("height") or 448)
+    # LTX-2 / Wan / most DiT video pipes require ÷32 (and often ÷64 for latents)
+    multiple = 32
+    pipe_name = str(model.get("pipeline") or "").lower()
+    if "ltx" in pipe_name or "wan" in pipe_name or model.get("kind") == "video":
+        multiple = 32
+    width, height = snap_frame_size(raw_w, raw_h, multiple=multiple)
+    if (width, height) != (raw_w, raw_h):
+        _progress(
+            cb,
+            f"Snapped size {raw_w}×{raw_h} → {width}×{height} (must be ÷{multiple})",
+            0.04,
+        )
+        job["width"] = width
+        job["height"] = height
     steps = int(job.get("steps") or model.get("default_steps") or 20)
     guidance = float(
         job.get("guidance")
@@ -373,24 +415,27 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     frames_n = int(job.get("frames") or model.get("default_frames") or 49)
     fps = int(job.get("fps") or model.get("fps") or 16)
     duration_sec = float(job.get("duration_sec") or model.get("default_duration_sec") or 8)
-    cpu_offload = bool(job.get("cpu_offload", True))
+    cpu_offload = bool(mem.get("cpu_offload", job.get("cpu_offload", True)))
     generator = None
     if seed is not None:
         generator = torch.Generator(device=device if device != "cpu" else "cpu").manual_seed(int(seed))
 
     kind = model["kind"]
+    _progress(
+        cb,
+        f"Memory: {mem.get('placement_label') or mem.get('placement')} · {dtype_name}",
+        0.03,
+    )
 
     if kind == "audio" or mode == "t2a":
         _progress(cb, "Loading audio model…", 0.05)
         # Stable Audio / AudioGen APIs vary — try Diffusers StableAudio first.
         try:
             from diffusers import StableAudioPipeline
+            from .memory import apply_memory_to_pipeline
 
             pipe = StableAudioPipeline.from_pretrained(model["hf_id"], torch_dtype=dtype)
-            if cpu_offload and device.startswith("cuda"):
-                pipe.enable_model_cpu_offload()
-            else:
-                pipe.to(device)
+            apply_memory_to_pipeline(pipe, device, mem)
             _progress(cb, "Generating audio…", 0.25)
             result = pipe(
                 prompt,
@@ -422,9 +467,13 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         "Loading pipeline weights",
         0.05,
         0.18,
-        lambda: _build_pipeline(model, device, dtype, cpu_offload),
+        lambda: _build_pipeline(model, device, dtype, cpu_offload, mem),
     )
-    _apply_text_encoder(pipe, job, device, dtype, cb)
+    # When TE should stay on CPU for VRAM savings
+    te_job = dict(job)
+    if mem.get("text_encoder_on_cpu"):
+        te_job["cpu_offload"] = True
+    _apply_text_encoder(pipe, te_job, device, dtype, cb)
     _apply_lora(pipe, job, cb)
     _progress(cb, "Generating…", 0.2)
 
@@ -588,8 +637,16 @@ def _resolve_model_source(model: dict[str, Any]) -> tuple[str, bool]:
     return hf_id, False
 
 
-def _build_pipeline(model: dict[str, Any], device: str, dtype, cpu_offload: bool):
+def _build_pipeline(
+    model: dict[str, Any],
+    device: str,
+    dtype,
+    cpu_offload: bool,
+    memory: dict[str, Any] | None = None,
+):
     from diffusers import DiffusionPipeline
+
+    from .memory import apply_memory_to_pipeline, memory_from_preset
 
     source, is_local = _resolve_model_source(model)
     load_kwargs: dict[str, Any] = {"torch_dtype": dtype}
@@ -607,20 +664,18 @@ def _build_pipeline(model: dict[str, Any], device: str, dtype, cpu_offload: bool
         except Exception:
             pipe = DiffusionPipeline.from_pretrained(model["hf_id"], torch_dtype=torch.float32)
 
-    if cpu_offload and device.startswith("cuda"):
-        try:
-            pipe.enable_model_cpu_offload()
-        except Exception:
-            pipe.to(device)
-    else:
-        pipe.to(device)
-
+    mem = dict(memory or {})
+    if not mem:
+        # Legacy flag → placement
+        mem = memory_from_preset(
+            {
+                "target_vram_gb": 8 if cpu_offload else 24,
+                "generation": {"cpu_offload": cpu_offload, "attention_slicing": True},
+            }
+        )
+    placement = apply_memory_to_pipeline(pipe, device, mem)
     try:
-        pipe.enable_attention_slicing()
-    except Exception:
-        pass
-    try:
-        pipe.vae.enable_slicing()
+        pipe._studionels_placement = placement  # type: ignore[attr-defined]
     except Exception:
         pass
     return pipe

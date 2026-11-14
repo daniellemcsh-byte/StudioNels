@@ -1,0 +1,37 @@
+{
+  "id": "vram-12gb",
+  "label": "Mid VRAM (~12 GB)",
+  "target_vram_gb": 12,
+  "memory": {
+    "placement": "model_cpu_offload",
+    "dtype": "bfloat16",
+    "attention_slicing": true,
+    "vae_slicing": true,
+    "vae_tiling": false,
+    "text_encoder_on_cpu": true,
+    "blurb": "Balanced: modules live in RAM and move to VRAM when needed."
+  },
+  "agent": {
+    "provider": "ollama",
+    "base_url": "http://127.0.0.1:11434",
+    "model": "llama3.2:3b",
+    "max_tokens": 1200
+  },
+  "generation": {
+    "backend": "builtin",
+    "max_concurrent_jobs": 1,
+    "default_width": 768,
+    "default_height": 448,
+    "default_frames": 49,
+    "fps": 16,
+    "default_t2v": "wan21-t2v-1.3b",
+    "default_t2i": "sdxl-turbo",
+    "default_i2v": "ltx-video-0.9.7",
+    "default_ref2i": "sdxl-turbo",
+    "default_ref2v": "ltx-video-0.9.7",
+    "cpu_offload": true,
+    "attention_slicing": true,
+    "sequential": false
+  },
+  "notes": "Good for 10–14 GB GPUs. Module offload keeps big packs workable."
+}
