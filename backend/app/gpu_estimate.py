@@ -76,15 +76,19 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
     elif mode == "t2a":
         vram_need = max(3.5, min_vram * 0.55)
 
-    # Never claim a draft 768×448 short clip needs more than ~card size on big GPUs
+    # Don't over-block short drafts: distilled / mmgp jobs fit well under catalog min
     available = device.get("vram_gb")
     if (
         isinstance(available, (int, float))
-        and float(available) >= 24
+        and float(available) >= 10
         and width * height <= 768 * 512
         and frames <= 130
     ):
-        vram_need = min(vram_need, float(available) * 0.82)
+        # Soft ceiling so 12GB cards aren't told LTX/Wan distilled "won't fit"
+        ceiling = float(available) * (0.92 if float(available) < 20 else 0.82)
+        if (model or {}).get("distilled") or mmgp_on:
+            ceiling = min(ceiling, float(available) * 0.95)
+        vram_need = min(vram_need, ceiling)
 
     gpu_ready = bool(device.get("ready_for_inference"))
     torch_ok = bool(device.get("torch_available"))
