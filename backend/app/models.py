@@ -248,6 +248,14 @@ class PersonalImportRequest(BaseModel):
     name: str | None = None
 
 
+class PromptEnhanceRequest(BaseModel):
+    prompt: str
+    negative_prompt: str = ""
+    mode: str = "t2v"
+    style: str | None = None
+    force_builtin: bool = False
+
+
 class EngineGenerateRequest(BaseModel):
     mode: Literal[
         "t2i",

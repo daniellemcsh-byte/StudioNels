@@ -361,6 +361,19 @@ export const api = {
     req<{ jobs: EngineJob[] }>('/api/engine/workflows'),
   engineGenerate: (body: Record<string, unknown>) =>
     req<EngineJob>('/api/engine/generate', { method: 'POST', body: JSON.stringify(body) }),
+  engineEnhancePrompt: (body: {
+    prompt: string
+    negative_prompt?: string
+    mode?: string
+    style?: string | null
+    force_builtin?: boolean
+  }) =>
+    req<{
+      prompt: string
+      negative_prompt: string
+      notes: string
+      source: string
+    }>('/api/engine/enhance-prompt', { method: 'POST', body: JSON.stringify(body) }),
   engineEstimate: (body: Record<string, unknown>) =>
     req<GpuEstimate>('/api/engine/estimate', { method: 'POST', body: JSON.stringify(body) }),
   deleteTake: (id: string, takeId: string, deleteFiles = true) =>

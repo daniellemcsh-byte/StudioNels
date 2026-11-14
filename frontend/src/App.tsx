@@ -2941,6 +2941,12 @@ function GenerateTab({
   const [continueInfo, setContinueInfo] = useState<string | null>(null)
   const [restorable, setRestorable] = useState<EngineJob[]>([])
   const [showSpeedTips, setShowSpeedTips] = useState(false)
+  const [enhancing, setEnhancing] = useState(false)
+  const [promptBeforeEnhance, setPromptBeforeEnhance] = useState<{
+    prompt: string
+    negative: string
+  } | null>(null)
+  const [enhanceNote, setEnhanceNote] = useState<string | null>(null)
 
   const effectiveFrames =
     frames > 0 ? frames : Math.max(8, Math.round(Math.max(0.5, durationSec) * Math.max(1, fps)))
@@ -3331,12 +3337,78 @@ function GenerateTab({
           </div>
 
           <div className="field">
-            <label>Prompt</label>
-            <textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Describe the image or shot…" />
+            <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+              <label style={{ margin: 0 }}>Prompt</label>
+              <div className="inline-actions" style={{ gap: 6 }}>
+                {promptBeforeEnhance && (
+                  <button
+                    type="button"
+                    className="btn ghost tiny"
+                    onClick={() => {
+                      setPrompt(promptBeforeEnhance.prompt)
+                      setNegative(promptBeforeEnhance.negative)
+                      setPromptBeforeEnhance(null)
+                      setEnhanceNote('Restored previous prompt.')
+                    }}
+                  >
+                    Undo enhance
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn acid tiny"
+                  disabled={enhancing || !prompt.trim()}
+                  title="Expand prompt with Agent LLM (or offline fallback)"
+                  onClick={async () => {
+                    setEnhancing(true)
+                    setEnhanceNote(null)
+                    try {
+                      setPromptBeforeEnhance({ prompt, negative })
+                      const r = await api.engineEnhancePrompt({
+                        prompt,
+                        negative_prompt: negative,
+                        mode,
+                        style: style?.label || project.visual_style || null,
+                      })
+                      setPrompt(r.prompt)
+                      if (r.negative_prompt) setNegative(r.negative_prompt)
+                      setEnhanceNote(
+                        `${r.notes}${r.source ? ` · via ${r.source}` : ''}`,
+                      )
+                      notify('Prompt enhanced')
+                    } catch (err) {
+                      setPromptBeforeEnhance(null)
+                      notify(String((err as Error).message || err))
+                    } finally {
+                      setEnhancing(false)
+                    }
+                  }}
+                >
+                  {enhancing ? 'Enhancing…' : 'Enhance'}
+                </button>
+              </div>
+            </div>
+            <textarea
+              rows={4}
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="Describe the image or shot…"
+            />
           </div>
           <div className="muted tiny" style={{ marginBottom: 10 }}>
             Style from Time tab: <strong>{style?.label || project.visual_style}</strong> · Save as{' '}
             {project.image_format} / {project.video_format} / {project.audio_format}
+            {enhanceNote ? (
+              <>
+                <br />
+                {enhanceNote}
+              </>
+            ) : (
+              <>
+                <br />
+                Enhance expands a short idea (uses Ollama/Agent when set, else offline rules).
+              </>
+            )}
           </div>
           <div className="field">
             <label>Negative (optional)</label>

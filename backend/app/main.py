@@ -39,6 +39,7 @@ from .models import (
     EngineGenerateRequest,
     FilmNightRequest,
     GenerateRequest,
+    PromptEnhanceRequest,
     GpuEstimateRequest,
     HealthResponse,
     PersonalImportRequest,
@@ -324,6 +325,23 @@ async def engine_workflows(limit: int = 20):
 async def engine_generate(body: EngineGenerateRequest):
     try:
         return enqueue_job(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/engine/enhance-prompt")
+async def engine_enhance_prompt(body: PromptEnhanceRequest):
+    """Expand a short prompt for Generate (Agent LLM, or offline fallback)."""
+    from .prompt_enhance import enhance_prompt
+
+    try:
+        return await enhance_prompt(
+            body.prompt,
+            mode=body.mode or "t2v",
+            negative_prompt=body.negative_prompt or "",
+            style=body.style,
+            force_builtin=body.force_builtin,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
