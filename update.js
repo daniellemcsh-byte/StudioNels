@@ -50,7 +50,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels updated. You must see <code>update-ok: pull-main 2026-11-15-proxy8787</code>. Then <b>Start</b>. run-api must show <code>node-proxy: bound</code>; Vite waits until Python is ready.",
+          "StudioNels updated. Look for <code>update-ok: pull-main 2026-11-15-pykeep</code>. Then <b>Start</b>. If API dies, run-api now keeps a log in <code>cache/api.log</code> and restarts Python.",
       },
     },
   ],

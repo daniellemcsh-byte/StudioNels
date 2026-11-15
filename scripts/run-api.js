@@ -1,6 +1,7 @@
 /**
- * Node owns :8787 immediately (so Start/Vite never see ECONNREFUSED), then
- * spawns Python gateway on :8788 and reverse-proxies once it answers.
+ * Node owns :8787 immediately; Python gateway runs on :8788.
+ * Keeps stdin open (Windows+uvicorn often exits if stdin is closed),
+ * writes cache/api.log, and restarts Python a few times if it dies during boot.
  */
 const { spawn } = require("child_process")
 const fs = require("fs")
@@ -8,10 +9,11 @@ const http = require("http")
 const path = require("path")
 const { assertVenv, cleanEnv } = require("./venv-env")
 
-const BUILD = "2026-11-15-proxy8787"
+const BUILD = "2026-11-15-pykeep"
 const PUBLIC_HOST = "127.0.0.1"
 const PUBLIC_PORT = 8787
 const PY_PORT = 8788
+const MAX_PY_RESTARTS = 5
 
 const root = path.join(__dirname, "..")
 const backend = path.join(root, "backend")
@@ -22,26 +24,58 @@ fs.mkdirSync(cache, { recursive: true })
 const pidFile = path.join(cache, "api.pid")
 const statusFile = path.join(cache, "api.status")
 const exitFile = path.join(cache, "api.exit")
+const logFile = path.join(cache, "api.log")
 
 let pyReady = false
 let pyBooting = true
 let lastPyLog = ""
+let recentLogs = []
 let child = null
-let pyPath = ""
+let pyRestarts = 0
+let stopping = false
 
 function writeStatus(obj) {
   try {
     fs.writeFileSync(
       statusFile,
-      JSON.stringify({ build: BUILD, ...obj, ts: Date.now() }, null, 2),
+      JSON.stringify(
+        {
+          build: BUILD,
+          recentLogs: recentLogs.slice(-12),
+          ...obj,
+          ts: Date.now(),
+        },
+        null,
+        2,
+      ),
     )
   } catch {
     /* ignore */
   }
 }
 
+function appendLog(text) {
+  try {
+    fs.appendFileSync(logFile, text)
+  } catch {
+    /* ignore */
+  }
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim()
+    if (!t) continue
+    lastPyLog = t.slice(0, 400)
+    recentLogs.push(t.slice(0, 400))
+    if (recentLogs.length > 80) recentLogs = recentLogs.slice(-80)
+  }
+}
+
 try {
   fs.unlinkSync(exitFile)
+} catch {
+  /* ignore */
+}
+try {
+  fs.writeFileSync(logFile, `--- run-api ${BUILD} ${new Date().toISOString()} ---\n`)
 } catch {
   /* ignore */
 }
@@ -66,8 +100,9 @@ function proxyReq(clientReq, clientRes) {
         ready: false,
         booting: pyBooting,
         status: pyBooting ? "waiting_for_python" : "python_down",
-        detail: "Python API not reachable on :8788 — see run-api terminal.",
+        detail: "Python API not reachable on :8788 — see run-api terminal / cache/api.log",
         lastLog: lastPyLog || null,
+        recentLogs: recentLogs.slice(-8),
       })
       clientRes.writeHead(503, {
         "content-type": "application/json",
@@ -89,6 +124,8 @@ function readyPayload() {
     build: BUILD,
     python_port: PY_PORT,
     lastLog: lastPyLog || null,
+    recentLogs: recentLogs.slice(-8),
+    restarts: pyRestarts,
   }
 }
 
@@ -179,7 +216,7 @@ function pollPythonReady() {
 }
 
 function startPython() {
-  pyPath = assertVenv(root)
+  const pyPath = assertVenv(root)
   const env = {
     ...cleanEnv(pyPath),
     STUDIONELS_API_PORT: String(PY_PORT),
@@ -191,12 +228,15 @@ function startPython() {
     throw new Error(`Missing ${bootPy}`)
   }
 
-  console.log("Starting boot-api (python) on 127.0.0.1:8788 …")
-  console.log("(First Windows import of uvicorn can take a while — leave this terminal alone.)")
+  console.log(
+    `Starting boot-api (python) on 127.0.0.1:${PY_PORT} (attempt ${pyRestarts + 1}/${MAX_PY_RESTARTS + 1}) …`,
+  )
 
+  // IMPORTANT: keep stdin as an open pipe. On Windows, uvicorn often shuts down
+  // immediately with "Finished server process" if stdin is ignore/closed (EOF).
   child = spawn(pyPath, ["-u", bootPy], {
     cwd: backend,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
     env,
     windowsHide: true,
   })
@@ -211,14 +251,18 @@ function startPython() {
   function onChunk(buf, stream) {
     const text = buf.toString("utf8")
     stream.write(buf)
-    const line = text.trim().split(/\r?\n/).filter(Boolean).pop()
-    if (!line) return
-    lastPyLog = line.slice(0, 300)
-    let state = "python_spawned"
-    if (/Uvicorn running/i.test(line)) state = "python_listening"
-    else if (/gateway:\s*ready/i.test(line)) state = "api_ready"
-    else if (/boot-api:|gateway:/i.test(line)) state = "python_loading"
-    writeStatus({ state, pid: child.pid, lastLog: lastPyLog })
+    appendLog(text)
+    writeStatus({
+      state: /Uvicorn running/i.test(lastPyLog)
+        ? "python_listening"
+        : /gateway:\s*ready/i.test(lastPyLog)
+          ? "api_ready"
+          : /boot-api:|gateway:/i.test(lastPyLog)
+            ? "python_loading"
+            : "python_spawned",
+      pid: child.pid,
+      lastLog: lastPyLog,
+    })
   }
 
   child.stdout.on("data", (buf) => onChunk(buf, process.stdout))
@@ -228,31 +272,54 @@ function startPython() {
     console.error("Failed to spawn API python:", err)
     pyBooting = false
     lastPyLog = String(err)
+    appendLog(`\nSPAWN ERROR: ${err}\n`)
     writeStatus({ state: "exited", code: 1, lastLog: lastPyLog })
-    try {
-      fs.writeFileSync(
-        exitFile,
-        JSON.stringify({ code: 1, signal: null, ts: Date.now(), error: String(err) }, null, 2),
-      )
-    } catch {
-      /* ignore */
-    }
   })
 
   child.on("exit", (code, signal) => {
     const payload = { code: code == null ? 1 : code, signal: signal || null, ts: Date.now() }
     pyReady = false
-    pyBooting = false
+    appendLog(`\n--- python exited ${JSON.stringify(payload)} ---\n`)
+    console.error("")
+    console.error("API python exited", payload)
+    console.error("Recent python log:")
+    for (const line of recentLogs.slice(-20)) console.error(" ", line)
+    console.error("Full log:", logFile)
+
     try {
-      fs.writeFileSync(exitFile, JSON.stringify(payload, null, 2))
+      fs.writeFileSync(exitFile, JSON.stringify({ ...payload, recentLogs: recentLogs.slice(-30) }, null, 2))
     } catch {
       /* ignore */
     }
+
+    if (!stopping && !pyReady && pyRestarts < MAX_PY_RESTARTS) {
+      pyRestarts += 1
+      pyBooting = true
+      writeStatus({ state: "python_restarting", ...payload, lastLog: lastPyLog })
+      console.error(`Restarting python in 2s (attempt ${pyRestarts + 1})…`)
+      setTimeout(() => {
+        try {
+          startPython()
+        } catch (err) {
+          console.error(err)
+        }
+      }, 2000)
+      return
+    }
+
+    pyBooting = false
     writeStatus({ state: "exited", ...payload, lastLog: lastPyLog })
-    console.error("")
-    console.error("API python exited", payload)
-    console.error("Scroll up for the traceback.")
   })
 
-  pollPythonReady()
+  if (pyRestarts === 0) pollPythonReady()
 }
+
+process.on("SIGINT", () => {
+  stopping = true
+  try {
+    if (child) child.kill()
+  } catch {
+    /* ignore */
+  }
+  process.exit(0)
+})

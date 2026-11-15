@@ -16,7 +16,7 @@ const backend = path.join(root, "backend")
 const py = assertVenv(root)
 const env = cleanEnv(py)
 
-console.log("check-backend build 2026-11-15-proxy8787")
+console.log("check-backend build 2026-11-15-pykeep")
 console.log("Checking", py)
 
 const steps = [

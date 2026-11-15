@@ -4,7 +4,7 @@
 const fs = require("fs")
 const path = require("path")
 
-const BUILD = "2026-11-15-proxy8787"
+const BUILD = "2026-11-15-pykeep"
 const root = path.join(__dirname, "..")
 
 const required = [
@@ -13,7 +13,7 @@ const required = [
   ["scripts/run-api.js", BUILD],
   ["scripts/run-api.js", "node-proxy"],
   ["scripts/boot-api.py", "boot-api: python alive"],
-  ["backend/app/gateway.py", "Ultra-light ASGI"],
+  ["backend/app/gateway.py", "Light ASGI entry"],
 ]
 
 console.log(`assert-fresh build ${BUILD}`)

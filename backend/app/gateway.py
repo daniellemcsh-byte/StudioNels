@@ -1,10 +1,4 @@
-"""Ultra-light ASGI entry so uvicorn binds :8787 before importing app.main.
-
-Pinokio Start waits on TCP :8787 / “Uvicorn running”. Importing app.main
-(and anything it pulls in) can take a long time on Windows — especially after
-a cold start — which left wait-api spinning forever. This gateway imports in
-a background thread so the port opens in under a second.
-"""
+"""Light ASGI entry: bind quickly, load app.main in a background thread."""
 
 from __future__ import annotations
 
@@ -27,7 +21,6 @@ def _set_status(value: str) -> None:
 
 
 def _run_startup_handlers(real: Any) -> None:
-    """Fire FastAPI on_event('startup') handlers the gateway lifespan skipped."""
     handlers: list[Callable[..., Any]] = []
     try:
         handlers.extend(list(getattr(real.router, "on_startup", []) or []))
@@ -93,9 +86,18 @@ class Gateway:
             while True:
                 message = await receive()
                 if message["type"] == "lifespan.startup":
-                    _ensure_load()
-                    await send({"type": "lifespan.startup.complete"})
+                    try:
+                        print("gateway: lifespan startup", flush=True)
+                        _ensure_load()
+                        await send({"type": "lifespan.startup.complete"})
+                        print("gateway: lifespan startup complete", flush=True)
+                    except Exception:
+                        err = traceback.format_exc()
+                        print("gateway: lifespan startup FAILED\n", err, flush=True)
+                        await send({"type": "lifespan.startup.failed", "message": err})
+                        return
                 elif message["type"] == "lifespan.shutdown":
+                    print("gateway: lifespan shutdown", flush=True)
                     await send({"type": "lifespan.shutdown.complete"})
                     return
             return
@@ -134,7 +136,7 @@ class Gateway:
                     "ok": False,
                     "booting": False,
                     "status": "error",
-                    "detail": "API failed to load — see run-api terminal.",
+                    "detail": "API failed to load — see run-api terminal / cache/api.log",
                     "error": err[:2000],
                 },
             )
