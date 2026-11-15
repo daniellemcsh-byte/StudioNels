@@ -3,6 +3,9 @@
 Other apps feel fast because they do not reload 10–30GB weights every click.
 This daemon accepts job request files, runs Diffusers+mmgp in-process, and
 reuses a cached pipeline when the model matches.
+
+Also accepts explicit preload requests so Start / "Load into studio" can
+resident-load Wan 1.3B (etc.) before the first Generate.
 """
 
 from __future__ import annotations
@@ -33,17 +36,153 @@ def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _cache_labels() -> list[str]:
+    try:
+        from .pipe_cache import status as cache_status
+
+        st = cache_status()
+        return list(st.get("cached") or [])
+    except Exception:
+        return []
+
+
 def _heartbeat(extra: dict[str, Any] | None = None) -> None:
-    payload = {"pid": os.getpid(), "ts": time.time()}
+    payload: dict[str, Any] = {"pid": os.getpid(), "ts": time.time()}
     if extra:
         payload.update(extra)
     try:
         from .pipe_cache import status as cache_status
 
-        payload["cache"] = cache_status()
+        st = cache_status()
+        payload["cache"] = st
+        # Flatten for API / dock consumers
+        payload["cached"] = list(st.get("cached") or [])
+    except Exception:
+        payload.setdefault("cached", [])
+    _atomic_write(_daemon_dir() / "heartbeat.json", payload)
+
+
+def _handle_preload(req: dict[str, Any], req_path: Path) -> None:
+    model_id = str(req.get("model_id") or (req.get("job") or {}).get("model_id") or "").strip()
+    preset_id = req.get("preset_id")
+    if preset_id is None:
+        preset_id = (req.get("job") or {}).get("preset_id")
+    progress_path = Path(str(req["progress_file"]))
+    result_path = Path(str(req["result_file"]))
+    cancel_path = Path(str(req.get("cancel_file") or (progress_path.parent / "cancel.flag")))
+
+    def cb(message: str, frac: float) -> None:
+        _atomic_write(
+            progress_path,
+            {
+                "message": message,
+                "progress": float(frac),
+                "ts": time.time(),
+                "warm": True,
+                "action": "preload",
+            },
+        )
+        _heartbeat(
+            {
+                "status": "preloading",
+                "message": message,
+                "progress": float(frac),
+                "model_id": model_id,
+            }
+        )
+        if cancel_path.exists():
+            raise RuntimeError("Stopped by user")
+
+    if not model_id:
+        _atomic_write(
+            result_path,
+            {"ok": False, "error": "preload requires model_id", "cached": _cache_labels()},
+        )
+        try:
+            req_path.unlink()
+        except Exception:
+            pass
+        return
+
+    # Friendly label for early progress (before catalog import)
+    early_label = model_id
+    try:
+        from .catalog import get_model
+
+        m = get_model(model_id)
+        if m:
+            early_label = str(m.get("label") or model_id)
     except Exception:
         pass
-    _atomic_write(_daemon_dir() / "heartbeat.json", payload)
+
+    cb(f"Preloading {early_label} into RAM/VRAM…", 0.04)
+    try:
+        from .mmgp_accel import apply_runtime_env, mmgp_available
+        from .pipelines import preload_diffusers_model
+
+        apply_runtime_env()
+        if mmgp_available():
+            from mmgp import offload as _mmgp_offload  # noqa: F401
+
+        result = preload_diffusers_model(
+            model_id,
+            preset_id=str(preset_id) if preset_id else None,
+            cb=cb,
+        )
+        cached = list(result.get("cached") or _cache_labels())
+        label = str(result.get("label") or early_label)
+        _atomic_write(
+            result_path,
+            {
+                "ok": True,
+                "label": label,
+                "cached": cached,
+                "already_loaded": bool(result.get("already_loaded")),
+                "warm": True,
+                "action": "preload",
+            },
+        )
+        _heartbeat(
+            {
+                "status": "idle",
+                "message": f"Model ready: {label}",
+                "last_preload": model_id,
+                "ok": True,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        _atomic_write(
+            result_path,
+            {
+                "ok": False,
+                "error": str(exc),
+                "traceback": traceback.format_exc()[-2000:],
+                "cached": _cache_labels(),
+                "action": "preload",
+            },
+        )
+        try:
+            cb(f"Preload failed: {exc}", 0.2)
+        except Exception:
+            pass
+        _heartbeat(
+            {
+                "status": "idle",
+                "ok": False,
+                "error": str(exc),
+                "last_preload": model_id,
+            }
+        )
+    finally:
+        try:
+            req_path.unlink()
+        except Exception:
+            pass
+        try:
+            if cancel_path.exists():
+                cancel_path.unlink()
+        except Exception:
+            pass
 
 
 def _handle_request(req_path: Path) -> None:
@@ -55,6 +194,11 @@ def _handle_request(req_path: Path) -> None:
         except Exception:
             pass
         print(f"bad request {req_path}: {exc}", flush=True)
+        return
+
+    action = str(req.get("action") or "generate").strip().lower()
+    if action == "preload":
+        _handle_preload(req, req_path)
         return
 
     job = req.get("job") or {}
@@ -109,7 +253,7 @@ def _handle_request(req_path: Path) -> None:
                 "warm": True,
             },
         )
-        _heartbeat({"last_job": job.get("id"), "ok": True})
+        _heartbeat({"last_job": job.get("id"), "ok": True, "status": "idle"})
     except Exception as exc:  # noqa: BLE001
         _atomic_write(
             result_path,
@@ -123,7 +267,7 @@ def _handle_request(req_path: Path) -> None:
             cb(f"Failed: {exc}", float(job.get("progress") or 0.2))
         except Exception:
             pass
-        _heartbeat({"last_job": job.get("id"), "ok": False, "error": str(exc)})
+        _heartbeat({"last_job": job.get("id"), "ok": False, "error": str(exc), "status": "idle"})
     finally:
         try:
             req_path.unlink()

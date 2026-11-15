@@ -34,6 +34,7 @@ import type {
   EngineJob,
   EngineModel,
   EngineStatus,
+  EngineWarmStatus,
   GenMode,
   GpuEstimate,
   Health,
@@ -360,6 +361,10 @@ function SpeedTipsPanel({
         <li>
           <strong>First load is slow</strong> — ROCm compiles kernels once; later runs are quicker.
         </li>
+        <li>
+          <strong>Keep a model resident</strong> — StudioNels can keep one model loaded like Wan2GP —
+          use <em>Load into studio</em> on Models, or leave Keep model loaded on.
+        </li>
       </ol>
       {onOpenLearning ? (
         <button type="button" className="btn secondary tiny" onClick={onOpenLearning}>
@@ -368,6 +373,43 @@ function SpeedTipsPanel({
       ) : null}
     </div>
   )
+}
+
+function EngineWarmLine() {
+  const [warm, setWarm] = useState<EngineWarmStatus | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const tick = () => {
+      api
+        .engineWarm()
+        .then((w) => {
+          if (!cancelled) setWarm(w)
+        })
+        .catch(() => undefined)
+    }
+    tick()
+    const t = window.setInterval(tick, 2000)
+    return () => {
+      cancelled = true
+      window.clearInterval(t)
+    }
+  }, [])
+  if (!warm) return null
+  if (warm.preloading) {
+    return (
+      <p className="job-phase tone-load tiny" style={{ marginBottom: 10 }}>
+        {warm.message || 'Preloading model into RAM/VRAM…'}
+      </p>
+    )
+  }
+  if (warm.cached?.length) {
+    return (
+      <p className="job-phase tone-done tiny" style={{ marginBottom: 10 }}>
+        Ready: {warm.cached[0]}
+      </p>
+    )
+  }
+  return null
 }
 
 function describeDownloadActivity(m: EngineModel): {
@@ -1341,6 +1383,7 @@ function GenerationDock({
 }) {
   const [jobs, setJobs] = useState<EngineJob[]>([])
   const [downloads, setDownloads] = useState<EngineModel[]>([])
+  const [warm, setWarm] = useState<EngineWarmStatus | null>(null)
   const [minimized, setMinimized] = useState(() => {
     try {
       return window.localStorage.getItem(GEN_DOCK_MIN_KEY) === '1'
@@ -1353,8 +1396,11 @@ function GenerationDock({
   const userMinimized = useRef(minimized)
   const hasLive =
     jobs.some((j) => j.status === 'queued' || j.status === 'running') ||
-    downloads.some((m) => m.download_status === 'downloading' || m.download_status === 'stalled')
+    downloads.some((m) => m.download_status === 'downloading' || m.download_status === 'stalled') ||
+    Boolean(warm?.preloading)
   const nowMs = useNowMs(hasLive)
+  const warmReadyLabel = warm?.cached?.[0] || null
+  const warmBusy = Boolean(warm?.preloading)
 
   const setMinimizedPref = (next: boolean) => {
     userMinimized.current = next
@@ -1370,12 +1416,14 @@ function GenerationDock({
     let cancelled = false
     const tick = async () => {
       try {
-        const [list, pack] = await Promise.all([
+        const [list, pack, warmPack] = await Promise.all([
           api.engineJobs(),
           api.engineModels().catch(() => null),
+          api.engineWarm().catch(() => null),
         ])
         if (cancelled) return
         setJobs(list.slice(0, 12))
+        if (warmPack) setWarm(warmPack)
         const dls = (pack?.models || []).filter(
           (m) =>
             m.download_status === 'downloading' ||
@@ -1438,7 +1486,15 @@ function GenerationDock({
       : recent[0]
         ? Math.round((recent[0].progress || 0) * 100)
         : 0
-  if (recent.length === 0 && downloads.length === 0 && !health?.will_preview) return null
+  if (
+    recent.length === 0 &&
+    downloads.length === 0 &&
+    !health?.will_preview &&
+    !warmReadyLabel &&
+    !warmBusy
+  ) {
+    return null
+  }
 
   if (minimized) {
     return (
@@ -1451,7 +1507,13 @@ function GenerationDock({
         >
           <span
             className="gen-dock-mini-dot"
-            data-active={active.length > 0 || downloads.some((d) => d.download_status === 'downloading') ? '1' : '0'}
+            data-active={
+              active.length > 0 ||
+              downloads.some((d) => d.download_status === 'downloading') ||
+              warmBusy
+                ? '1'
+                : '0'
+            }
           />
           <span className="gen-dock-mini-label">
             {topDl && topDl.download_status === 'downloading'
@@ -1460,9 +1522,13 @@ function GenerationDock({
                 ? `${topAct?.phase || 'Generating'} · ${topProgress}%${
                     topAct?.timerLabel ? ` · ${topAct.timerLabel}` : ''
                   }`
-                : topAct
-                  ? topAct.phase
-                  : 'Engine'}
+                : warmBusy
+                  ? warm?.message || 'Preloading model…'
+                  : warmReadyLabel
+                    ? `Ready: ${warmReadyLabel}`
+                    : topAct
+                      ? topAct.phase
+                      : 'Engine'}
           </span>
           {active.length > 0 ? (
             <span className="gen-dock-mini-bar" aria-hidden>
@@ -1511,16 +1577,22 @@ function GenerationDock({
               ? `Downloading model · ${topProgress}%`
               : active.length > 0
                 ? `${topAct?.phase || 'Generating'} · ${active.length} active`
-                : topAct?.phase || (recent.length || downloads.length ? 'Generation' : 'Engine')}
+                : warmBusy
+                  ? 'Preloading model'
+                  : topAct?.phase || (recent.length || downloads.length ? 'Generation' : 'Engine')}
           </strong>
           <span className="muted tiny">
             {topDl && topDl.download_status === 'downloading'
               ? topDl.download_message || topDl.label
               : topAct && active.length > 0
                 ? `${topAct.timerLabel ? `${topAct.timerLabel} · ` : ''}${topAct.detail}`
-                : health?.will_preview
-                  ? 'Preview mode (placeholders until ROCm PyTorch)'
-                  : health?.device_name || 'built-in'}
+                : warmBusy
+                  ? warm?.message || 'Loading into RAM/VRAM…'
+                  : warmReadyLabel
+                    ? `Ready: ${warmReadyLabel}`
+                    : health?.will_preview
+                      ? 'Preview mode (placeholders until ROCm PyTorch)'
+                      : health?.device_name || 'built-in'}
           </span>
         </button>
         <button
@@ -1533,6 +1605,15 @@ function GenerationDock({
         </button>
       </div>
       <div className="gen-dock-body">
+        {warmBusy ? (
+          <p className="job-phase tone-load tiny" style={{ margin: '0 0 8px' }}>
+            {warm?.message || 'Preloading model into RAM/VRAM…'}
+          </p>
+        ) : warmReadyLabel ? (
+          <p className="job-phase tone-done tiny" style={{ margin: '0 0 8px' }}>
+            Ready: {warmReadyLabel}
+          </p>
+        ) : null}
         {health?.will_preview ? (
           <p className="muted tiny">
             Jobs still run — you get preview clips (color bars + prompt text), not full AI video
@@ -3517,7 +3598,7 @@ function GenerateTab({
     <div>
       <p className="hint">
         {engine?.mmgp?.available
-          ? 'Fast path: Draft · Wan 1.3B / LTX Distilled · same model stays warm after the first load.'
+          ? 'Fast path: Draft · Wan 1.3B / LTX Distilled · Load into studio (or Keep model loaded) so Generate skips reload.'
           : 'mmgp missing — in Pinokio run Update (or Install AMD engine), then Stop → Start. Until then Generate looks stuck at ~3% while PyTorch imports.'}
         {health?.gpu
           ? ` GPU: ${health.device_name}.`
@@ -3578,7 +3659,6 @@ function GenerateTab({
               const cur = models.find((m) => m.id === modelId)
               if (!cur) return null
               const st = cur.download_status || (cur.installed ? 'installed' : 'not_downloaded')
-              const pct = Math.round((cur.download_progress || 0) * 100)
               return (
                 <div className="inline-actions" style={{ marginTop: 8, flexWrap: 'wrap', gap: 8 }}>
                   {(st === 'not_downloaded' || st === 'cancelled' || st === 'failed' || st === 'stalled') && (
@@ -4311,6 +4391,7 @@ function GenerateTab({
             Status bar shows Queue → Load → Setup → Generate → Finish. Remove clears the row only
             (Sampling takes stay).
           </div>
+          <EngineWarmLine />
           <SpeedTipsPanel
             open={showSpeedTips}
             onClose={() => setShowSpeedTips(false)}
@@ -5017,8 +5098,12 @@ function SettingsTab({
             checked={draft.keep_model_loaded !== false}
             onChange={(e) => setDraft({ ...draft, keep_model_loaded: e.target.checked })}
           />{' '}
-          Keep model loaded (faster Generate after first load)
+          Keep model loaded (preload active Ready model like Wan2GP)
         </label>
+        <div className="muted tiny" style={{ gridColumn: '1 / -1' }}>
+          When ON, Save starts loading the active model into the warm engine. Or use Models → Load
+          into studio anytime.
+        </div>
         <div className="muted" style={{ gridColumn: '1 / -1' }}>
           Engine: built-in · Torch: {health?.torch ? 'yes' : 'no'} · GPU:{' '}
           {health?.gpu ? health.device_name : 'not ready'} · Agent:{' '}
@@ -6238,14 +6323,17 @@ function ModelsTab({
   const [templates, setTemplates] = useState<ModelTemplate[]>([])
   const [templateKind, setTemplateKind] = useState<'all' | 'video' | 'image' | 'audio' | 'upsample'>('all')
   const [installingId, setInstallingId] = useState<string | null>(null)
+  const [warm, setWarm] = useState<EngineWarmStatus | null>(null)
+  const [preloadId, setPreloadId] = useState<string | null>(null)
   const templatesRef = useRef<HTMLDivElement | null>(null)
 
   const load = async () => {
-    const [pack, loraPack, inv, tpl] = await Promise.all([
+    const [pack, loraPack, inv, tpl, warmPack] = await Promise.all([
       api.engineModels(),
       api.engineLoras(),
       api.engineAssets().catch(() => null),
       api.engineTemplates().catch(() => null),
+      api.engineWarm().catch(() => null),
     ])
     setModels(pack.models)
     setActiveId(pack.active_model_id || null)
@@ -6253,16 +6341,22 @@ function ModelsTab({
     setLorasPath(loraPack.path)
     if (inv) setAssets(inv)
     if (tpl) setTemplates(tpl.templates)
+    if (warmPack) setWarm(warmPack)
   }
 
   useEffect(() => {
     load().catch((e) => notify(String(e.message || e)))
     const t = window.setInterval(() => {
-      Promise.all([api.engineModels(), api.engineTemplates().catch(() => null)])
-        .then(([pack, tpl]) => {
+      Promise.all([
+        api.engineModels(),
+        api.engineTemplates().catch(() => null),
+        api.engineWarm().catch(() => null),
+      ])
+        .then(([pack, tpl, warmPack]) => {
           setModels(pack.models)
           setActiveId(pack.active_model_id || null)
           if (tpl) setTemplates(tpl.templates)
+          if (warmPack) setWarm(warmPack)
         })
         .catch(() => undefined)
     }, 2000)
@@ -6416,7 +6510,18 @@ function ModelsTab({
         <p className="hint">
           Filter by Generate tab (t2v, i2v, ref2v…). Pick a model and press Download —
           StudioNels stores weights under <code>models/</code> and marks them Ready. No Wan2GP needed.
+          StudioNels can keep one model loaded like Wan2GP — use <strong>Load into studio</strong>, or
+          leave Keep model loaded on.
         </p>
+        {warm?.preloading ? (
+          <p className="job-phase tone-load tiny" style={{ marginTop: 8 }}>
+            {warm.message || 'Preloading model into RAM/VRAM…'}
+          </p>
+        ) : warm?.cached?.length ? (
+          <p className="job-phase tone-done tiny" style={{ marginTop: 8 }}>
+            Ready in studio: {warm.cached[0]}
+          </p>
+        ) : null}
         <div className="mode-grid" style={{ marginTop: 10 }}>
           {(
             [
@@ -6673,6 +6778,47 @@ function ModelsTab({
                 >
                   {isActive ? 'Selected' : 'Use this model'}
                 </button>
+                {st === 'installed' && m.kind !== 'upsample' && (
+                  <button
+                    className="btn secondary tiny"
+                    type="button"
+                    disabled={
+                      busyId === m.id ||
+                      preloadId === m.id ||
+                      Boolean(warm?.preloading) ||
+                      (warm?.cached || []).some((c) => c === m.label)
+                    }
+                    onClick={() => {
+                      setPreloadId(m.id)
+                      void (async () => {
+                        try {
+                          await api.engineModelActivate(m.id)
+                          const r = await api.enginePreload({ model_id: m.id })
+                          notify(
+                            r.message ||
+                              (r.started
+                                ? `Preloading ${m.label} into studio…`
+                                : `Load started for ${m.label}`),
+                          )
+                          const w = await api.engineWarm().catch(() => null)
+                          if (w) setWarm(w)
+                        } catch (err) {
+                          notify(String((err as Error).message || err))
+                        } finally {
+                          setPreloadId(null)
+                        }
+                      })()
+                    }}
+                  >
+                    {(warm?.cached || []).some((c) => c === m.label)
+                      ? 'Loaded in studio'
+                      : preloadId === m.id || (warm?.preloading && warm.preload_model_id === m.id)
+                        ? 'Loading…'
+                        : isActive
+                          ? 'Ready this model'
+                          : 'Load into studio'}
+                  </button>
+                )}
                 {(st === 'not_downloaded' || st === 'cancelled' || st === 'failed' || st === 'stalled') && (
                   <button
                     className="btn secondary tiny"

@@ -322,6 +322,21 @@ export const api = {
       `/api/engine/models/${encodeURIComponent(modelId)}/activate`,
       { method: 'POST', body: '{}' },
     ),
+  engineWarm: () => req<import('./types').EngineWarmStatus>('/api/engine/warm'),
+  enginePreload: (body?: { model_id?: string; preset_id?: string; wait?: boolean }) =>
+    req<{
+      ok: boolean
+      started?: boolean
+      label?: string
+      cached?: string[]
+      error?: string
+      message?: string
+      model_id?: string
+      warm?: import('./types').EngineWarmStatus
+    }>('/api/engine/preload', {
+      method: 'POST',
+      body: JSON.stringify(body || {}),
+    }),
   engineModelAddCustom: (body: {
     hf_id: string
     label?: string

@@ -22,6 +22,9 @@ from .engine.runner import (
     get_job,
     list_jobs,
     list_restorable_jobs,
+    preload_model,
+    start_preload_background,
+    warm_engine_status,
 )
 from .generate import generate_takes
 from .gpu_estimate import estimate_job
@@ -37,6 +40,7 @@ from .models import (
     CreateShotRequest,
     AgentPlanRequest,
     EngineGenerateRequest,
+    EnginePreloadRequest,
     FilmNightRequest,
     GenerateRequest,
     PromptEnhanceRequest,
@@ -113,16 +117,44 @@ def _startup_engine_worker() -> None:
         _ensure_worker()
     except Exception:
         pass
-    # Pre-start warm daemon so the first Generate can reuse a ready worker
+    # Pre-start warm daemon + auto-preload active Ready model (non-blocking)
     try:
         import os
+        import threading
 
-        from .engine.runner import _ensure_warm_daemon
+        from .engine.models_manager import get_active_model_id, list_models_with_status
+        from .engine.runner import _ensure_warm_daemon, start_preload_background
         from .storage import load_settings
 
         if getattr(load_settings(), "keep_model_loaded", True):
             os.environ["STUDIONELS_WARM_ENGINE"] = "1"
             _ensure_warm_daemon()
+
+            def _auto_preload() -> None:
+                try:
+                    active = get_active_model_id()
+                    if not active:
+                        return
+                    row = next(
+                        (m for m in list_models_with_status() if m.get("id") == active),
+                        None,
+                    )
+                    if not row:
+                        return
+                    if not (
+                        row.get("installed")
+                        or str(row.get("download_status") or "") == "installed"
+                    ):
+                        return
+                    start_preload_background(active)
+                except Exception:
+                    pass
+
+            threading.Thread(
+                target=_auto_preload,
+                name="studionels-auto-preload",
+                daemon=True,
+            ).start()
         else:
             os.environ["STUDIONELS_WARM_ENGINE"] = "0"
     except Exception:
@@ -511,6 +543,68 @@ async def engine_memory_profiles():
     }
 
 
+@app.get("/api/engine/warm")
+async def engine_warm():
+    """Warm daemon + resident model status (Wan2GP-like keep-loaded)."""
+    return warm_engine_status()
+
+
+@app.post("/api/engine/preload")
+async def engine_preload(body: EnginePreloadRequest = EnginePreloadRequest()):
+    """Load active (or given) Ready model into the warm daemon pipe_cache."""
+    from .engine.catalog import get_model
+    from .engine.models_manager import get_active_model_id, list_models_with_status
+
+    payload = body
+    model_id = str(payload.model_id or "").strip() or get_active_model_id()
+    if not model_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No model_id and no active model — pick one in Models first.",
+        )
+    try:
+        row = next(
+            (m for m in list_models_with_status() if m.get("id") == model_id),
+            None,
+        )
+    except Exception:
+        row = None
+    model = get_model(model_id)
+    label = str((model or {}).get("label") or (row or {}).get("label") or model_id)
+    if model and model.get("hf_id") and row is not None:
+        if not (
+            row.get("installed") or str(row.get("download_status") or "") == "installed"
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{label} is not Ready on disk. Open Models → Download until Ready, "
+                    "then tap Load into studio."
+                ),
+            )
+    if payload.wait:
+        result = preload_model(
+            model_id,
+            preset_id=str(payload.preset_id) if payload.preset_id else None,
+        )
+        if not result.get("ok"):
+            raise HTTPException(
+                status_code=500,
+                detail=str(result.get("error") or "Preload failed"),
+            )
+        return {**result, "warm": warm_engine_status()}
+    started = start_preload_background(
+        model_id,
+        preset_id=str(payload.preset_id) if payload.preset_id else None,
+    )
+    return {
+        **started,
+        "ok": True,
+        "label": label,
+        "warm": warm_engine_status(),
+    }
+
+
 @app.get("/api/settings")
 async def get_settings():
     return settings_public()
@@ -520,14 +614,33 @@ async def get_settings():
 async def put_settings(body: Settings):
     import os
 
+    prev = load_settings()
     saved = save_settings(body)
     # Reflect Keep model loaded immediately (overrides Pinokio default env for this process)
     try:
-        from .engine.runner import _ensure_warm_daemon, _kill_warm_daemon
+        from .engine.models_manager import get_active_model_id, list_models_with_status
+        from .engine.runner import _ensure_warm_daemon, _kill_warm_daemon, start_preload_background
 
         if getattr(saved, "keep_model_loaded", True):
             os.environ["STUDIONELS_WARM_ENGINE"] = "1"
             _ensure_warm_daemon()
+            # When Keep model loaded is ON, preload active Ready model (background)
+            turned_on = not bool(getattr(prev, "keep_model_loaded", True))
+            if turned_on:
+                active = get_active_model_id()
+                if active:
+                    try:
+                        row = next(
+                            (m for m in list_models_with_status() if m.get("id") == active),
+                            None,
+                        )
+                    except Exception:
+                        row = None
+                    if row and (
+                        row.get("installed")
+                        or str(row.get("download_status") or "") == "installed"
+                    ):
+                        start_preload_background(active)
         else:
             os.environ["STUDIONELS_WARM_ENGINE"] = "0"
             _kill_warm_daemon()

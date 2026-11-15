@@ -322,6 +322,12 @@ class GpuEstimateRequest(BaseModel):
     preset_id: str | None = None
 
 
+class EnginePreloadRequest(BaseModel):
+    model_id: str | None = None
+    preset_id: str | None = None
+    wait: bool = False
+
+
 class RehearsalRequest(BaseModel):
     shot_ids: list[str] | None = None
     takes_per_shot: int = 2

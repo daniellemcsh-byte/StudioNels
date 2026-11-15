@@ -477,6 +477,19 @@ export interface Settings {
   wan2gp_assets_path?: string
 }
 
+export interface EngineWarmStatus {
+  keep_model_loaded: boolean
+  daemon_alive: boolean
+  daemon_status?: string
+  cached: string[]
+  active_model_id?: string | null
+  preloading?: boolean
+  message?: string | null
+  preload_model_id?: string | null
+  progress?: number
+  error?: string | null
+}
+
 export interface PersonalProfile {
   github_url: string
   huggingface_url: string

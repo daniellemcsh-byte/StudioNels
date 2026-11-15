@@ -508,6 +508,277 @@ def _kill_warm_daemon() -> None:
         pass
 
 
+_PRELOAD_STATE: dict[str, Any] = {
+    "busy": False,
+    "model_id": None,
+    "message": None,
+    "progress": 0.0,
+    "error": None,
+    "started_at": None,
+}
+_PRELOAD_LOCK = threading.Lock()
+
+
+def warm_engine_status() -> dict[str, Any]:
+    """What the warm daemon has resident — for dock / Models / Settings."""
+    from .models_manager import get_active_model_id
+
+    settings = load_settings()
+    keep = bool(getattr(settings, "keep_model_loaded", True))
+    alive = _daemon_alive()
+    cached: list[str] = []
+    message: str | None = None
+    daemon_status = "down"
+    if alive:
+        try:
+            hb = json.loads(_daemon_paths()["heartbeat"].read_text(encoding="utf-8"))
+            cached = list(hb.get("cached") or (hb.get("cache") or {}).get("cached") or [])
+            daemon_status = str(hb.get("status") or "idle")
+            message = hb.get("message")
+        except Exception:
+            daemon_status = "starting"
+    with _PRELOAD_LOCK:
+        preloading = bool(_PRELOAD_STATE.get("busy"))
+        preload_msg = _PRELOAD_STATE.get("message")
+        preload_model_id = _PRELOAD_STATE.get("model_id")
+        preload_progress = float(_PRELOAD_STATE.get("progress") or 0)
+        preload_error = _PRELOAD_STATE.get("error")
+    if preloading and preload_msg:
+        message = str(preload_msg)
+        daemon_status = "preloading"
+    elif daemon_status == "preloading" and not message:
+        message = "Preloading model into RAM/VRAM…"
+    return {
+        "keep_model_loaded": keep,
+        "daemon_alive": alive,
+        "daemon_status": daemon_status,
+        "cached": cached,
+        "active_model_id": get_active_model_id(),
+        "preloading": preloading or daemon_status == "preloading",
+        "message": message,
+        "preload_model_id": preload_model_id,
+        "progress": preload_progress,
+        "error": preload_error,
+    }
+
+
+def preload_model(
+    model_id: str,
+    preset_id: str | None = None,
+    progress_cb: Any | None = None,
+) -> dict[str, Any]:
+    """Ensure warm daemon, send preload request, wait for result.
+
+    Returns ``{ok, label, cached, error?}``.
+    """
+    from .catalog import get_model
+    from .models_manager import list_models_with_status
+
+    mid = str(model_id or "").strip()
+    if not mid:
+        return {"ok": False, "label": "", "cached": [], "error": "model_id required"}
+
+    model = get_model(mid)
+    if not model:
+        return {"ok": False, "label": mid, "cached": [], "error": f"Unknown model {mid}"}
+    label = str(model.get("label") or mid)
+
+    # Must be Ready on disk — no silent HF fetch during preload
+    try:
+        status_row = next(
+            (m for m in list_models_with_status() if m.get("id") == mid),
+            None,
+        )
+    except Exception:
+        status_row = None
+    if (
+        model.get("hf_id")
+        and status_row is not None
+        and not status_row.get("installed")
+        and str(status_row.get("download_status") or "") != "installed"
+    ):
+        err = (
+            f"{label} is not Ready on disk. Open Models → Download until Ready, "
+            "then tap Load into studio."
+        )
+        return {"ok": False, "label": label, "cached": [], "error": err}
+
+    if model.get("pipeline") == "lanczos" or model.get("kind") == "upsample":
+        return {
+            "ok": False,
+            "label": label,
+            "cached": [],
+            "error": f"{label} does not use a Diffusers weight cache.",
+        }
+
+    def _cb(msg: str, frac: float = 0.0) -> None:
+        with _PRELOAD_LOCK:
+            _PRELOAD_STATE["message"] = msg
+            _PRELOAD_STATE["progress"] = float(frac)
+        if progress_cb:
+            try:
+                progress_cb(msg, float(frac))
+            except Exception:
+                pass
+
+    with _PRELOAD_LOCK:
+        if _PRELOAD_STATE.get("busy"):
+            return {
+                "ok": False,
+                "label": label,
+                "cached": warm_engine_status().get("cached") or [],
+                "error": "A preload is already running — wait for it to finish.",
+            }
+        _PRELOAD_STATE.update(
+            {
+                "busy": True,
+                "model_id": mid,
+                "message": f"Preloading {label} into RAM/VRAM…",
+                "progress": 0.02,
+                "error": None,
+                "started_at": time.time(),
+            }
+        )
+
+    try:
+        os.environ["STUDIONELS_WARM_ENGINE"] = "1"
+        if not _ensure_warm_daemon():
+            err = "Warm engine daemon failed to start. Check daemon.log under media/_engine_daemon/."
+            _cb(err, 0.0)
+            return {"ok": False, "label": label, "cached": [], "error": err}
+
+        ensure_dirs()
+        work = MEDIA_DIR / "_workers" / f"preload-{mid}-{int(time.time())}"
+        work.mkdir(parents=True, exist_ok=True)
+        progress_file = work / "progress.json"
+        result_file = work / "result.json"
+        cancel_file = work / "cancel.flag"
+        for p in (progress_file, result_file, cancel_file):
+            if p.exists():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
+        settings = load_settings()
+        req = {
+            "action": "preload",
+            "model_id": mid,
+            "preset_id": preset_id or getattr(settings, "preset_id", None),
+            "progress_file": str(progress_file),
+            "result_file": str(result_file),
+            "cancel_file": str(cancel_file),
+        }
+        req_path = _daemon_paths()["requests"] / f"preload-{mid}-{int(time.time() * 1000)}.json"
+        req_path.write_text(json.dumps(req), encoding="utf-8")
+        _cb(f"Preloading {label} into RAM/VRAM…", 0.04)
+
+        started = time.time()
+        last_payload: dict[str, Any] = {}
+        while True:
+            if progress_file.exists():
+                try:
+                    payload = json.loads(progress_file.read_text(encoding="utf-8"))
+                    if payload != last_payload:
+                        last_payload = payload
+                        _cb(
+                            str(payload.get("message") or f"Preloading {label}…"),
+                            float(payload.get("progress") or 0),
+                        )
+                except Exception:
+                    pass
+
+            if result_file.exists():
+                try:
+                    result = json.loads(result_file.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "label": label,
+                        "cached": [],
+                        "error": f"Bad preload result: {exc}",
+                    }
+                if result.get("ok"):
+                    cached = list(result.get("cached") or [])
+                    out_label = str(result.get("label") or label)
+                    _cb(f"Model ready: {out_label}", 1.0)
+                    return {
+                        "ok": True,
+                        "label": out_label,
+                        "cached": cached,
+                        "already_loaded": bool(result.get("already_loaded")),
+                    }
+                err = str(result.get("error") or "Preload failed")
+                _cb(err, float(last_payload.get("progress") or 0.2))
+                return {
+                    "ok": False,
+                    "label": label,
+                    "cached": list(result.get("cached") or []),
+                    "error": err,
+                }
+
+            if not _daemon_alive():
+                return {
+                    "ok": False,
+                    "label": label,
+                    "cached": [],
+                    "error": "Warm engine died during preload. Stop → Start StudioNels and retry.",
+                }
+
+            if time.time() - started > _LOAD_MAX_SEC + 60:
+                try:
+                    cancel_file.write_text("1", encoding="utf-8")
+                except Exception:
+                    pass
+                return {
+                    "ok": False,
+                    "label": label,
+                    "cached": [],
+                    "error": (
+                        f"Preload timed out after {int(time.time() - started)}s. "
+                        "Prefer Wan 1.3B / LTX Distilled after Download → Ready."
+                    ),
+                }
+            time.sleep(0.35)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "label": label, "cached": [], "error": str(exc)}
+    finally:
+        with _PRELOAD_LOCK:
+            _PRELOAD_STATE["busy"] = False
+            if _PRELOAD_STATE.get("progress", 0) < 1.0 and not _PRELOAD_STATE.get("error"):
+                # leave last message; clear busy
+                pass
+
+
+def start_preload_background(model_id: str, preset_id: str | None = None) -> dict[str, Any]:
+    """Fire-and-forget preload for API startup / Settings toggle."""
+    mid = str(model_id or "").strip()
+    if not mid:
+        return {"ok": False, "started": False, "error": "model_id required"}
+    with _PRELOAD_LOCK:
+        if _PRELOAD_STATE.get("busy"):
+            return {
+                "ok": True,
+                "started": False,
+                "model_id": mid,
+                "message": _PRELOAD_STATE.get("message") or "Preload already running",
+            }
+
+    def _run() -> None:
+        try:
+            preload_model(mid, preset_id=preset_id)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, name=f"studionels-preload-{mid}", daemon=True).start()
+    return {
+        "ok": True,
+        "started": True,
+        "model_id": mid,
+        "message": f"Preloading {mid} into RAM/VRAM…",
+    }
+
+
 def _run_diffusers_isolated(
     job: dict[str, Any],
     out_path: Path,

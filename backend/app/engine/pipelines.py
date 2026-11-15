@@ -1220,6 +1220,107 @@ def _build_pipeline(
     return pipe
 
 
+def preload_diffusers_model(
+    model_id: str,
+    *,
+    preset_id: str | None = None,
+    cb: ProgressCb | None = None,
+) -> dict[str, Any]:
+    """Load one Diffusers pipeline into pipe_cache without generating.
+
+    Same build path as Generate's warm_cache branch — keeps one resident model
+    so the next Generate skips the multi-minute weight reload.
+    """
+    import torch
+
+    from .memory import resolve_memory_for_job
+    from .pipe_cache import cache_key, get as cache_get, put as cache_put, status as cache_status
+
+    model = get_model(model_id)
+    if not model:
+        raise ValueError(f"Unknown model {model_id}")
+    if model.get("pipeline") == "lanczos" or model.get("kind") == "upsample":
+        raise RuntimeError(f"{model.get('label') or model_id} does not use a Diffusers weight cache.")
+
+    modes = list(model.get("modes") or [])
+    mode = str(modes[0] if modes else ("t2v" if model.get("kind") == "video" else "t2i"))
+    job: dict[str, Any] = {
+        "model_id": model_id,
+        "mode": mode,
+        "preset_id": preset_id,
+        "warm_cache": True,
+    }
+
+    label = str(model.get("label") or model_id)
+    _progress(cb, f"Preloading {label} into RAM/VRAM…", 0.05)
+
+    device_info = detect_device()
+    device = device_info["device"] if device_info["ready_for_inference"] else "cpu"
+    if not device_info.get("diffusers_available"):
+        raise RuntimeError(
+            "Diffusers is not available yet. In Pinokio run Update / Install AMD engine, then Stop → Start."
+        )
+    mem = resolve_memory_for_job(job)
+    dtype_name = str(mem.get("dtype") or "bfloat16")
+    if not device.startswith("cuda"):
+        dtype = torch.float32
+        mem["placement"] = "cpu"
+    elif dtype_name in ("float16", "fp16"):
+        dtype = torch.float16
+    elif dtype_name in ("float32", "fp32"):
+        dtype = torch.float32
+    else:
+        dtype = torch.bfloat16
+
+    vram = device_info.get("vram_gb")
+    placement = str(mem.get("placement") or "")
+    if (
+        isinstance(vram, (int, float))
+        and float(vram) >= 20
+        and placement in {"sequential_cpu_offload", "model_cpu_offload"}
+    ):
+        mem = dict(mem)
+        mem["placement"] = "gpu"
+        mem["placement_label"] = "GPU VRAM (auto — large card)"
+        mem["cpu_offload"] = False
+        mem["attention_slicing"] = False
+        mem["vae_slicing"] = False
+        mem["vae_tiling"] = False
+        mem["text_encoder_on_cpu"] = False
+
+    cpu_offload = bool(mem.get("cpu_offload", True))
+    dtype_key = str(getattr(dtype, "__name__", None) or dtype)
+    key = cache_key(str(model.get("id") or model_id), mem, dtype_key)
+    pipe = cache_get(key)
+    if pipe is not None:
+        cached = cache_status().get("cached") or [label]
+        _progress(cb, f"Model ready: {label}", 1.0)
+        return {"ok": True, "label": label, "cached": list(cached), "already_loaded": True}
+
+    _, is_local_src = _resolve_model_source(model)
+    load_label = (
+        "Loading from local disk (no HF download)"
+        if is_local_src
+        else "Loading from Hugging Face cache / download"
+    )
+    _progress(cb, f"Preloading {label} into RAM/VRAM…", 0.08)
+    pipe = _heartbeat_while(
+        cb,
+        f"Preloading {label} · {load_label}",
+        0.08,
+        0.9,
+        lambda: _build_pipeline(model, device, dtype, cpu_offload, mem, cb=cb),
+        max_sec=6 * 60,
+        is_local=is_local_src,
+    )
+    if pipe is None:
+        raise RuntimeError(f"Failed to preload {label}")
+    cache_put(key, pipe, label=label)
+    cached = cache_status().get("cached") or [label]
+    _progress(cb, f"Model ready: {label}", 1.0)
+    return {"ok": True, "label": label, "cached": list(cached), "already_loaded": False}
+
+
 def run_preview_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None = None) -> dict[str, Any]:
     """Mode-aware preview when weights/torch aren't ready."""
     from PIL import Image, ImageDraw, ImageFont

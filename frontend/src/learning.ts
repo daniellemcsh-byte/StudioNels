@@ -184,7 +184,7 @@ export const LEARN_TOPICS: LearnTopic[] = [
       'Loading once is slow; generating after the model is warm is much faster.',
       'Preview mode is instant but fake — install ROCm + Diffusers for real frames.',
     ],
-    tip: 'Speed like other apps: Download Wan 1.3B or LTX Distilled, use Draft, keep the same model — the warm engine skips reloading weights on the next Generate.',
+    tip: 'StudioNels can keep one model loaded like Wan2GP — use Load into studio, or leave Keep model loaded on. First preload takes minutes; then Generate skips reload.',
   },
   {
     id: 'characters',

@@ -219,7 +219,7 @@ MODELS: list[dict[str, Any]] = [
         "default_frames": 49,
         "fps": 16,
         "supports_lora": True,
-        "notes": "Download in Models → Ready, then Generate (StudioNels engine).",
+        "notes": "Download → Ready, then Load into studio (or Keep model loaded) so Generate skips reload.",
     },
     {
         "id": "wan21-i2v-14b-480p",
