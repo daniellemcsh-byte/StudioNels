@@ -4,6 +4,12 @@ module.exports = {
     {
       method: "shell.run",
       params: {
+        message: ["node scripts/assert-fresh.js"],
+      },
+    },
+    {
+      method: "shell.run",
+      params: {
         message: ["node scripts/free-ports.js"],
       },
     },
@@ -13,8 +19,6 @@ module.exports = {
         message: ["node scripts/check-backend.js"],
       },
     },
-    // Keep API shell alive. Prefer “Uvicorn running” (gateway binds fast).
-    // Also allow boot-api alive so Pinokio advances to wait-api while python starts.
     {
       method: "shell.run",
       params: {
@@ -37,7 +41,6 @@ module.exports = {
         message: ["node scripts/wait-api.js"],
       },
     },
-    // run-frontend also waits for /api/ready — belt and suspenders against 502.
     {
       method: "shell.run",
       params: {
@@ -64,7 +67,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels is running. Open <b>Web UI</b>. If create/project still fails, wait for <code>gateway: app.main ready</code> in run-api, then refresh.",
+          "StudioNels is running. Open <b>Web UI</b>. run-frontend must show <code>2026-11-15-no502</code> and wait for the API before Vite.",
       },
     },
   ],

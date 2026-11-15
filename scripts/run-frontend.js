@@ -86,6 +86,7 @@ async function waitForApi() {
   const npm = process.platform === "win32" ? "npm.cmd" : "npm"
   console.log("Starting Vite on 0.0.0.0:5173 (Tailscale / LAN OK)")
 
+  // Avoid shell:true on Windows (DEP0190) — call npm.cmd directly.
   const child = spawn(
     npm,
     ["run", "dev", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"],
@@ -94,7 +95,7 @@ async function waitForApi() {
       env,
       stdio: "inherit",
       windowsHide: true,
-      shell: process.platform === "win32",
+      shell: false,
     },
   )
 
