@@ -4,15 +4,17 @@
 const fs = require("fs")
 const path = require("path")
 
-const BUILD = "2026-11-15-detach"
+const BUILD = "2026-11-15-vitefix"
 const root = path.join(__dirname, "..")
 
 const required = [
   ["scripts/run-frontend.js", BUILD],
-  ["scripts/wait-api.js", BUILD],
-  ["scripts/run-api.js", BUILD],
+  ["scripts/run-frontend.js", "vite/bin/vite.js"],
+  ["scripts/wait-api.js", "2026-11-15-detach"],
   ["scripts/run-api.js", "node-proxy"],
+  ["scripts/run-api.js", "detached"],
   ["scripts/boot-api.py", "boot-api: python alive"],
+  ["scripts/boot-api.py", "SetConsoleCtrlHandler"],
   ["backend/app/gateway.py", "Light ASGI entry"],
 ]
 
@@ -31,7 +33,7 @@ for (const [rel, needle] of required) {
     console.error(`STALE: ${rel} (expected to contain ${JSON.stringify(needle)})`)
     bad = true
   } else {
-    console.log(`ok: ${rel} (${needle.slice(0, 24)}…)`)
+    console.log(`ok: ${rel}`)
   }
 }
 

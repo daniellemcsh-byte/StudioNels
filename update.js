@@ -50,7 +50,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels updated. Look for <code>update-ok: pull-main 2026-11-15-detach</code>. Then <b>Start</b>. Python is detached from Pinokio CTRL+C so it stays up after ready.",
+          "StudioNels updated. Look for <code>update-ok: pull-main 2026-11-15-vitefix</code>. Then <b>Start</b>. Vite is launched via node (no npm.cmd / spawn EINVAL).",
       },
     },
   ],

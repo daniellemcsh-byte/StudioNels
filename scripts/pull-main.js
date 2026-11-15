@@ -5,7 +5,7 @@ const { execSync } = require("child_process")
 const fs = require("fs")
 const path = require("path")
 
-const BUILD = "2026-11-15-detach"
+const BUILD = "2026-11-15-vitefix"
 const root = path.join(__dirname, "..")
 const remote = "https://github.com/daniellemcsh-byte/StudioNels.git"
 
@@ -57,9 +57,9 @@ const head = runCapture("git rev-parse --short HEAD")
 const subject = runCapture("git log -1 --pretty=%s")
 console.log(`HEAD ${head} — ${subject}`)
 
-const rf = fs.readFileSync(path.join(root, "scripts/run-api.js"), "utf8")
-if (!rf.includes(BUILD) || !rf.includes("node-proxy")) {
-  console.error("run-api.js still STALE after git reset.")
+const rf = fs.readFileSync(path.join(root, "scripts/run-frontend.js"), "utf8")
+if (!rf.includes(BUILD) || !rf.includes("vite/bin/vite.js")) {
+  console.error("run-frontend.js still STALE after git reset.")
   console.error("Stop StudioNels completely, then Update again.")
   process.exit(1)
 }

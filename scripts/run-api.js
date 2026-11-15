@@ -1,7 +1,7 @@
 /**
  * Node owns :8787 immediately; Python gateway runs on :8788.
- * Keeps stdin open (Windows+uvicorn often exits if stdin is closed),
- * writes cache/api.log, and restarts Python a few times if it dies during boot.
+ * Python is spawned detached on Windows (avoids Pinokio CTRL+C killing uvicorn).
+ * Writes cache/api.log and restarts Python a few times if it dies during boot.
  */
 const { spawn } = require("child_process")
 const fs = require("fs")
