@@ -11,23 +11,8 @@ from .agent import plan_project
 from .agent_director import director_chat
 from .captions import captions_srt, generate_captions, timeline_progress
 from .continuity import build_bible, rescore_project
-from .engine.device import detect_device
-from .engine.runner import (
-    cancel_all_jobs,
-    cancel_job,
-    dismiss_finished_jobs,
-    dismiss_job,
-    engine_status_public,
-    enqueue_job,
-    get_job,
-    list_jobs,
-    list_restorable_jobs,
-    preload_model,
-    start_preload_background,
-    warm_engine_status,
-)
-from .generate import generate_takes
-from .gpu_estimate import estimate_job
+# Engine / generate / gpu_estimate are imported lazily inside routes and the
+# startup warm thread so uvicorn can bind :8787 before the heavy stack loads.
 from .llm_providers import list_providers, probe_agent
 from .models import (
     AgentMessage,
@@ -108,15 +93,17 @@ def _startup_engine_worker() -> None:
 
     Inline warm-daemon wait blocked Application startup complete for ~10s+ (and much
     longer when torch/ROCm misbehaves), which left Pinokio wait-api hung on Windows.
+    Engine imports stay inside the thread so binding :8787 is not delayed by runner/pipelines.
     """
-    try:
-        from .engine.mmgp_accel import apply_runtime_env
-
-        apply_runtime_env()
-    except Exception:
-        pass
+    import threading
 
     def _warm_in_background() -> None:
+        try:
+            from .engine.mmgp_accel import apply_runtime_env
+
+            apply_runtime_env()
+        except Exception:
+            pass
         try:
             from .engine.runner import _ensure_worker
 
@@ -160,8 +147,6 @@ def _startup_engine_worker() -> None:
             pass
 
     try:
-        import threading
-
         threading.Thread(
             target=_warm_in_background,
             name="studionels-startup-warm",
@@ -179,6 +164,8 @@ async def ready():
 
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
+    from .engine.device import detect_device
+
     settings = load_settings()
     device = detect_device()
     agent = await probe_agent(settings)
@@ -233,6 +220,8 @@ async def health() -> HealthResponse:
 
 @app.get("/api/engine")
 async def engine():
+    from .engine.runner import engine_status_public
+
     return engine_status_public()
 
 
@@ -417,11 +406,15 @@ async def engine_model_remove_custom(model_id: str):
 
 @app.get("/api/engine/jobs")
 async def engine_jobs(limit: int = 40):
+    from .engine.runner import list_jobs
+
     return list_jobs(limit)
 
 
 @app.get("/api/engine/jobs/{job_id}")
 async def engine_job(job_id: str):
+    from .engine.runner import get_job
+
     job = get_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
@@ -431,6 +424,8 @@ async def engine_job(job_id: str):
 @app.post("/api/engine/jobs/{job_id}/cancel")
 async def engine_job_cancel(job_id: str):
     """Stop generation without wiping the prompt/settings workflow snapshot."""
+    from .engine.runner import cancel_job
+
     try:
         return cancel_job(job_id)
     except ValueError as exc:
@@ -439,12 +434,16 @@ async def engine_job_cancel(job_id: str):
 
 @app.post("/api/engine/jobs/cancel-all")
 async def engine_jobs_cancel_all():
+    from .engine.runner import cancel_all_jobs
+
     return cancel_all_jobs()
 
 
 @app.delete("/api/engine/jobs/{job_id}")
 async def engine_job_dismiss(job_id: str):
     """Hide/remove a job from the generation list (cancels if still running)."""
+    from .engine.runner import dismiss_job
+
     try:
         return dismiss_job(job_id)
     except ValueError as exc:
@@ -454,17 +453,23 @@ async def engine_job_dismiss(job_id: str):
 @app.post("/api/engine/jobs/clear-finished")
 async def engine_jobs_clear_finished():
     """Remove finished / failed / cancelled jobs from the queue list."""
+    from .engine.runner import dismiss_finished_jobs
+
     return dismiss_finished_jobs()
 
 
 @app.get("/api/engine/workflows")
 async def engine_workflows(limit: int = 20):
     """Stopped/failed jobs you can restore into Generate."""
+    from .engine.runner import list_restorable_jobs
+
     return {"jobs": list_restorable_jobs(limit)}
 
 
 @app.post("/api/engine/generate")
 async def engine_generate(body: EngineGenerateRequest):
+    from .engine.runner import enqueue_job
+
     try:
         return enqueue_job(body.model_dump())
     except ValueError as exc:
@@ -519,6 +524,8 @@ async def engine_enhance_prompt(body: PromptEnhanceRequest):
 @app.post("/api/engine/estimate")
 async def engine_estimate(body: GpuEstimateRequest):
     """Honest GPU fit + ETA before queueing — #5 can-my-GPU-do-this."""
+    from .gpu_estimate import estimate_job
+
     return estimate_job(body.model_dump())
 
 
@@ -556,6 +563,8 @@ async def engine_memory_profiles():
 @app.get("/api/engine/warm")
 async def engine_warm():
     """Warm daemon + resident model status (Wan2GP-like keep-loaded)."""
+    from .engine.runner import warm_engine_status
+
     return warm_engine_status()
 
 
@@ -564,6 +573,7 @@ async def engine_preload(body: EnginePreloadRequest = EnginePreloadRequest()):
     """Load active (or given) Ready model into the warm daemon pipe_cache."""
     from .engine.catalog import get_model
     from .engine.models_manager import get_active_model_id, list_models_with_status
+    from .engine.runner import preload_model, start_preload_background, warm_engine_status
 
     payload = body
     model_id = str(payload.model_id or "").strip() or get_active_model_id()
@@ -950,6 +960,8 @@ async def delete_shot(project_id: str, shot_id: str):
 
 @app.post("/api/projects/{project_id}/generate", response_model=Project)
 async def generate(project_id: str, body: GenerateRequest):
+    from .generate import generate_takes
+
     project = load_project(project_id)
     return await generate_takes(
         project,
