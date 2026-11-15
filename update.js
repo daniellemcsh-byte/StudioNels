@@ -36,10 +36,18 @@ module.exports = {
       },
     },
     {
+      method: "shell.run",
+      params: {
+        message: [
+          "node -e \"const w=require('fs').readFileSync('scripts/wait-api.js','utf8'); if(!w.includes('2026-11-15-gateway')){console.error('UPDATE DID NOT LAND gateway wait-api'); process.exit(1)}; console.log('update-ok: wait-api build 2026-11-15-gateway')\"",
+        ],
+      },
+    },
+    {
       method: "notify",
       params: {
         html:
-          "StudioNels updated (engine extras + mmgp). If GPU PyTorch is missing, run <b>Install AMD engine</b>. Then <b>Stop</b> → <b>Start</b> → Web UI.",
+          "StudioNels updated (gateway API boot). Next: <b>Stop</b> → <b>Start</b>. Start’s wait-api line must say <code>wait-api build 2026-11-15-gateway</code>. If GPU PyTorch is missing, run <b>Install AMD engine</b>.",
       },
     },
   ],

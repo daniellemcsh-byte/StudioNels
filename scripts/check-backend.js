@@ -16,12 +16,13 @@ const backend = path.join(root, "backend")
 const py = assertVenv(root)
 const env = cleanEnv(py)
 
+console.log("check-backend build 2026-11-15-gateway")
 console.log("Checking", py)
 
 const steps = [
   ["import fastapi; print('fastapi-ok')", "fastapi"],
   ["import uvicorn; print('uvicorn-ok')", "uvicorn"],
-  // Gateway must import instantly — this is what uvicorn loads on Start.
+  // Gateway must import instantly — boot-api loads this before binding :8787.
   ["import app.gateway; print('gateway-ok')", "app.gateway"],
 ]
 

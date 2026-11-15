@@ -13,14 +13,22 @@ module.exports = {
         message: ["node scripts/check-backend.js"],
       },
     },
-    // Gateway binds :8787 before importing the heavy app.main stack.
-    // Only match “Uvicorn running” (not Application startup) so we never
-    // advance wait-api before the socket is actually listening.
+    // Continue as soon as run-api prints its build line / boot-api starts.
+    // wait-api (next step) is the real TCP gate; gateway binds :8787 before
+    // the heavy app.main import, so this should be seconds — not minutes.
     {
       method: "shell.run",
       params: {
         message: ["node scripts/run-api.js"],
         on: [
+          {
+            event: "/run-api build /i",
+            done: true,
+          },
+          {
+            event: "/boot-api: python alive/i",
+            done: true,
+          },
           {
             event: "/Uvicorn running on/i",
             done: true,
@@ -40,12 +48,10 @@ module.exports = {
         message: ["node scripts/run-frontend.js"],
         on: [
           {
-            // Match any Vite ready line that mentions port 5173 (Local/Network/IP/Tailscale)
             event: "/:5173\\/?/i",
             done: true,
           },
           {
-            // Vite classic banner
             event: "/VITE\\s+v?\\d/i",
             done: true,
           },
@@ -62,7 +68,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels is running. Open <b>Web UI</b>, or on your phone: <code>http://&lt;your-tailscale-name&gt;:5173</code>",
+          "StudioNels is running. Open <b>Web UI</b>. If Generate is empty for a minute, wait for <code>gateway: app.main ready</code> in the run-api terminal.",
       },
     },
   ],
