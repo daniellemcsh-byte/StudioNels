@@ -18,6 +18,8 @@ def apply_runtime_env() -> None:
     # Avoid accidental torch.compile hangs on first AMD kernel
     os.environ.setdefault("TORCHINDUCTOR_DISABLE", "1")
     os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+    # Faster MIOpen autotune path — reduces post-denoise VAE stalls on ROCm
+    os.environ.setdefault("MIOPEN_FIND_MODE", "FAST")
     # transformers↔safetensors(+mmgp) version skew on Windows ROCm installs
     try:
         from .safetensors_compat import apply_safetensors_backend_compat

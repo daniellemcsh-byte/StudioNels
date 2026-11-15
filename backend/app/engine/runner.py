@@ -454,6 +454,7 @@ def _ensure_warm_daemon() -> bool:
     env["PYTHONUNBUFFERED"] = "1"
     env.setdefault("TORCHINDUCTOR_DISABLE", "1")
     env.setdefault("TORCH_COMPILE_DISABLE", "1")
+    env.setdefault("MIOPEN_FIND_MODE", "FAST")
     log_path = _daemon_paths()["root"] / "daemon.log"
     try:
         log_f = open(log_path, "a", encoding="utf-8")
@@ -527,6 +528,7 @@ def _run_diffusers_isolated(
     env["PYTHONUNBUFFERED"] = "1"
     env.setdefault("TORCHINDUCTOR_DISABLE", "1")
     env.setdefault("TORCH_COMPILE_DISABLE", "1")
+    env.setdefault("MIOPEN_FIND_MODE", "FAST")
 
     proc: subprocess.Popen | None = None
     if use_daemon:

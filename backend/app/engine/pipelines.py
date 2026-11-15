@@ -266,7 +266,8 @@ def _save_image(img, path: Path) -> str:
 def _export_video_frames(frames, path: Path, fps: int = 16) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Always write last frame sidecar for video continuation (i2v chain)
-    if frames:
+    # Never truth-test numpy/torch arrays (ambiguous .any()/.all() crash).
+    if frames is not None and len(frames) > 0:
         try:
             frames[-1].save(path.with_name(path.stem + "_last.png"))
         except Exception:
@@ -838,17 +839,29 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
 
     _progress(cb, "Denoise finished — collecting frames…", 0.96)
 
-    # LTX-2 may return (video, audio) tuple / list
-    if isinstance(result, (tuple, list)) and result and not hasattr(result, "frames"):
+    # LTX-2 may return (video, audio) tuple / list — never truth-test arrays
+    if (
+        isinstance(result, (tuple, list))
+        and len(result) > 0
+        and not hasattr(result, "frames")
+    ):
         result = result[0]
 
-    video_frames = getattr(result, "frames", None) or getattr(result, "images", None)
-    if video_frames is None and hasattr(result, "__iter__") and not isinstance(result, (str, bytes)):
-        # numpy / tensor batch already
+    _frames = getattr(result, "frames", None)
+    _images = getattr(result, "images", None)
+    if _frames is not None:
+        video_frames = _frames
+    elif _images is not None:
+        video_frames = _images
+    elif hasattr(result, "shape"):
         video_frames = result
+    elif isinstance(result, (list, tuple)) and len(result) > 0:
+        video_frames = result
+    else:
+        video_frames = None
     if video_frames is None:
         raise RuntimeError("Pipeline returned no frames")
-    if isinstance(video_frames, list) and video_frames and isinstance(video_frames[0], list):
+    if isinstance(video_frames, list) and len(video_frames) > 0 and isinstance(video_frames[0], list):
         video_frames = video_frames[0]
 
     # Torch / numpy batches → PIL list for export
@@ -863,18 +876,22 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             if arr.ndim == 5:
                 arr = arr[0]
             if arr.ndim == 4 and arr.shape[1] in (1, 3, 4) and arr.shape[1] < arr.shape[-1]:
-                # (T, C, H, W) → (T, H, W, C)
                 arr = np.transpose(arr, (0, 2, 3, 1))
             pil_list = []
             for frame in arr:
                 f = frame
                 if f.dtype != np.uint8:
-                    f = np.clip(f, 0, 1) if float(np.nanmax(f)) <= 1.5 else np.clip(f, 0, 255)
-                    f = (f * 255).astype(np.uint8) if float(np.nanmax(f)) <= 1.5 else f.astype(np.uint8)
+                    peak = float(np.nanmax(f)) if getattr(f, "size", 0) else 0.0
+                    if peak <= 1.5:
+                        f = (np.clip(f, 0, 1) * 255).astype(np.uint8)
+                    else:
+                        f = np.clip(f, 0, 255).astype(np.uint8)
+                if getattr(f, "ndim", 0) == 2:
+                    f = np.stack([f, f, f], axis=-1)
                 pil_list.append(Image.fromarray(f[..., :3] if f.shape[-1] >= 3 else f))
             video_frames = pil_list
-    except Exception:
-        pass
+    except Exception as _frames_exc:
+        raise RuntimeError(f"Could not convert decoded frames for export: {_frames_exc}") from _frames_exc
 
     n_frames = len(video_frames) if hasattr(video_frames, "__len__") else 0
     _progress(cb, f"Exporting MP4 ({n_frames} frames)…", 0.97)
@@ -887,7 +904,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         max_sec=5 * 60,
     )
     thumb = str(Path(media).with_suffix(".png"))
-    if not Path(thumb).exists() and video_frames:
+    if not Path(thumb).exists() and video_frames is not None and len(video_frames) > 0:
         try:
             _save_image(video_frames[0], Path(thumb))
         except Exception:
