@@ -6,7 +6,7 @@ const fs = require("fs")
 const http = require("http")
 const path = require("path")
 
-const BUILD = "2026-11-15-pykeep"
+const BUILD = "2026-11-15-detach"
 const HOST = "127.0.0.1"
 const PORT = 8787
 const MAX_MS = Number(process.env.STUDIONELS_WAIT_API_MS || 300000)

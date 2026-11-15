@@ -4,7 +4,7 @@
 const fs = require("fs")
 const path = require("path")
 
-const BUILD = "2026-11-15-pykeep"
+const BUILD = "2026-11-15-detach"
 const root = path.join(__dirname, "..")
 
 const required = [

@@ -9,7 +9,7 @@ const http = require("http")
 const path = require("path")
 const { assertVenv, cleanEnv } = require("./venv-env")
 
-const BUILD = "2026-11-15-pykeep"
+const BUILD = "2026-11-15-detach"
 const PUBLIC_HOST = "127.0.0.1"
 const PUBLIC_PORT = 8787
 const PY_PORT = 8788
@@ -232,14 +232,22 @@ function startPython() {
     `Starting boot-api (python) on 127.0.0.1:${PY_PORT} (attempt ${pyRestarts + 1}/${MAX_PY_RESTARTS + 1}) …`,
   )
 
-  // IMPORTANT: keep stdin as an open pipe. On Windows, uvicorn often shuts down
-  // immediately with "Finished server process" if stdin is ignore/closed (EOF).
-  child = spawn(pyPath, ["-u", bootPy], {
+  // Detach on Windows so Pinokio/Node console CTRL+C does not kill uvicorn
+  // right after "gateway: app.main ready" (exit code 0 + "Shutting down").
+  const childOpts = {
     cwd: backend,
-    stdio: ["pipe", "pipe", "pipe"],
     env,
     windowsHide: true,
-  })
+    // ignore stdin; detached process must not share the Pinokio console group.
+    stdio: ["ignore", "pipe", "pipe"],
+  }
+  if (process.platform === "win32") {
+    childOpts.detached = true
+    // CREATE_NEW_PROCESS_GROUP (0x00000200) — CTRL+C to Pinokio won't hit Python.
+    childOpts.windowsVerbatimArguments = false
+    childOpts.shell = false
+  }
+  child = spawn(pyPath, ["-u", bootPy], childOpts)
 
   try {
     fs.writeFileSync(pidFile, String(child.pid || ""))
@@ -314,12 +322,30 @@ function startPython() {
   if (pyRestarts === 0) pollPythonReady()
 }
 
-process.on("SIGINT", () => {
-  stopping = true
+function killPython() {
+  if (!child || !child.pid) return
   try {
-    if (child) child.kill()
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      })
+    } else {
+      child.kill("SIGTERM")
+    }
   } catch {
     /* ignore */
   }
+}
+
+process.on("SIGINT", () => {
+  stopping = true
+  killPython()
   process.exit(0)
 })
+process.on("SIGTERM", () => {
+  stopping = true
+  killPython()
+  process.exit(0)
+})
+

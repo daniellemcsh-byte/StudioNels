@@ -50,7 +50,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels updated. Look for <code>update-ok: pull-main 2026-11-15-pykeep</code>. Then <b>Start</b>. If API dies, run-api now keeps a log in <code>cache/api.log</code> and restarts Python.",
+          "StudioNels updated. Look for <code>update-ok: pull-main 2026-11-15-detach</code>. Then <b>Start</b>. Python is detached from Pinokio CTRL+C so it stays up after ready.",
       },
     },
   ],
