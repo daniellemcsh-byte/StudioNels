@@ -104,33 +104,38 @@ app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
 @app.on_event("startup")
 def _startup_engine_worker() -> None:
-    """Warm the built-in job worker so Generate/Film night don't sit idle."""
+    """Kick off worker/warm daemon in a background thread so uvicorn binds :8787 immediately.
+
+    Inline warm-daemon wait blocked Application startup complete for ~10s+ (and much
+    longer when torch/ROCm misbehaves), which left Pinokio wait-api hung on Windows.
+    """
     try:
         from .engine.mmgp_accel import apply_runtime_env
 
         apply_runtime_env()
     except Exception:
         pass
-    try:
-        from .engine.runner import _ensure_worker
 
-        _ensure_worker()
-    except Exception:
-        pass
-    # Pre-start warm daemon + auto-preload active Ready model (non-blocking)
-    try:
-        import os
-        import threading
+    def _warm_in_background() -> None:
+        try:
+            from .engine.runner import _ensure_worker
 
-        from .engine.models_manager import get_active_model_id, list_models_with_status
-        from .engine.runner import _ensure_warm_daemon, start_preload_background
-        from .storage import load_settings
+            _ensure_worker()
+        except Exception:
+            pass
+        try:
+            import os
 
-        if getattr(load_settings(), "keep_model_loaded", True):
-            os.environ["STUDIONELS_WARM_ENGINE"] = "1"
-            _ensure_warm_daemon()
+            from .engine.models_manager import get_active_model_id, list_models_with_status
+            from .engine.runner import _ensure_warm_daemon, start_preload_background
+            from .storage import load_settings
 
-            def _auto_preload() -> None:
+            if getattr(load_settings(), "keep_model_loaded", True):
+                os.environ["STUDIONELS_WARM_ENGINE"] = "1"
+                try:
+                    _ensure_warm_daemon()
+                except Exception:
+                    pass
                 try:
                     active = get_active_model_id()
                     if not active:
@@ -149,14 +154,19 @@ def _startup_engine_worker() -> None:
                     start_preload_background(active)
                 except Exception:
                     pass
+            else:
+                os.environ["STUDIONELS_WARM_ENGINE"] = "0"
+        except Exception:
+            pass
 
-            threading.Thread(
-                target=_auto_preload,
-                name="studionels-auto-preload",
-                daemon=True,
-            ).start()
-        else:
-            os.environ["STUDIONELS_WARM_ENGINE"] = "0"
+    try:
+        import threading
+
+        threading.Thread(
+            target=_warm_in_background,
+            name="studionels-startup-warm",
+            daemon=True,
+        ).start()
     except Exception:
         pass
 

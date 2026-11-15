@@ -13,15 +13,20 @@ module.exports = {
         message: ["node scripts/check-backend.js"],
       },
     },
-    // Spawn API daemon; continue as soon as python is launched.
-    // Real readiness is TCP :8787 via wait-api (avoids Ollama-slow /api/health).
+    // Spawn API daemon; only mark done once uvicorn has bound :8787.
+    // Do NOT match "Using …python" — that prints before torch/ROCm import finishes.
+    // wait-api is a TCP fallback if Pinokio missed these log lines.
     {
       method: "shell.run",
       params: {
         message: ["node scripts/run-api.js"],
         on: [
           {
-            event: "/Using .+python/i",
+            event: "/Uvicorn running on/i",
+            done: true,
+          },
+          {
+            event: "/Application startup complete/i",
             done: true,
           },
         ],

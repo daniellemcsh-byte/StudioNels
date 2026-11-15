@@ -12,6 +12,10 @@ const py = assertVenv(root)
 const env = cleanEnv(py)
 
 console.log("Using", py)
+console.log("Starting uvicorn on 127.0.0.1:8787 …")
+console.log(
+  "(First Windows ROCm import can take several minutes before “Uvicorn running” appears.)",
+)
 const child = spawn(
   py,
   [

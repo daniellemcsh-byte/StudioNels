@@ -58,4 +58,22 @@ function freeUnix(port) {
 
 const free = process.platform === "win32" ? freeWindows : freeUnix
 for (const port of PORTS) free(port)
+// On Windows, lingering sockets can flap "address already in use" if we bind
+// immediately after taskkill. Brief pause so :8787 is really free.
+if (process.platform === "win32") {
+  try {
+    execSync("timeout /t 1 /nobreak >nul", {
+      stdio: "ignore",
+      windowsHide: true,
+      shell: true,
+    })
+  } catch {
+    // timeout.exe missing or interrupted — Atomics wait fallback (~1s)
+    try {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000)
+    } catch {
+      /* ignore */
+    }
+  }
+}
 console.log("Ports ready:", PORTS.join(", "))
