@@ -178,6 +178,7 @@ def _heartbeat_while(
     fn: Callable[[], Any],
     *,
     max_sec: int = 360,
+    is_local: bool | None = None,
 ) -> Any:
     """Keep job progress moving while a long blocking load runs (ROCm first load).
 
@@ -215,9 +216,22 @@ def _heartbeat_while(
         while not stop.wait(2.0):
             elapsed = int(time.time() - started)
             frac = min(end_frac, frac + (end_frac - start_frac) / 50.0)
-            hint = " · still in RAM (VRAM fills after this step)"
-            if elapsed >= 90:
-                hint = " · if this passes 5–6 min, Stop and use a smaller Ready model (or link Wan2GP)"
+            if is_local is True:
+                hint = " · still loading from disk into RAM"
+                if elapsed >= 60:
+                    hint = " · large safetensors into RAM — VRAM fills after this"
+                if elapsed >= 90:
+                    hint = " · if this passes 5–6 min, Stop and use a smaller Ready model (or link Wan2GP)"
+            elif is_local is False:
+                hint = " · VRAM stays 0 until download/cache load finishes"
+                if elapsed >= 60:
+                    hint = " · if this is a fresh download it can take a long time — prefer Models → Ready local"
+                if elapsed >= 90:
+                    hint = " · if this passes 5–6 min, Stop and use a smaller Ready model (or link Wan2GP)"
+            else:
+                hint = " · still in RAM (VRAM fills after this step)"
+                if elapsed >= 90:
+                    hint = " · if this passes 5–6 min, Stop and use a smaller Ready model (or link Wan2GP)"
             _progress(
                 cb,
                 f"{label} ({elapsed}s — first AMD load){hint}…",
@@ -677,14 +691,22 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         except Exception:
             pipe = None
     if pipe is None:
-        _progress(cb, "Loading pipeline weights…", 0.05)
+        _, is_local_src = _resolve_model_source(model)
+        if is_local_src:
+            start_msg = "Loading from local disk (no HF download)…"
+            load_label = "Loading from local disk (no HF download)"
+        else:
+            start_msg = "Loading from Hugging Face cache / download…"
+            load_label = "Loading from Hugging Face cache / download"
+        _progress(cb, start_msg, 0.05)
         pipe = _heartbeat_while(
             cb,
-            "Loading pipeline weights",
+            load_label,
             0.05,
             0.18,
             lambda: _build_pipeline(model, device, dtype, cpu_offload, mem, cb=cb),
             max_sec=6 * 60,
+            is_local=is_local_src,
         )
         if job.get("warm_cache") and pipe is not None:
             try:
@@ -702,19 +724,17 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     _apply_text_encoder(pipe, te_job, device, dtype, cb)
     _apply_lora(pipe, job, cb)
     place = (mem or {}).get("placement") or "unknown"
-    # VAE decode after the last denoise step is a common AMD hang — keep slicing/tiling on
-    # for video even when weights are GPU-resident.
+    # Wan VAE tiling hangs on AMD after the last denoise step — chunked decode instead.
     if kind == "video":
         try:
-            if hasattr(pipe, "enable_vae_slicing"):
-                pipe.enable_vae_slicing()
-            if hasattr(pipe, "enable_vae_tiling"):
-                pipe.enable_vae_tiling()
-            if hasattr(pipe, "vae") and pipe.vae is not None:
-                if hasattr(pipe.vae, "enable_slicing"):
-                    pipe.vae.enable_slicing()
-                if hasattr(pipe.vae, "enable_tiling"):
-                    pipe.vae.enable_tiling()
+            from .vae_decode import install_safe_video_decode
+
+            install_safe_video_decode(pipe, cb)
+            _progress(
+                cb,
+                "Video decode set to small frame groups (VAE tiling off — it hangs Wan on AMD)",
+                0.19,
+            )
         except Exception:
             pass
     _progress(
@@ -990,9 +1010,11 @@ def _build_pipeline(
     from .memory import apply_memory_to_pipeline, memory_from_preset
 
     source, is_local = _resolve_model_source(model)
-    where = "local disk" if is_local else "Hugging Face (download if missing)"
     short = source if len(str(source)) < 80 else ("…" + str(source)[-60:])
-    _progress(cb, f"Reading weights from {where}: {short}", 0.06)
+    if is_local:
+        _progress(cb, f"Loading from local disk (no HF download)… {short}", 0.06)
+    else:
+        _progress(cb, f"Loading from Hugging Face cache / download… {short}", 0.06)
 
     def _dtype_kwargs(dt) -> dict[str, Any]:
         # Newer diffusers prefer dtype=; older want torch_dtype=

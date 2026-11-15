@@ -439,13 +439,14 @@ def _daemon_alive() -> bool:
 def _ensure_warm_daemon() -> bool:
     """Start the warm engine daemon if needed. Returns True when a daemon is usable.
 
-    Off by default — a wedged warm daemon left jobs stuck at 3% with no progress.
-    Opt in with STUDIONELS_WARM_ENGINE=1 after the first cold gen succeeds.
+    On by default so Generate after Start reuses weights in RAM (VRAM stays 0 until
+    the first load finishes). Opt out with STUDIONELS_COLD_WORKER=1, or set
+    STUDIONELS_WARM_ENGINE to 0/false/no/off.
     """
     if os.environ.get("STUDIONELS_COLD_WORKER", "").strip().lower() in {"1", "true", "yes"}:
         return False
-    warm = os.environ.get("STUDIONELS_WARM_ENGINE", "").strip().lower() in {"1", "true", "yes"}
-    if not warm:
+    warm_raw = os.environ.get("STUDIONELS_WARM_ENGINE", "1").strip().lower()
+    if warm_raw in {"0", "false", "no", "off"}:
         return False
     if _daemon_alive():
         return True
