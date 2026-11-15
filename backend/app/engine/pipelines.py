@@ -50,15 +50,27 @@ def _call_pipe_with_progress(
 ) -> Any:
     """Run pipe(**kwargs) with step callbacks + heartbeat so UI doesn't sit at 20%."""
     total = max(1, int(steps or 1))
-    state = {"step": 0, "done": False}
+    state = {"step": 0, "done": False, "last_step_at": time.time()}
     stop = threading.Event()
     started = time.time()
 
     def _report(i: int) -> None:
         i = max(0, min(int(i), total))
+        prev = int(state["step"] or 0)
         state["step"] = i
+        if i > prev:
+            state["last_step_at"] = time.time()
         frac = 0.22 + 0.68 * min(1.0, i / total)
         elapsed = int(time.time() - started)
+        # After the last denoise step, Diffusers still runs VAE decode (often the long AMD hang)
+        if i >= total:
+            _progress(
+                cb,
+                f"{label} · step {total}/{total} · denoise done — decoding frames "
+                f"(VAE, can take several minutes on AMD)… {elapsed}s",
+                0.90,
+            )
+            return
         eta = ""
         if i >= 1:
             per = elapsed / i
@@ -102,6 +114,17 @@ def _call_pipe_with_progress(
                 return
             i = int(state["step"] or 0)
             elapsed = int(time.time() - started)
+            if i >= total:
+                # Still inside pipe() after last step → VAE decode / post-process
+                since = int(time.time() - float(state.get("last_step_at") or started))
+                soft = min(0.96, 0.90 + since / 600.0)
+                _progress(
+                    cb,
+                    f"{label} · decoding / assembling frames… {since}s after step {total}/{total} "
+                    f"(VAE on AMD is often slower than denoise)",
+                    soft,
+                )
+                continue
             if i > 0:
                 _report(i)
                 continue
@@ -109,7 +132,7 @@ def _call_pipe_with_progress(
             soft = 0.22 + min(0.45, elapsed / 180.0)
             hint = ""
             if elapsed >= 90:
-                hint = " · still no step — check Memory=GPU VRAM; Diffusers ≠ Wan2GP speed"
+                hint = " · still no step — check Memory=GPU VRAM"
             _progress(
                 cb,
                 f"{label} · step 0/{total} · starting denoise · {elapsed}s{hint}",
@@ -678,6 +701,21 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     _apply_text_encoder(pipe, te_job, device, dtype, cb)
     _apply_lora(pipe, job, cb)
     place = (mem or {}).get("placement") or "unknown"
+    # VAE decode after the last denoise step is a common AMD hang — keep slicing/tiling on
+    # for video even when weights are GPU-resident.
+    if kind == "video":
+        try:
+            if hasattr(pipe, "enable_vae_slicing"):
+                pipe.enable_vae_slicing()
+            if hasattr(pipe, "enable_vae_tiling"):
+                pipe.enable_vae_tiling()
+            if hasattr(pipe, "vae") and pipe.vae is not None:
+                if hasattr(pipe.vae, "enable_slicing"):
+                    pipe.vae.enable_slicing()
+                if hasattr(pipe.vae, "enable_tiling"):
+                    pipe.vae.enable_tiling()
+        except Exception:
+            pass
     _progress(
         cb,
         f"Generating… {width}×{height} · {frames_n}f · {steps} steps · VRAM busy is normal ({place})",
@@ -798,6 +836,8 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     if result is None:
         raise RuntimeError("Pipeline call failed: " + " | ".join(tried_errors[:3]))
 
+    _progress(cb, "Denoise finished — collecting frames…", 0.96)
+
     # LTX-2 may return (video, audio) tuple / list
     if isinstance(result, (tuple, list)) and result and not hasattr(result, "frames"):
         result = result[0]
@@ -811,15 +851,52 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     if isinstance(video_frames, list) and video_frames and isinstance(video_frames[0], list):
         video_frames = video_frames[0]
 
-    media = _export_video_frames(video_frames, out_path, fps=fps)
+    # Torch / numpy batches → PIL list for export
+    try:
+        import numpy as np
+        from PIL import Image
+
+        if hasattr(video_frames, "detach"):
+            video_frames = video_frames.detach().float().cpu().numpy()
+        if isinstance(video_frames, np.ndarray):
+            arr = video_frames
+            if arr.ndim == 5:
+                arr = arr[0]
+            if arr.ndim == 4 and arr.shape[1] in (1, 3, 4) and arr.shape[1] < arr.shape[-1]:
+                # (T, C, H, W) → (T, H, W, C)
+                arr = np.transpose(arr, (0, 2, 3, 1))
+            pil_list = []
+            for frame in arr:
+                f = frame
+                if f.dtype != np.uint8:
+                    f = np.clip(f, 0, 1) if float(np.nanmax(f)) <= 1.5 else np.clip(f, 0, 255)
+                    f = (f * 255).astype(np.uint8) if float(np.nanmax(f)) <= 1.5 else f.astype(np.uint8)
+                pil_list.append(Image.fromarray(f[..., :3] if f.shape[-1] >= 3 else f))
+            video_frames = pil_list
+    except Exception:
+        pass
+
+    n_frames = len(video_frames) if hasattr(video_frames, "__len__") else 0
+    _progress(cb, f"Exporting MP4 ({n_frames} frames)…", 0.97)
+    media = _heartbeat_while(
+        cb,
+        f"Exporting MP4 ({n_frames} frames)",
+        0.97,
+        0.99,
+        lambda: _export_video_frames(video_frames, out_path, fps=fps),
+        max_sec=5 * 60,
+    )
     thumb = str(Path(media).with_suffix(".png"))
     if not Path(thumb).exists() and video_frames:
-        _save_image(video_frames[0], Path(thumb))
+        try:
+            _save_image(video_frames[0], Path(thumb))
+        except Exception:
+            pass
     _progress(cb, "Done", 1.0)
     return {
         "media_path": media,
         "thumb_path": thumb if Path(thumb).exists() else media,
-        "frames": len(video_frames),
+        "frames": n_frames,
     }
 
 

@@ -47,6 +47,8 @@ _MAX_JOB_SEC = 20 * 60
 _FIRST_STEP_SEC = 8 * 60
 # Weight load (from_pretrained / mmgp) — heartbeats used to keep this alive forever at ~18%.
 _LOAD_MAX_SEC = 6 * 60
+# After last denoise step, VAE decode can be slow on AMD — but not forever.
+_POST_STEP_MAX_SEC = 10 * 60
 
 
 def _text_encoder_presets() -> list[dict[str, Any]]:
@@ -701,6 +703,29 @@ def _run_diffusers_isolated(
                     "Generation stalled — GPU made no denoise progress for "
                     f"{_STALL_SEC // 60} minutes. Use Draft quality, Wan 1.3B or LTX Distilled, "
                     "fewer frames, Memory = GPU VRAM."
+                )
+
+            # Stuck after last denoise step (VAE decode / export)
+            post_decode = False
+            if saw_step and last_frac >= 0.88:
+                low = last_msg.lower()
+                if any(
+                    s in low
+                    for s in ("decod", "denoise done", "assembling", "exporting")
+                ):
+                    post_decode = True
+                else:
+                    import re as _re
+
+                    m_done = _re.search(r"step\s+(\d+)\s*/\s*(\d+)", last_msg, _re.I)
+                    if m_done and int(m_done.group(1)) >= int(m_done.group(2)):
+                        post_decode = True
+            if post_decode and elapsed >= _POST_STEP_MAX_SEC:
+                _stop_worker(kill=True)
+                raise RuntimeError(
+                    f"Stuck after denoise for {_POST_STEP_MAX_SEC // 60}+ min (VAE decode/export). "
+                    "Try fewer frames / Draft, or Memory with VAE slicing. "
+                    "Stop and retry — denoise had already finished."
                 )
             if (
                 gen_started_at

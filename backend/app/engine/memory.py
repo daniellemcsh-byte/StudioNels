@@ -140,8 +140,9 @@ def resolve_memory_for_job(payload: dict[str, Any] | None = None) -> dict[str, A
             mem["placement_label"] = PLACEMENT_LABELS["gpu"]
             mem["cpu_offload"] = False
             mem["attention_slicing"] = False
-            mem["vae_slicing"] = False
-            mem["vae_tiling"] = False
+            # Keep VAE slicing/tiling — full VAE decode is a common AMD hang after last step
+            mem["vae_slicing"] = True
+            mem["vae_tiling"] = True
             mem["text_encoder_on_cpu"] = False
             mem["auto_upgraded_from_offload"] = True
     except Exception:

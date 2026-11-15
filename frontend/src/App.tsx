@@ -197,6 +197,9 @@ function describeJobActivity(job: EngineJob, nowMs = Date.now()): {
   if (/preview/.test(msg)) {
     return pack(`Creating preview ${modeLabel}`, job.message || `${pct}%`, 'run', 3)
   }
+  if (/decod|assembling frames|exporting mp4|denoise done/.test(msg)) {
+    return pack('Decoding / exporting', job.message || `${pct}%`, 'run', 3)
+  }
   if (/generat|denois|step\s*\d|waiting on gpu/.test(msg) || (job.progress || 0) >= 0.2) {
     const stepMatch =
       (job.message || '').match(/step\s+(\d+)\s*\/\s*(\d+)/i) ||
