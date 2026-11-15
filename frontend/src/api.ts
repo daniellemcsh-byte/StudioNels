@@ -23,9 +23,24 @@ import type {
 
 function errorMessageFromBody(text: string, status: number): string {
   const raw = (text || '').trim()
+  if (status === 502 || status === 504) {
+    return 'API not running on port 8787 (Vite proxy 502). In Pinokio open the run-api terminal, then Stop → Update → Start.'
+  }
+  if (status === 503) {
+    try {
+      const j = JSON.parse(raw) as { detail?: string; booting?: boolean }
+      if (j.booting || /still loading/i.test(String(j.detail || ''))) {
+        return 'API is still loading — wait for “gateway: app.main ready” in the run-api terminal, then retry.'
+      }
+      if (typeof j.detail === 'string' && j.detail.trim()) return j.detail
+    } catch {
+      /* fall through */
+    }
+    return 'API unavailable (503). Check the run-api terminal, then Stop → Start.'
+  }
   if (!raw) return status === 404 ? 'Not found' : `Request failed (${status})`
   try {
-    const j = JSON.parse(raw) as { detail?: unknown }
+    const j = JSON.parse(raw) as { detail?: unknown; booting?: boolean }
     if (typeof j.detail === 'string' && j.detail.trim()) return j.detail
     if (Array.isArray(j.detail)) {
       const parts = j.detail
@@ -57,7 +72,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     })
   } catch {
     throw new Error(
-      'API not running (port 8787). In Pinokio: Stop StudioNels → Update → Start, then retry.',
+      'API not running (port 8787). In Pinokio: Stop → Update → Start, wait until run-api shows Uvicorn running, then retry.',
     )
   }
   if (!res.ok) {

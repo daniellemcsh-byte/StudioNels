@@ -39,7 +39,7 @@ module.exports = {
       method: "shell.run",
       params: {
         message: [
-          "node -e \"const w=require('fs').readFileSync('scripts/wait-api.js','utf8'); if(!w.includes('2026-11-15-gateway')){console.error('UPDATE DID NOT LAND gateway wait-api'); process.exit(1)}; console.log('update-ok: wait-api build 2026-11-15-gateway')\"",
+          "node -e \"const w=require('fs').readFileSync('scripts/wait-api.js','utf8'); if(!w.includes('2026-11-15-no502')){console.error('UPDATE DID NOT LAND no502 wait-api'); process.exit(1)}; console.log('update-ok: wait-api build 2026-11-15-no502')\"",
         ],
       },
     },
@@ -47,7 +47,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels updated (gateway API boot). Next: <b>Stop</b> → <b>Start</b>. Start’s wait-api line must say <code>wait-api build 2026-11-15-gateway</code>. If GPU PyTorch is missing, run <b>Install AMD engine</b>.",
+          "StudioNels updated (fixes Vite 502 / API-down). Next: <b>Stop</b> → <b>Start</b>. wait-api must say <code>2026-11-15-no502</code>. Vite will not start until the API is ready.",
       },
     },
   ],

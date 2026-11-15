@@ -13,24 +13,19 @@ module.exports = {
         message: ["node scripts/check-backend.js"],
       },
     },
-    // Continue as soon as run-api prints its build line / boot-api starts.
-    // wait-api (next step) is the real TCP gate; gateway binds :8787 before
-    // the heavy app.main import, so this should be seconds — not minutes.
+    // Keep API shell alive. Prefer “Uvicorn running” (gateway binds fast).
+    // Also allow boot-api alive so Pinokio advances to wait-api while python starts.
     {
       method: "shell.run",
       params: {
         message: ["node scripts/run-api.js"],
         on: [
           {
-            event: "/run-api build /i",
-            done: true,
-          },
-          {
-            event: "/boot-api: python alive/i",
-            done: true,
-          },
-          {
             event: "/Uvicorn running on/i",
+            done: true,
+          },
+          {
+            event: "/boot-api: starting uvicorn/i",
             done: true,
           },
         ],
@@ -42,6 +37,7 @@ module.exports = {
         message: ["node scripts/wait-api.js"],
       },
     },
+    // run-frontend also waits for /api/ready — belt and suspenders against 502.
     {
       method: "shell.run",
       params: {
@@ -68,7 +64,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels is running. Open <b>Web UI</b>. If Generate is empty for a minute, wait for <code>gateway: app.main ready</code> in the run-api terminal.",
+          "StudioNels is running. Open <b>Web UI</b>. If create/project still fails, wait for <code>gateway: app.main ready</code> in run-api, then refresh.",
       },
     },
   ],

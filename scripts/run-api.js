@@ -12,7 +12,7 @@ const fs = require("fs")
 const path = require("path")
 const { assertVenv, cleanEnv } = require("./venv-env")
 
-const BUILD = "2026-11-15-gateway"
+const BUILD = "2026-11-15-no502"
 const root = path.join(__dirname, "..")
 const backend = path.join(root, "backend")
 const cache = path.join(root, "cache")
