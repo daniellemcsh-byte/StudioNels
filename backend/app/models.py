@@ -233,6 +233,8 @@ class Settings(BaseModel):
     friendly_mode: bool = True
     default_gen_mode: str = "t2v"
     cpu_offload: bool = True
+    # Keep last Diffusers model resident in the warm engine (Wan2GP-like feel).
+    keep_model_loaded: bool = True
     # Wan2GP paths — point at existing install; no need to copy huge weights.
     wan2gp_ckpts_path: str = ""
     wan2gp_loras_path: str = ""

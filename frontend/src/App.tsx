@@ -5011,6 +5011,14 @@ function SettingsTab({
           />{' '}
           CPU offload (saves VRAM)
         </label>
+        <label className="muted">
+          <input
+            type="checkbox"
+            checked={draft.keep_model_loaded !== false}
+            onChange={(e) => setDraft({ ...draft, keep_model_loaded: e.target.checked })}
+          />{' '}
+          Keep model loaded (faster Generate after first load)
+        </label>
         <div className="muted" style={{ gridColumn: '1 / -1' }}>
           Engine: built-in · Torch: {health?.torch ? 'yes' : 'no'} · GPU:{' '}
           {health?.gpu ? health.device_name : 'not ready'} · Agent:{' '}

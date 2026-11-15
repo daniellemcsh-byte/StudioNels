@@ -440,14 +440,22 @@ def _ensure_warm_daemon() -> bool:
     """Start the warm engine daemon if needed. Returns True when a daemon is usable.
 
     On by default so Generate after Start reuses weights in RAM (VRAM stays 0 until
-    the first load finishes). Opt out with STUDIONELS_COLD_WORKER=1, or set
-    STUDIONELS_WARM_ENGINE to 0/false/no/off.
+    the first load finishes). Opt out with STUDIONELS_COLD_WORKER=1, set
+    STUDIONELS_WARM_ENGINE to 0/false/no/off, or Settings → Keep model loaded off.
     """
     if os.environ.get("STUDIONELS_COLD_WORKER", "").strip().lower() in {"1", "true", "yes"}:
         return False
-    warm_raw = os.environ.get("STUDIONELS_WARM_ENGINE", "1").strip().lower()
-    if warm_raw in {"0", "false", "no", "off"}:
-        return False
+    warm_env = os.environ.get("STUDIONELS_WARM_ENGINE")
+    if warm_env is not None and warm_env.strip() != "":
+        warm_raw = warm_env.strip().lower()
+        if warm_raw in {"0", "false", "no", "off"}:
+            return False
+    else:
+        try:
+            if not bool(getattr(load_settings(), "keep_model_loaded", True)):
+                return False
+        except Exception:
+            pass
     if _daemon_alive():
         return True
     backend_root = Path(__file__).resolve().parents[2]
@@ -950,16 +958,26 @@ def _run_one(job: dict[str, Any]) -> None:
             f"{model_meta.get('label') or model_meta.get('id')} is not Ready on disk. "
             "Open Models → Download until the progress bar finishes (Ready), then Generate."
         )
-    # StudioNels owns Generate: Diffusers + native mmgp. Wan2GP is opt-in only
-    # (STUDIONELS_PREFER_WAN2GP=1) — not used for everyday downloads / Generate.
+    # StudioNels owns Generate: Diffusers + native mmgp. Wan2GP is opt-in via
+    # STUDIONELS_PREFER_WAN2GP=1, or auto for LTX-2 when Wan2GP is installed
+    # (unless STUDIONELS_FORCE_DIFFUSERS=1).
     wan_only = (
         str(model_meta.get("format") or "") == "wan2gp-engine"
         or str(job.get("model_id") or "").startswith("wgp-")
         or (model_meta.get("wan2gp") and not model_meta.get("hf_id"))
     )
+    mid = str(job.get("model_id") or model_meta.get("id") or "").lower()
+    pipe_name = str(model_meta.get("pipeline") or "")
+    ltx2_like = "LTX2" in pipe_name or mid.startswith("ltx2")
+    force_diffusers = os.environ.get("STUDIONELS_FORCE_DIFFUSERS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     prefer_external = (
         os.environ.get("STUDIONELS_PREFER_WAN2GP", "").strip().lower() in {"1", "true", "yes"}
         or bool(job.get("prefer_wan2gp"))
+        or (ltx2_like and not force_diffusers)
     )
 
     use_diffusers = (
@@ -978,6 +996,9 @@ def _run_one(job: dict[str, Any]) -> None:
             use_wan2gp = bool(wan.get("available"))
         except Exception:
             use_wan2gp = False
+    # When Wan2GP is preferred and available, use it instead of Diffusers
+    if use_wan2gp and prefer_external:
+        use_diffusers = False
     use_real = use_diffusers or use_wan2gp
 
     def _run_external_wan() -> dict[str, Any] | None:
@@ -1037,14 +1058,19 @@ def _run_one(job: dict[str, Any]) -> None:
             job["preview"] = bool(result.get("preview"))
         elif use_wan2gp:
             job["engine"] = "wan2gp"
-            job["message"] = "Starting Wan2GP (opt-in)…"
+            if ltx2_like:
+                wan_msg = "Using Wan2GP for LTX (weights already managed there)…"
+            else:
+                wan_msg = "Starting Wan2GP (opt-in)…"
+            job["message"] = wan_msg
             upsert_job(job)
-            cb("Starting Wan2GP (opt-in)…", 0.03)
+            cb(wan_msg, 0.03)
             result = _run_external_wan()
             if result is None:
                 raise RuntimeError(
-                    "Wan2GP opt-in failed. Unset STUDIONELS_PREFER_WAN2GP and use "
-                    "Models → Download with a StudioNels catalog model."
+                    "Wan2GP path failed. Unset STUDIONELS_PREFER_WAN2GP (or set "
+                    "STUDIONELS_FORCE_DIFFUSERS=1 for LTX-2) and use Models → Download "
+                    "with a StudioNels catalog model."
                 )
             job["preview"] = bool(result.get("preview"))
         else:

@@ -470,6 +470,7 @@ export interface Settings {
   friendly_mode: boolean
   default_gen_mode: string
   cpu_offload: boolean
+  keep_model_loaded?: boolean
   wan2gp_ckpts_path?: string
   wan2gp_loras_path?: string
   wan2gp_text_encoders_path?: string

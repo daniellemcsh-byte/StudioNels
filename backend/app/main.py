@@ -113,6 +113,20 @@ def _startup_engine_worker() -> None:
         _ensure_worker()
     except Exception:
         pass
+    # Pre-start warm daemon so the first Generate can reuse a ready worker
+    try:
+        import os
+
+        from .engine.runner import _ensure_warm_daemon
+        from .storage import load_settings
+
+        if getattr(load_settings(), "keep_model_loaded", True):
+            os.environ["STUDIONELS_WARM_ENGINE"] = "1"
+            _ensure_warm_daemon()
+        else:
+            os.environ["STUDIONELS_WARM_ENGINE"] = "0"
+    except Exception:
+        pass
 
 
 @app.get("/api/ready")
@@ -504,7 +518,22 @@ async def get_settings():
 
 @app.put("/api/settings")
 async def put_settings(body: Settings):
-    return settings_public(save_settings(body))
+    import os
+
+    saved = save_settings(body)
+    # Reflect Keep model loaded immediately (overrides Pinokio default env for this process)
+    try:
+        from .engine.runner import _ensure_warm_daemon, _kill_warm_daemon
+
+        if getattr(saved, "keep_model_loaded", True):
+            os.environ["STUDIONELS_WARM_ENGINE"] = "1"
+            _ensure_warm_daemon()
+        else:
+            os.environ["STUDIONELS_WARM_ENGINE"] = "0"
+            _kill_warm_daemon()
+    except Exception:
+        pass
+    return settings_public(saved)
 
 
 @app.get("/api/agent/providers")

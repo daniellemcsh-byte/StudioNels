@@ -805,6 +805,17 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     if lora_kw is not None:
         kwargs["cross_attention_kwargs"] = lora_kw
 
+    # Distilled LTX-2 family: use official sigma schedule when Diffusers provides it
+    pipe_cls_name = str(model.get("pipeline") or "")
+    if model.get("distilled") and "LTX2" in pipe_cls_name:
+        try:
+            from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES
+
+            kwargs["sigmas"] = DISTILLED_SIGMA_VALUES
+            kwargs["guidance_scale"] = 1.0
+        except ImportError:
+            pass
+
     tried_errors: list[str] = []
     result = None
     attempts = []
@@ -985,6 +996,62 @@ def _resolve_model_source(model: dict[str, Any]) -> tuple[str, bool]:
     return hf_id, False
 
 
+_LTX2_UPGRADE_MSG = (
+    "LTX-2 needs Diffusers 0.38+. In Pinokio: Update "
+    "(or pip install -U 'diffusers>=0.38.0' in backend/.venv). "
+    "Or pick Wan 1.3B / LTX-Video 0.9.7."
+)
+
+
+def _is_ltx2_attr_error(exc: BaseException) -> bool:
+    msg = str(exc)
+    return "LTX2TextConnectors" in msg or "ltx2" in msg.lower()
+
+
+def _resolve_pipeline_cls(model: dict[str, Any]):
+    """Pick the concrete Diffusers pipeline class from the catalog entry."""
+    name = str(model.get("pipeline") or "").strip()
+    wants_ltx2 = name == "LTX2Pipeline" or "LTX2" in name
+
+    if wants_ltx2:
+        pipe_cls = None
+        try:
+            from diffusers.pipelines.ltx2 import LTX2Pipeline as pipe_cls  # type: ignore
+        except Exception:
+            try:
+                from diffusers import LTX2Pipeline as pipe_cls  # type: ignore
+            except Exception:
+                pipe_cls = None
+        if pipe_cls is None:
+            raise RuntimeError(_LTX2_UPGRADE_MSG)
+        return pipe_cls
+
+    if name == "LTXPipeline":
+        try:
+            from diffusers import LTXPipeline
+
+            return LTXPipeline
+        except Exception:
+            try:
+                from diffusers.pipelines.ltx import LTXPipeline  # type: ignore
+
+                return LTXPipeline
+            except Exception:
+                pass
+
+    if name == "StableAudioPipeline":
+        try:
+            from diffusers import StableAudioPipeline
+
+            return StableAudioPipeline
+        except Exception:
+            pass
+
+    from diffusers import DiffusionPipeline
+
+    return DiffusionPipeline
+
+
 def _build_pipeline(
     model: dict[str, Any],
     device: str,
@@ -1005,9 +1072,10 @@ def _build_pipeline(
     except Exception:
         pass
 
-    from diffusers import DiffusionPipeline
-
     from .memory import apply_memory_to_pipeline, memory_from_preset
+
+    pipe_cls = _resolve_pipeline_cls(model)
+    wants_ltx2 = "LTX2" in str(model.get("pipeline") or "")
 
     source, is_local = _resolve_model_source(model)
     short = source if len(str(source)) < 80 else ("…" + str(source)[-60:])
@@ -1038,7 +1106,7 @@ def _build_pipeline(
 
     def _from_pretrained(src: str, **kwargs: Any):
         try:
-            return DiffusionPipeline.from_pretrained(src, **kwargs)
+            return pipe_cls.from_pretrained(src, **kwargs)
         except TypeError as exc:
             # Older diffusers: dtype= unknown → fall back to torch_dtype=
             if "dtype" in kwargs and ("dtype" in str(exc) or "unexpected" in str(exc).lower()):
@@ -1046,7 +1114,11 @@ def _build_pipeline(
                 dt = alt.pop("dtype", None)
                 if dt is not None:
                     alt["torch_dtype"] = dt
-                return DiffusionPipeline.from_pretrained(src, **alt)
+                return pipe_cls.from_pretrained(src, **alt)
+            raise
+        except AttributeError as exc:
+            if wants_ltx2 and _is_ltx2_attr_error(exc):
+                raise RuntimeError(_LTX2_UPGRADE_MSG) from exc
             raise
 
     # Always materialize on CPU first so mmgp can own device placement
@@ -1069,7 +1141,15 @@ def _build_pipeline(
             ) from first_exc
         else:
             raise
+    except AttributeError as first_exc:
+        if wants_ltx2 and _is_ltx2_attr_error(first_exc):
+            raise RuntimeError(_LTX2_UPGRADE_MSG) from first_exc
+        raise
+    except RuntimeError:
+        raise
     except Exception as first_exc:
+        if wants_ltx2 and _is_ltx2_attr_error(first_exc):
+            raise RuntimeError(_LTX2_UPGRADE_MSG) from first_exc
         if "backend" in str(first_exc):
             try:
                 from .safetensors_compat import apply_safetensors_backend_compat
@@ -1077,6 +1157,8 @@ def _build_pipeline(
                 apply_safetensors_backend_compat(force=True)
                 pipe = _from_pretrained(source, **load_kwargs)
             except Exception as retry_exc:
+                if wants_ltx2 and _is_ltx2_attr_error(retry_exc):
+                    raise RuntimeError(_LTX2_UPGRADE_MSG) from retry_exc
                 raise RuntimeError(
                     f"Weight load failed (safetensors/transformers mismatch): {retry_exc}. "
                     "Pinokio → Update, or: pip install -U 'safetensors>=0.5.3'"
@@ -1094,6 +1176,8 @@ def _build_pipeline(
             try:
                 pipe = _from_pretrained(source, **retry_kwargs)
             except Exception as second_exc:
+                if wants_ltx2 and _is_ltx2_attr_error(second_exc):
+                    raise RuntimeError(_LTX2_UPGRADE_MSG) from second_exc
                 hf = model.get("hf_id")
                 if not hf:
                     raise RuntimeError(f"Pipeline load failed: {second_exc}") from second_exc

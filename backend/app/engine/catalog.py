@@ -433,7 +433,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 24,
         "supports_lora": True,
         "tier": "mid",
-        "notes": "Strong alternative for drafts on AMD.",
+        "notes": "Loads on older Diffusers (0.32+) — safest LTX if Update/0.38 isn’t available yet.",
     },
     {
         "id": "ltx2-19b-distilled",
@@ -452,7 +452,7 @@ MODELS: list[dict[str, Any]] = [
         "supports_lora": True,
         "tier": "mid",
         "distilled": True,
-        "notes": "Fast 8-step LTX-2 distilled — fine on 12GB+ with StudioNels mmgp.",
+        "notes": "Needs Diffusers 0.38+ (Pinokio Update). Fast 8-step distilled — uses Wan2GP when installed.",
     },
     {
         "id": "ltx2-official",
@@ -469,7 +469,7 @@ MODELS: list[dict[str, Any]] = [
         "fps": 24,
         "supports_lora": True,
         "tier": "mid",
-        "notes": "Full LTX-2 — prefer Distilled on 12GB; ~16GB+ for full weights with mmgp.",
+        "notes": "Needs Diffusers 0.38+ (Pinokio Update). Prefer Distilled on 12GB; Wan2GP when installed.",
     },
     {
         "id": "ltx2.5-diffusers",
@@ -487,7 +487,7 @@ MODELS: list[dict[str, Any]] = [
         "supports_lora": True,
         "tier": "mid",
         "distilled": True,
-        "notes": "LTX-2.5 distilled Diffusers — ~12GB+ with mmgp (same class as LTX-2 19B Distilled).",
+        "notes": "Needs Diffusers 0.38+ (Pinokio Update). Distilled Diffusers pack — Wan2GP when installed.",
     },
     {
         "id": "ltx2.3-22b-distilled-diffusers",
@@ -505,7 +505,7 @@ MODELS: list[dict[str, Any]] = [
         "supports_lora": True,
         "tier": "mid",
         "distilled": True,
-        "notes": "Distilled LTX-2.3 — ~12GB+ with mmgp quantize; Draft + fewer frames on 12GB.",
+        "notes": "Needs Diffusers 0.38+ (Pinokio Update). Draft + fewer frames on 12GB; Wan2GP when installed.",
     },
     {
         "id": "ltx2.3-22b-distilled-v11-diffusers",
@@ -523,7 +523,7 @@ MODELS: list[dict[str, Any]] = [
         "supports_lora": True,
         "tier": "mid",
         "distilled": True,
-        "notes": "Distilled LTX-2.3 v1.1 — ~12GB+ with mmgp quantize.",
+        "notes": "Needs Diffusers 0.38+ (Pinokio Update). Distilled v1.1 — Wan2GP when installed.",
     },
     {
         "id": "stable-audio-open",
