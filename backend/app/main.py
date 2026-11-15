@@ -49,7 +49,6 @@ from .personal_sources import (
     save_personal_links,
     start_import,
 )
-from .rehearsal import promote_rehearsal_take, run_rehearsal
 from .paths import DATA_DIR, MEDIA_DIR, UPLOADS_DIR, ensure_dirs
 from .storage import (
     delete_project,
@@ -1042,6 +1041,8 @@ async def continuity_rescore(project_id: str):
 
 @app.post("/api/projects/{project_id}/rehearsal", response_model=Project)
 async def rehearsal_pass(project_id: str, body: RehearsalRequest):
+    from .rehearsal import run_rehearsal
+
     project = load_project(project_id)
     if not project.shots:
         raise HTTPException(400, "Add shots before running a rehearsal pass.")
@@ -1050,6 +1051,8 @@ async def rehearsal_pass(project_id: str, body: RehearsalRequest):
 
 @app.post("/api/projects/{project_id}/takes/{take_id}/promote", response_model=Project)
 async def promote_take(project_id: str, take_id: str):
+    from .rehearsal import promote_rehearsal_take
+
     project = load_project(project_id)
     try:
         return promote_rehearsal_take(project, take_id)

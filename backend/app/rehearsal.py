@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from .engine.runner import enqueue_job
 from .models import Project, TimelineClip
 from .storage import get_preset, save_project
 
@@ -12,6 +11,9 @@ def run_rehearsal(
     quality: str = "draft",
 ) -> Project:
     """Greybox pass: queue cheap draft takes for blocking before final gen."""
+    # Lazy: importing runner at module load pulled pipelines into uvicorn boot.
+    from .engine.runner import enqueue_job
+
     preset = get_preset(project.preset_id)
     gen = preset.get("generation", {})
     targets = [s for s in project.shots if shot_ids is None or s.id in shot_ids]

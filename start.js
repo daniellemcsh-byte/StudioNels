@@ -13,9 +13,9 @@ module.exports = {
         message: ["node scripts/check-backend.js"],
       },
     },
-    // Spawn API daemon; only mark done once uvicorn has bound :8787.
-    // Do NOT match "Using …python" — that prints before torch/ROCm import finishes.
-    // wait-api is a TCP fallback if Pinokio missed these log lines.
+    // Gateway binds :8787 before importing the heavy app.main stack.
+    // Only match “Uvicorn running” (not Application startup) so we never
+    // advance wait-api before the socket is actually listening.
     {
       method: "shell.run",
       params: {
@@ -23,10 +23,6 @@ module.exports = {
         on: [
           {
             event: "/Uvicorn running on/i",
-            done: true,
-          },
-          {
-            event: "/Application startup complete/i",
             done: true,
           },
         ],

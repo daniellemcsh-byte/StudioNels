@@ -80,10 +80,13 @@ function readJson(file) {
       console.log(
         `If another Pinokio terminal shows “Uvicorn running”, the API is up — do not CTRL+C that shell.`,
       )
-      if (state === "starting" || state === "spawned") {
+      if (state === "starting" || state === "spawned" || state === "loading") {
         console.log(
-          `(run-api status: ${state} — Python is still booting uvicorn / importing the app)`,
+          `(run-api status: ${state} — waiting for uvicorn to bind; full API may still be loading)`,
         )
+      }
+      if (st && st.lastLog) {
+        console.log(`(last API log: ${String(st.lastLog).slice(0, 160)})`)
       }
     }
     await new Promise((r) => setTimeout(r, EVERY_MS))

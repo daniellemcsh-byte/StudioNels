@@ -21,7 +21,8 @@ console.log("Checking", py)
 const steps = [
   ["import fastapi; print('fastapi-ok')", "fastapi"],
   ["import uvicorn; print('uvicorn-ok')", "uvicorn"],
-  ["import app.main; print('backend-ok')", "app.main"],
+  // Gateway must import instantly — this is what uvicorn loads on Start.
+  ["import app.gateway; print('gateway-ok')", "app.gateway"],
 ]
 
 for (const [code, label] of steps) {
