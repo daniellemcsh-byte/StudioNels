@@ -412,6 +412,28 @@ function EngineWarmLine() {
   return null
 }
 
+function modelStatus(m: EngineModel): string {
+  return m.download_status || (m.installed ? 'installed' : 'not_downloaded')
+}
+
+function modelDownloadLabel(st: string, pct = 0): string {
+  if (st === 'installed') return 'Downloaded'
+  if (st === 'downloading') return `Downloading · ${Math.max(0, Math.min(100, pct))}%`
+  if (st === 'not_downloaded') return 'Not downloaded'
+  if (st === 'stalled') return 'Download stalled'
+  if (st === 'failed') return 'Download failed'
+  if (st === 'cancelled') return 'Download cancelled'
+  return st || 'Unknown'
+}
+
+function modelDownloadBadgeClass(st: string): string {
+  if (st === 'installed') return 'ready'
+  if (st === 'downloading') return 'running'
+  if (st === 'failed' || st === 'stalled') return 'failed'
+  if (st === 'not_downloaded' || st === 'cancelled') return 'missing'
+  return 'queued'
+}
+
 function describeDownloadActivity(m: EngineModel): {
   phase: string
   detail: string
@@ -3639,18 +3661,11 @@ function GenerateTab({
               }}
             >
               {models.map((m) => {
-                const st = m.download_status || (m.installed ? 'installed' : 'not_downloaded')
-                const tag =
-                  st === 'installed'
-                    ? 'ready'
-                    : st === 'downloading'
-                      ? `↓${Math.round((m.download_progress || 0) * 100)}%`
-                      : st === 'stalled' || st === 'cancelled' || st === 'failed'
-                        ? st
-                        : 'not downloaded'
+                const st = modelStatus(m)
+                const pct = Math.round((m.download_progress || 0) * 100)
                 return (
                   <option key={m.id} value={m.id}>
-                    {m.label} · {tag} (≥{m.min_vram_gb} GB)
+                    {m.label} · {modelDownloadLabel(st, pct)} (≥{m.min_vram_gb} GB)
                   </option>
                 )
               })}
@@ -3716,7 +3731,9 @@ function GenerateTab({
                       Clear stuck
                     </button>
                   )}
-                  {st === 'installed' && <span className="muted tiny">Ready on disk — selected for this mode.</span>}
+                  {st === 'installed' && (
+                    <span className="muted tiny">Downloaded — selected for this mode.</span>
+                  )}
                   {cur.notes && <span className="muted tiny">{cur.notes}</span>}
                 </div>
               )
@@ -6310,6 +6327,7 @@ function ModelsTab({
   const [filter, setFilter] = useState<
     'all' | 'big' | 't2i' | 't2v' | 'i2v' | 'ref2i' | 'ref2v' | 't2a' | 'upsample_image' | 'upsample_video'
   >('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'downloaded' | 'not_downloaded'>('all')
   const [customHf, setCustomHf] = useState('rootonchair/LTX-2.3-Distilled-v1.1-Diffusers')
   const [customLabel, setCustomLabel] = useState('LTX-2.3 22B Distilled v1.1')
   const [customKind, setCustomKind] = useState<'video' | 'image' | 'audio' | 'upsample'>('video')
@@ -6369,10 +6387,28 @@ function ModelsTab({
     }
   }, [focusTemplates])
 
-  const shown = models.filter((m) => {
+  const modeFiltered = models.filter((m) => {
     if (filter === 'big') return (m.min_vram_gb || 0) >= 16 || m.tier === 'big'
     if (filter === 'all') return true
     return (m.modes || []).includes(filter as GenMode)
+  })
+
+  const dlCounts = modeFiltered.reduce(
+    (acc, m) => {
+      const st = modelStatus(m)
+      if (st === 'installed') acc.downloaded += 1
+      else if (st === 'downloading') acc.downloading += 1
+      else acc.notDownloaded += 1
+      return acc
+    },
+    { downloaded: 0, notDownloaded: 0, downloading: 0 },
+  )
+
+  const shown = modeFiltered.filter((m) => {
+    const st = modelStatus(m)
+    if (statusFilter === 'downloaded') return st === 'installed'
+    if (statusFilter === 'not_downloaded') return st !== 'installed'
+    return true
   })
 
   const kindDefaultModes = (kind: typeof customKind): string[] => {
@@ -6557,6 +6593,28 @@ function ModelsTab({
             </button>
           ))}
         </div>
+        <p className="model-dl-summary muted tiny" style={{ marginTop: 12 }}>
+          Downloaded: {dlCounts.downloaded} · Not downloaded: {dlCounts.notDownloaded} ·
+          Downloading: {dlCounts.downloading}
+        </p>
+        <div className="mode-grid model-status-filters" style={{ marginTop: 8 }}>
+          {(
+            [
+              ['all', 'All status'],
+              ['downloaded', 'Downloaded'],
+              ['not_downloaded', 'Not downloaded'],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`mode-chip ${statusFilter === id ? 'active' : ''}`}
+              onClick={() => setStatusFilter(id)}
+            >
+              <strong>{label}</strong>
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="panel" style={{ marginTop: 16 }}>
@@ -6714,23 +6772,45 @@ function ModelsTab({
       </div>
 
       <div className="job-list" style={{ marginTop: 16 }}>
+        {shown.length === 0 && (
+          <div className="empty">No models match these filters.</div>
+        )}
         {shown.map((m) => {
-          const st = m.download_status || (m.installed ? 'installed' : 'not_downloaded')
+          const st = modelStatus(m)
           const pct = Math.round((m.download_progress || 0) * 100)
           const isActive = activeId === m.id || m.active
+          const isDownloaded = st === 'installed'
+          const inStudio = (warm?.cached || []).some((c) => c === m.label)
           return (
-            <div className="job-item" key={m.id}>
+            <div
+              className={`job-item model-row ${isDownloaded ? 'model-downloaded' : 'model-missing'}`}
+              key={m.id}
+            >
               <header>
-                <strong>
+                <strong className="model-row-title">
+                  <span
+                    className={`model-dl-dot ${isDownloaded ? 'on' : 'off'}`}
+                    aria-hidden
+                    title={isDownloaded ? 'Downloaded' : 'Not downloaded'}
+                  />
                   {m.label}
+                  {isDownloaded && (
+                    <span className="model-on-disk" title="Weights on disk">
+                      {' '}
+                      ✓ On disk
+                    </span>
+                  )}
                   {isActive ? ' · active' : ''}
                   {m.distilled ? ' · distilled' : ''}
                   {m.wan2gp || m.format === 'wan2gp' ? ' · Wan2GP' : ''}
                   {m.custom ? ' · custom' : ''}
                   {m.discovered ? ' · local' : ''}
                 </strong>
-                <span className={`badge ${st === 'installed' ? 'done' : st === 'failed' ? 'failed' : 'queued'}`}>
-                  {st === 'downloading' ? `${pct}%` : st}
+                <span className="model-row-badges">
+                  {inStudio && <span className="badge ready">Ready in studio</span>}
+                  <span className={`badge ${modelDownloadBadgeClass(st)}`}>
+                    {modelDownloadLabel(st, pct)}
+                  </span>
                 </span>
               </header>
               <div className="muted tiny">
