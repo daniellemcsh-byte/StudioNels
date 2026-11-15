@@ -50,7 +50,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels updated. You must see <code>update-ok: pull-main 2026-11-15-no502</code> above. Then <b>Start</b>. Vite will wait until the API is ready (no more silent 502).",
+          "StudioNels updated. You must see <code>update-ok: pull-main 2026-11-15-proxy8787</code>. Then <b>Start</b>. run-api must show <code>node-proxy: bound</code>; Vite waits until Python is ready.",
       },
     },
   ],

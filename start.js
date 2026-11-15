@@ -19,17 +19,18 @@ module.exports = {
         message: ["node scripts/check-backend.js"],
       },
     },
+    // Node proxy prints this as soon as :8787 is bound (before Python finishes).
     {
       method: "shell.run",
       params: {
         message: ["node scripts/run-api.js"],
         on: [
           {
-            event: "/Uvicorn running on/i",
+            event: "/node-proxy: bound/i",
             done: true,
           },
           {
-            event: "/boot-api: starting uvicorn/i",
+            event: "/Uvicorn running on/i",
             done: true,
           },
         ],
@@ -67,7 +68,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels is running. Open <b>Web UI</b>. run-frontend must show <code>2026-11-15-no502</code> and wait for the API before Vite.",
+          "StudioNels is running. Open <b>Web UI</b>. Stamps must say <code>2026-11-15-proxy8787</code>. If Start hangs, paste the <b>run-api</b> terminal.",
       },
     },
   ],

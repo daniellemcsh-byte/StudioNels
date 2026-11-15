@@ -4,7 +4,7 @@
  */
 const { execSync } = require("child_process")
 
-const PORTS = [5173, 5174, 8787]
+const PORTS = [5173, 5174, 8787, 8788]
 
 function freeWindows(port) {
   try {

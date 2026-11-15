@@ -1,12 +1,11 @@
 /**
- * Force this checkout onto origin/main and verify the no502 Start scripts landed.
- * Used by Pinokio Update — free ports first so Windows file locks don't block git.
+ * Force this checkout onto origin/main and verify proxy8787 scripts landed.
  */
 const { execSync } = require("child_process")
 const fs = require("fs")
 const path = require("path")
 
-const BUILD = "2026-11-15-no502"
+const BUILD = "2026-11-15-proxy8787"
 const root = path.join(__dirname, "..")
 const remote = "https://github.com/daniellemcsh-byte/StudioNels.git"
 
@@ -33,7 +32,6 @@ function runCapture(cmd) {
 
 console.log(`pull-main build ${BUILD}`)
 
-// Unlock script files held by a previous Start (Windows).
 try {
   run("node scripts/free-ports.js")
 } catch (err) {
@@ -59,25 +57,10 @@ const head = runCapture("git rev-parse --short HEAD")
 const subject = runCapture("git log -1 --pretty=%s")
 console.log(`HEAD ${head} — ${subject}`)
 
-const checks = [
-  "scripts/run-frontend.js",
-  "scripts/wait-api.js",
-  "scripts/run-api.js",
-  "scripts/boot-api.py",
-  "backend/app/gateway.py",
-]
-for (const rel of checks) {
-  const full = path.join(root, rel)
-  if (!fs.existsSync(full)) {
-    console.error("MISSING after reset:", rel)
-    process.exit(1)
-  }
-}
-
-const rf = fs.readFileSync(path.join(root, "scripts/run-frontend.js"), "utf8")
-if (!rf.includes(BUILD) || !rf.includes("Waiting for full API ready")) {
-  console.error("run-frontend.js still STALE after git reset — file may be locked.")
-  console.error("Stop StudioNels completely in Pinokio, close extra terminals, run Update again.")
+const rf = fs.readFileSync(path.join(root, "scripts/run-api.js"), "utf8")
+if (!rf.includes(BUILD) || !rf.includes("node-proxy")) {
+  console.error("run-api.js still STALE after git reset.")
+  console.error("Stop StudioNels completely, then Update again.")
   process.exit(1)
 }
 

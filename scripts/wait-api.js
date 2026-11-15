@@ -1,70 +1,36 @@
 /**
- * Wait until the API answers HTTP on :8787.
- * TCP alone is not enough — Vite 502 / ECONNREFUSED means nothing is listening.
- * Build stamp must appear — if missing, Pinokio Update did not land.
+ * Wait until http://127.0.0.1:8787/api/ready reports ready:true.
+ * Node proxy binds immediately; Python on :8788 may take longer.
  */
 const fs = require("fs")
 const http = require("http")
-const net = require("net")
 const path = require("path")
 
-const BUILD = "2026-11-15-no502"
+const BUILD = "2026-11-15-proxy8787"
 const HOST = "127.0.0.1"
 const PORT = 8787
-// TCP+gateway should appear quickly; full app.main ready may take longer on Windows.
-const MAX_MS = Number(process.env.STUDIONELS_WAIT_API_MS || 180000)
-const EVERY_MS = 500
+const MAX_MS = Number(process.env.STUDIONELS_WAIT_API_MS || 300000)
 const root = path.join(__dirname, "..")
 const cache = path.join(root, "cache")
 const exitFile = path.join(cache, "api.exit")
 const statusFile = path.join(cache, "api.status")
 const started = Date.now()
 
-function tcpOpen() {
-  return new Promise((resolve) => {
-    const sock = net.connect({ host: HOST, port: PORT }, () => {
-      sock.end()
-      resolve(true)
-    })
-    sock.on("error", () => resolve(false))
-    sock.setTimeout(1500, () => {
-      sock.destroy()
-      resolve(false)
-    })
-  })
-}
-
 function httpReady() {
   return new Promise((resolve) => {
-    const req = http.get(
-      {
-        host: HOST,
-        port: PORT,
-        path: "/api/ready",
-        timeout: 2000,
-      },
-      (res) => {
-        let body = ""
-        res.on("data", (c) => {
-          body += c
-        })
-        res.on("end", () => {
-          let parsed = null
-          try {
-            parsed = JSON.parse(body)
-          } catch {
-            parsed = null
-          }
-          resolve({
-            ok: res.statusCode === 200,
-            statusCode: res.statusCode,
-            ready: !!(parsed && parsed.ready),
-            booting: !!(parsed && parsed.booting),
-            body: parsed,
-          })
-        })
-      },
-    )
+    const req = http.get({ host: HOST, port: PORT, path: "/api/ready", timeout: 2500 }, (res) => {
+      let body = ""
+      res.on("data", (c) => {
+        body += c
+      })
+      res.on("end", () => {
+        try {
+          resolve({ statusCode: res.statusCode, ...(JSON.parse(body) || {}) })
+        } catch {
+          resolve({ statusCode: res.statusCode })
+        }
+      })
+    })
     req.on("error", () => resolve(null))
     req.on("timeout", () => {
       req.destroy()
@@ -83,62 +49,50 @@ function readJson(file) {
 
 ;(async () => {
   console.log(`wait-api build ${BUILD}`)
-  console.log(`Waiting for API http://${HOST}:${PORT}/api/ready`)
-  console.log(`(up to ${Math.round(MAX_MS / 1000)}s)`)
-  console.log("If you do NOT see this build stamp, Pinokio → Update first.")
+  console.log(`Waiting for full API ready at http://${HOST}:${PORT}/api/ready`)
+  console.log(`(up to ${Math.round(MAX_MS / 1000)}s — python import on Windows can be slow)`)
+  console.log("Watch the run-api terminal for boot-api / gateway lines.")
 
-  let sawTcp = false
-  let sawGateway = false
   let lastLog = 0
   while (Date.now() - started < MAX_MS) {
-    const elapsed = Date.now() - started
     const dead = readJson(exitFile)
-    if (dead) {
+    const st = readJson(statusFile)
+    // Python exit is fatal only if proxy also gone; proxy stays up on purpose.
+    if (dead && st && st.state === "exited") {
       console.error("")
-      console.error(`API process exited before becoming ready (code ${dead.code}).`)
-      console.error("Open the run-api terminal and read the Python traceback.")
-      console.error("Then: Pinokio → Update → Stop → Start.")
+      console.error(`Python API exited (code ${dead.code}) before ready.`)
+      console.error("Open run-api and read the traceback.")
       process.exit(1)
     }
 
-    const tcp = await tcpOpen()
-    if (tcp) sawTcp = true
-
-    if (tcp) {
-      const ready = await httpReady()
-      if (ready && ready.ok && ready.ready) {
-        console.log(`OK: full API ready on http://${HOST}:${PORT}`)
-        process.exit(0)
-      }
-      if (ready && ready.ok) {
-        sawGateway = true
-      }
+    const ready = await httpReady()
+    if (ready && ready.ready) {
+      console.log(`OK: full API ready on http://${HOST}:${PORT}`)
+      process.exit(0)
     }
 
+    const elapsed = Date.now() - started
     if (elapsed - lastLog >= 5000) {
       lastLog = elapsed
-      const st = readJson(statusFile)
       const state = st && st.state ? st.state : "unknown"
       const build = st && st.build ? st.build : "old-or-missing"
       console.log(`Still waiting… ${Math.round(elapsed / 1000)}s`)
       console.log(
-        `(tcp=${sawTcp ? "open" : "closed"}, gateway=${sawGateway ? "up" : "no"}, ` +
-          `full_app=${sawGateway ? "loading…" : "waiting"}, run-api=${state}, build=${build})`,
+        `(proxy=${ready ? "up" : "down"}, ready=${!!(ready && ready.ready)}, ` +
+          `status=${(ready && ready.status) || state}, build=${build})`,
       )
-      if (st && st.lastLog) console.log(`(last API log: ${String(st.lastLog).slice(0, 160)})`)
-      else console.log("(no API log yet — check the run-api terminal)")
+      if (ready && ready.lastLog) console.log(`(python: ${String(ready.lastLog).slice(0, 160)})`)
+      else if (st && st.lastLog) console.log(`(last: ${String(st.lastLog).slice(0, 160)})`)
+      else console.log("(no python log yet — run-api may still be importing uvicorn)")
       if (build !== BUILD) {
-        console.log("WARNING: run-api build mismatch — Stop → Update → Start.")
+        console.log("WARNING: build mismatch — Stop → Update → Start.")
       }
     }
-    await new Promise((r) => setTimeout(r, EVERY_MS))
+    await new Promise((r) => setTimeout(r, 500))
   }
 
   console.error("")
-  console.error(`API never answered http://${HOST}:${PORT}/api/ready`)
-  console.error("Vite would show 502 / ECONNREFUSED without this.")
-  const st = readJson(statusFile)
-  if (st) console.error("Last status:", JSON.stringify(st, null, 2))
-  console.error("Open the run-api terminal and paste it here.")
+  console.error("Timed out waiting for full API ready.")
+  console.error("Paste the run-api terminal output.")
   process.exit(1)
 })()

@@ -1,77 +1,78 @@
 /**
- * Launch Vite only after the API answers on :8787.
- * Prevents the UI opening with proxy 502 / ECONNREFUSED when run-api never bound.
+ * Launch Vite only after http://127.0.0.1:8787/api/ready reports ready:true.
  */
 const { spawn } = require("child_process")
+const fs = require("fs")
 const http = require("http")
-const net = require("net")
 const path = require("path")
 
-const BUILD = "2026-11-15-no502"
+const BUILD = "2026-11-15-proxy8787"
 const HOST = "127.0.0.1"
 const PORT = 8787
-const MAX_MS = Number(process.env.STUDIONELS_WAIT_API_MS || 180000)
+const MAX_MS = Number(process.env.STUDIONELS_WAIT_API_MS || 300000)
 const frontend = path.join(__dirname, "..", "frontend")
+const statusFile = path.join(__dirname, "..", "cache", "api.status")
 
-function tcpOpen() {
+function httpReady() {
   return new Promise((resolve) => {
-    const sock = net.connect({ host: HOST, port: PORT }, () => {
-      sock.end()
-      resolve(true)
-    })
-    sock.on("error", () => resolve(false))
-    sock.setTimeout(1500, () => {
-      sock.destroy()
-      resolve(false)
-    })
-  })
-}
-
-function httpReadyFull() {
-  return new Promise((resolve) => {
-    const req = http.get({ host: HOST, port: PORT, path: "/api/ready", timeout: 2000 }, (res) => {
+    const req = http.get({ host: HOST, port: PORT, path: "/api/ready", timeout: 2500 }, (res) => {
       let body = ""
       res.on("data", (c) => {
         body += c
       })
       res.on("end", () => {
         try {
-          const j = JSON.parse(body)
-          resolve(res.statusCode === 200 && !!j.ready)
+          resolve({ statusCode: res.statusCode, ...(JSON.parse(body) || {}) })
         } catch {
-          resolve(false)
+          resolve(null)
         }
       })
     })
-    req.on("error", () => resolve(false))
+    req.on("error", () => resolve(null))
     req.on("timeout", () => {
       req.destroy()
-      resolve(false)
+      resolve(null)
     })
   })
+}
+
+function readStatus() {
+  try {
+    return JSON.parse(fs.readFileSync(statusFile, "utf8"))
+  } catch {
+    return null
+  }
 }
 
 async function waitForApi() {
   console.log(`run-frontend build ${BUILD}`)
   console.log(`Waiting for full API ready on http://${HOST}:${PORT}/api/ready before Vite…`)
+  console.log("If this sits here, open the run-api terminal — that is where Python boots.")
   const started = Date.now()
   let last = 0
   while (Date.now() - started < MAX_MS) {
-    if ((await tcpOpen()) && (await httpReadyFull())) {
+    const ready = await httpReady()
+    if (ready && ready.ready) {
       console.log("API is fully ready — starting Vite.")
       return
     }
     const elapsed = Date.now() - started
     if (elapsed - last >= 5000) {
       last = elapsed
+      const st = readStatus()
       console.log(`Still waiting for API… ${Math.round(elapsed / 1000)}s (Vite not started yet)`)
+      console.log(
+        `(proxy=${ready ? "up" : "down"}, status=${(ready && ready.status) || (st && st.state) || "?"})`,
+      )
+      const log = (ready && ready.lastLog) || (st && st.lastLog)
+      if (log) console.log(`(python: ${String(log).slice(0, 160)})`)
+      else console.log("(no python log yet — check run-api for boot-api / errors)")
     }
     await new Promise((r) => setTimeout(r, 500))
   }
   console.error("")
-  console.error(`API not ready at http://${HOST}:${PORT} — refusing to start Vite.`)
-  console.error("That is what caused 502 / ECONNREFUSED in the browser.")
-  console.error("Open the run-api terminal, then: Pinokio → Update → Stop → Start.")
+  console.error("API not ready — refusing to start Vite (avoids 502).")
+  console.error("Paste the run-api terminal.")
   process.exit(1)
 }
 
@@ -82,11 +83,9 @@ async function waitForApi() {
     ...process.env,
     __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: ".ts.net",
   }
-
   const npm = process.platform === "win32" ? "npm.cmd" : "npm"
   console.log("Starting Vite on 0.0.0.0:5173 (Tailscale / LAN OK)")
 
-  // Avoid shell:true on Windows (DEP0190) — call npm.cmd directly.
   const child = spawn(
     npm,
     ["run", "dev", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"],
