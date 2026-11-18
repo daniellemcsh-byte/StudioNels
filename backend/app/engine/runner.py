@@ -790,7 +790,7 @@ def preload_model(
                     "cached": [],
                     "error": (
                         f"Preload timed out after {int(time.time() - started)}s. "
-                        "Prefer Wan 1.3B / LTX Distilled after Download → Ready."
+                        "Confirm this model is Ready in Models, then Generate again."
                     ),
                 }
             time.sleep(0.35)
@@ -1001,8 +1001,8 @@ def _run_diffusers_isolated(
             if child_silent >= 5 and (now - last_parent_pulse) >= 5:
                 soft = min(0.55, 0.2 + child_silent / 600.0)
                 cb(
-                    f"Waiting on GPU… {int(elapsed)}s elapsed · no new step — "
-                    f"Draft + Wan 1.3B / LTX Distilled is the fast path",
+                    f"Waiting on GPU… {int(elapsed)}s elapsed · "
+                    f"{job.get('model_label') or 'this model'} is still on the current step",
                     max(float(job.get("progress") or 0.2), soft),
                 )
                 last_parent_pulse = now
@@ -1030,15 +1030,14 @@ def _run_diffusers_isolated(
                 raise RuntimeError(
                     f"Model load stuck for {_LOAD_MAX_SEC // 60}+ min (still before generate). "
                     "VRAM often stays 0 until weights finish reading into RAM. "
-                    "Stop → Models → confirm Ready → try Wan 1.3B or LTX Distilled."
+                    "Stop → Models → confirm this model is Ready, then Generate again."
                 )
 
             if child_silent >= _STALL_SEC and not saw_step:
                 _stop_worker(kill=True)
                 raise RuntimeError(
                     "Generation stalled — GPU made no denoise progress for "
-                    f"{_STALL_SEC // 60} minutes. Use Draft quality, Wan 1.3B or LTX Distilled, "
-                    "fewer frames, Memory = GPU VRAM."
+                    f"{_STALL_SEC // 60} minutes. Use a shorter clip and Draft quality, then Generate again."
                 )
 
             # Stuck after last denoise step (VAE decode / export)
@@ -1071,8 +1070,7 @@ def _run_diffusers_isolated(
                 _stop_worker(kill=True)
                 raise RuntimeError(
                     "First denoise step never started (8+ min). "
-                    "Likely stuck in ROCm/offload — use preset Max VRAM (amd-r9700), "
-                    "or a lighter model."
+                    "Large models stream from RAM — Stop, keep the clip at 2–3 seconds and 768×432, then Generate again."
                 )
             if elapsed >= _MAX_JOB_SEC:
                 _stop_worker(kill=True)

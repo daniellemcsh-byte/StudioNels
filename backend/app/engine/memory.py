@@ -124,12 +124,17 @@ def resolve_memory_for_job(payload: dict[str, Any] | None = None) -> dict[str, A
             # Leave a GPU preset on the GPU for the video core only.
             # The text encoder is parked in RAM below, so this is not a 29 GB copy.
             mem["cpu_offload"] = False
-    # The text encoder (UMT5-XXL on Wan) is the 11–23 GB piece. Keep it in RAM
-    # on every card so a 1.3B video model does not ask the GPU for ~29 GB.
-    mem["text_encoder_on_cpu"] = True
     mem["vae_slicing"] = True
     mem["preset_id"] = preset.get("id") or preset_id
-    return mem
+    model = None
+    if payload.get("model_id"):
+        try:
+            from .catalog import get_model
+
+            model = get_model(str(payload.get("model_id")))
+        except Exception:
+            model = None
+    return tune_memory_for_model(mem, model)
 
 
 _TEXT_ENCODER_NAMES = ("text_encoder", "text_encoder_2", "text_encoder_3")
@@ -170,6 +175,33 @@ def _restore_text_encoders(pipe: Any, held: list[tuple[str, Any]]) -> None:
             pass
 
 
+def tune_memory_for_model(mem: dict[str, Any], model: dict[str, Any] | None) -> dict[str, Any]:
+    """Pick a placement the selected model can actually finish.
+
+    Wan's text encoder is the piece that asks for ~29 GB if it is copied onto
+    the GPU in one go, so that encoder stays in RAM. LTX has to keep its
+    encoder with the transformer or the first denoise step sits in VRAM and
+    never advances. Models at 13B and up stream layer by layer instead of
+    pinning the whole file on the card.
+    """
+    mem = dict(mem or {})
+    model = model or {}
+    pipe = str(model.get("pipeline") or "")
+    mid = str(model.get("id") or "").lower()
+    ltx = "LTX" in pipe or mid.startswith("ltx")
+    wan = (not ltx) and ("Wan" in pipe or mid.startswith("wan"))
+    flux = "flux" in mid
+    huge = ltx or any(tok in mid for tok in ("14b", "22b", "19b", "13b", "hunyuan", "mochi"))
+    mem["text_encoder_on_cpu"] = bool(wan or flux)
+    mem["vae_slicing"] = True
+    mem["stream_weights"] = bool(huge)
+    if huge and mem.get("placement") in {"gpu", "model_cpu_offload"}:
+        mem["placement"] = "sequential_cpu_offload"
+        mem["placement_label"] = PLACEMENT_LABELS["sequential_cpu_offload"]
+        mem["cpu_offload"] = True
+    return mem
+
+
 def apply_memory_to_pipeline(pipe: Any, device: str, mem: dict[str, Any]) -> str:
     """Place a Diffusers pipeline according to the memory profile. Returns placement used.
 
@@ -178,7 +210,7 @@ def apply_memory_to_pipeline(pipe: Any, device: str, mem: dict[str, Any]) -> str
     """
     placement = mem.get("placement") or "model_cpu_offload"
     used = placement
-    held_encoders = _detach_text_encoders(pipe) if mem.get("text_encoder_on_cpu", True) else []
+    held_encoders = _detach_text_encoders(pipe) if mem.get("text_encoder_on_cpu") else []
 
     # Detect VRAM for mmgp profile selection
     vram_gb = None
@@ -223,6 +255,11 @@ def apply_memory_to_pipeline(pipe: Any, device: str, mem: dict[str, Any]) -> str
                     pipe.enable_model_cpu_offload()
                     used = "model_cpu_offload"
                 except Exception:
+                    if mem.get("stream_weights"):
+                        raise RuntimeError(
+                            "This model stays in RAM and streams to the GPU. "
+                            "That offload did not start. Pinokio → Update, then Generate again."
+                        )
                     pipe.to(device)
                     used = "gpu"
         elif placement == "model_cpu_offload":
@@ -230,14 +267,29 @@ def apply_memory_to_pipeline(pipe: Any, device: str, mem: dict[str, Any]) -> str
                 pipe.enable_model_cpu_offload()
                 used = "model_cpu_offload"
             except Exception:
+                if mem.get("stream_weights"):
+                    raise RuntimeError(
+                        "This model stays in RAM and streams to the GPU. "
+                        "That offload did not start. Pinokio → Update, then Generate again."
+                    )
                 pipe.to(device)
                 used = "gpu"
         else:
-            try:
-                pipe.to(device)
-                used = "gpu"
-            except Exception:
-                used = placement
+            if mem.get("stream_weights"):
+                try:
+                    pipe.enable_sequential_cpu_offload()
+                    used = "sequential_cpu_offload"
+                except Exception as exc:
+                    raise RuntimeError(
+                        "This model stays in RAM and streams to the GPU. "
+                        "That offload did not start. Pinokio → Update, then Generate again."
+                    ) from exc
+            else:
+                try:
+                    pipe.to(device)
+                    used = "gpu"
+                except Exception:
+                    used = placement
 
     if held_encoders:
         _restore_text_encoders(pipe, held_encoders)

@@ -113,12 +113,14 @@ def mmgp_status() -> dict[str, Any]:
     return dict(info)
 
 
-def _profile_enum(vram_gb: float | None, placement: str):
+def _profile_enum(vram_gb: float | None, placement: str, mem: dict[str, Any] | None = None):
     from mmgp import profile_type
 
-    # HighRAM_HighVRAM pins the text encoder and transformer together and is
-    # what asks a 32 GB card for a 29 GB block. Low VRAM profile keeps RAM full
-    # and the GPU to the piece that is actually denoising.
+    mem = mem or {}
+    # 13B–22B models fill a 32 GB card if the profile tries to keep them resident.
+    # Stream those. Smaller models keep a low-VRAM profile so the video core can run.
+    if mem.get("stream_weights") or placement == "sequential_cpu_offload":
+        return profile_type.LowRAM_LowVRAM
     if isinstance(vram_gb, (int, float)) and float(vram_gb) >= 16:
         return profile_type.HighRAM_LowVRAM
     if isinstance(vram_gb, (int, float)) and float(vram_gb) >= 10:
@@ -160,6 +162,7 @@ def apply_mmgp_to_pipeline(
     profile = _profile_enum(
         float(vram_gb) if isinstance(vram_gb, (int, float)) else None,
         placement,
+        mem,
     )
     profile_name = getattr(profile, "name", str(profile))
 

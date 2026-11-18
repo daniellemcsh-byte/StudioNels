@@ -225,7 +225,7 @@ function describeJobActivity(job: EngineJob, nowMs = Date.now()): {
             ? `Upsampling${stepBit}`
             : `Generating image${stepBit}`
     const detail = hung
-      ? `${job.message || `${pct}%`} · Still before denoise. Stop if load exceeds ~6 min — use a Ready model (Wan 1.3B / LTX Distilled) and Max VRAM.`
+      ? `${job.message || `${pct}%`} · Still on this model. A large one streams from RAM, so the first step is the slow one.`
       : job.message || `${pct}%`
     return pack(phase, detail, hung ? 'fail' : 'run', 3)
   }
@@ -286,8 +286,8 @@ function GenerationStageBar({
         <p className="fit-warn tiny gen-stall-hint">
           Still before step 1 after {act.elapsedLabel}
           {pct < 20
-            ? ' — still loading your StudioNels weights (VRAM stays 0 until RAM load finishes). Prefer Wan 1.3B / LTX Distilled after Download → Ready.'
-            : ' — Stop and retry with Max VRAM + Wan 1.3B / LTX Distilled if this keeps climbing with no Step.'}
+            ? ' — still loading this model into RAM. The step counter starts after that.'
+            : ' — a large model streams from RAM, so step 1 can sit for a few minutes while the elapsed clock moves.'}
         </p>
       ) : null}
       <div className="gen-stage-track" role="list" aria-label="Generation stages">
@@ -353,7 +353,7 @@ function SpeedTipsPanel({
           <strong>Smaller size</strong> — start at 768×432 before going 1080p.
         </li>
         <li>
-          <strong>Smaller model</strong> — Wan 1.3B before 14B; skip LoRA / custom text encoder for tests.
+          <strong>Any Ready model</strong> — Wan, LTX, FLUX, and the rest run on the same engine. A smaller one finishes a test sooner.
         </li>
         <li>
           <strong>One job at a time</strong> — and finish model download (Ready) before generating.
@@ -658,12 +658,15 @@ export default function App() {
           (m.installed || m.download_status === 'installed'),
       )
       const byId = (id: string) => ready.find((m) => m.id === id)
+      const active = ready.find((m) => m.id === engine.active_model_id || m.active)
       const model =
+        active ||
         (clip.mode === 't2v'
-          ? byId('wan21-t2v-1.3b') || ready.find((m) => !m.id.includes('ltx2'))
+          ? byId('wan21-t2v-1.3b')
           : clip.mode === 't2i'
             ? byId('flux-schnell')
-            : byId('stable-audio-open')) || ready[0]
+            : byId('stable-audio-open')) ||
+        ready[0]
       if (!model) {
         goTab('models')
         notify(`Download a model for ${clip.mode.toUpperCase()} first, then press Generate test again.`)

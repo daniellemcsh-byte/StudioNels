@@ -100,17 +100,28 @@ def _call_pipe_with_progress(
             frac,
         )
 
-    def on_step_end(pipe_self=None, step_index=None, timestep=None, callback_kwargs=None, **_kw):
-        # Diffusers callback_on_step_end — step_index is 0-based
+    def on_step_end(*args, **kwargs):
+        # Diffusers calls (pipe, step, t, callback_kwargs). Some LTX builds
+        # omit the pipe. Always return the same dict — an empty one drops
+        # latents and the next step never leaves the GPU.
+        callback_kwargs = kwargs.get("callback_kwargs")
+        step_index = kwargs.get("step_index", kwargs.get("i"))
+        for arg in args:
+            if isinstance(arg, dict):
+                callback_kwargs = arg
+            elif isinstance(arg, int) and not isinstance(arg, bool):
+                step_index = arg
+        if not isinstance(callback_kwargs, dict):
+            callback_kwargs = {}
         idx = step_index
-        if idx is None and isinstance(callback_kwargs, dict):
+        if idx is None:
             idx = callback_kwargs.get("i", callback_kwargs.get("step_index"))
         try:
             i = int(idx) + 1 if idx is not None else state["step"] + 1
         except Exception:
             i = state["step"] + 1
         _report(i)
-        return callback_kwargs if isinstance(callback_kwargs, dict) else {}
+        return callback_kwargs
 
     def on_step_legacy(step: int, timestep, latents):
         try:
@@ -147,7 +158,7 @@ def _call_pipe_with_progress(
             soft = 0.22 + min(0.45, elapsed / 180.0)
             hint = ""
             if elapsed >= 90:
-                hint = " · still no step — check Memory=GPU VRAM"
+                hint = " · first step on a large model streams from RAM and can take a few minutes"
             _progress(
                 cb,
                 f"{label} · step 0/{total} · starting denoise · {elapsed}s{hint}",
@@ -215,8 +226,7 @@ def _heartbeat_while(
         if t0.is_alive():
             raise RuntimeError(
                 f"{label} timed out after {max_sec // 60} min. "
-                "Weights never finished loading — Stop, pick Wan 1.3B / LTX Distilled "
-                "(or finish the model Download in Models), then retry."
+                "Weights never finished loading. Stop, confirm this model is Ready in Models, then retry."
             )
         if "error" in box:
             raise box["error"]
@@ -270,8 +280,7 @@ def _heartbeat_while(
         raise RuntimeError(
             f"{label} timed out after {max_sec // 60} min. "
             "Diffusers never finished reading weights (often a huge HF download or incomplete "
-            "local folder). Stop → Models → ensure the model shows Ready, prefer Wan 1.3B / "
-            "LTX Distilled, then Generate again."
+            "local folder). Stop → Models → wait until this model shows Ready, then Generate again."
         )
     if "error" in box:
         raise box["error"]
@@ -739,9 +748,9 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     generator = None
     if seed is not None:
         generator = torch.Generator(device="cpu").manual_seed(int(seed))
-    mem = dict(mem)
-    mem["text_encoder_on_cpu"] = True
-    mem["vae_slicing"] = True
+    from .memory import tune_memory_for_model
+
+    mem = tune_memory_for_model(mem, model)
     _release_gpu_cache()
     _progress(
         cb,
@@ -1365,7 +1374,8 @@ def _build_pipeline(
         pipe._studionels_placement = placement  # type: ignore[attr-defined]
     except Exception:
         pass
-    _park_text_encoders(pipe)
+    if mem.get("text_encoder_on_cpu"):
+        _park_text_encoders(pipe)
     return pipe
 
 
@@ -1425,8 +1435,9 @@ def preload_diffusers_model(
     else:
         dtype = torch.bfloat16
 
-    mem["text_encoder_on_cpu"] = True
-    mem["vae_slicing"] = True
+    from .memory import tune_memory_for_model
+
+    mem = tune_memory_for_model(mem, model)
     cpu_offload = bool(mem.get("cpu_offload", True))
     dtype_key = str(getattr(dtype, "__name__", None) or dtype)
     key = cache_key(str(model.get("id") or model_id), mem, dtype_key)
