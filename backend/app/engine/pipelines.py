@@ -1335,12 +1335,23 @@ def _build_pipeline(
         )
     placement = apply_memory_to_pipeline(pipe, device, mem)
     _progress(cb, f"Device ready ({placement})", 0.17)
-    # Prefer SDPA when available — faster than sliced attention on big AMD cards
+    # ROCm flash-attn segfaults during Wan denoise. Force the math backend.
     try:
-        if hasattr(pipe, "set_attention_backend"):
+        import torch
+
+        if getattr(getattr(torch, "version", None), "hip", None):
+            torch.backends.cuda.enable_flash_sdp(False)
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
+            torch.backends.cuda.enable_math_sdp(True)
+            for backend_name in ("native", "_native_math", "sdpa"):
+                try:
+                    if hasattr(pipe, "set_attention_backend"):
+                        pipe.set_attention_backend(backend_name)
+                        break
+                except Exception:
+                    continue
+        elif hasattr(pipe, "set_attention_backend"):
             pipe.set_attention_backend("sdpa")
-        elif hasattr(pipe, "enable_xformers_memory_efficient_attention"):
-            pass
     except Exception:
         pass
     try:

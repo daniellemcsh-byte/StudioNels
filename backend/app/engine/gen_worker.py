@@ -23,6 +23,9 @@ def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import faulthandler
+
+    faulthandler.enable(all_threads=True)
     parser = argparse.ArgumentParser(description="StudioNels Diffusers job worker")
     parser.add_argument("--job-file", required=True)
     parser.add_argument("--progress-file", required=True)

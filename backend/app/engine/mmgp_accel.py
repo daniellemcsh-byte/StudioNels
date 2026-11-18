@@ -20,9 +20,6 @@ def apply_runtime_env() -> None:
     os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
     # Faster MIOpen autotune path — reduces post-denoise VAE stalls on ROCm
     os.environ.setdefault("MIOPEN_FIND_MODE", "FAST")
-    # Fewer mid-job OOMs on 32GB cards when VAE + DiT peak together
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    os.environ.setdefault("PYTORCH_HIP_ALLOC_CONF", "expandable_segments:True")
     tune_amd_inference()
     # transformers↔safetensors(+mmgp) version skew on Windows ROCm installs
     try:
@@ -34,12 +31,17 @@ def apply_runtime_env() -> None:
 
 
 def tune_amd_inference() -> None:
-    """TF32 + cuDNN benchmark — fastest stable matmul path on Radeon ROCm."""
+    """Stable matmul path for Windows ROCm.
+
+    Flash and memory-efficient SDPA segfault mid-step on Radeon (Wan dies around
+    step 6 with no Python traceback). Math SDPA is the fast path that stays up.
+    """
     try:
         import torch
 
         if not torch.cuda.is_available():
             return
+        hip = bool(getattr(getattr(torch, "version", None), "hip", None))
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
@@ -48,9 +50,14 @@ def tune_amd_inference() -> None:
         except Exception:
             pass
         try:
-            torch.backends.cuda.enable_flash_sdp(True)
-            torch.backends.cuda.enable_mem_efficient_sdp(True)
-            torch.backends.cuda.enable_math_sdp(True)
+            if hip:
+                torch.backends.cuda.enable_flash_sdp(False)
+                torch.backends.cuda.enable_mem_efficient_sdp(False)
+                torch.backends.cuda.enable_math_sdp(True)
+            else:
+                torch.backends.cuda.enable_flash_sdp(True)
+                torch.backends.cuda.enable_mem_efficient_sdp(True)
+                torch.backends.cuda.enable_math_sdp(True)
         except Exception:
             pass
     except Exception:
@@ -142,10 +149,18 @@ def apply_mmgp_to_pipeline(
     )
     profile_name = getattr(profile, "name", str(profile))
 
-    # Quantize by default — same lever Wan2GP uses for ~1 min AMD runs.
-    # Opt out with mem.quantize_transformer=False (quality / Max preset).
+    # Quantized transformer kernels crash Windows ROCm mid-denoise (exit 1, no stderr).
+    # 32GB cards keep fp16 resident; smaller cards still offload, just without quant.
+    rocm = False
+    try:
+        import torch
+
+        rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
+    except Exception:
+        rocm = False
+    quant_default = not rocm
     kwargs: dict[str, Any] = {
-        "quantizeTransformer": bool(mem.get("quantize_transformer", True)),
+        "quantizeTransformer": bool(mem.get("quantize_transformer", quant_default)),
         "verboseLevel": 1,
     }
 

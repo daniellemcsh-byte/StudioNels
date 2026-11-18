@@ -961,7 +961,7 @@ def _run_diffusers_isolated(
                 if code is not None:
                     break
             elif use_daemon and not _daemon_alive() and not result_file.exists():
-                # Daemon died mid-job
+                # Daemon died mid-job (usually a ROCm native crash — no Python traceback)
                 code = 1
                 break
 
@@ -1071,9 +1071,16 @@ def _run_diffusers_isolated(
             raise RuntimeError(f"{err}\n{tb}\n{stderr}".strip())
 
         if code not in (0, None):
-            raise RuntimeError(
-                f"Diffusers worker exited {code}. {stderr or 'No stderr — GPU may have hung.'}"
-            )
+            log_tail = ""
+            try:
+                log_path = _daemon_paths()["root"] / "daemon.log"
+                if log_path.exists():
+                    raw = log_path.read_text(encoding="utf-8", errors="replace")
+                    log_tail = raw[-1800:].strip()
+            except Exception:
+                log_tail = ""
+            detail = stderr.strip() or log_tail or "No stderr — GPU process crashed (often ROCm flash-attn)."
+            raise RuntimeError(f"Diffusers worker exited {code}. {detail}")
         raise RuntimeError("Diffusers worker finished with no result file.")
     finally:
         with _PROC_LOCK:

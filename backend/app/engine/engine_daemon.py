@@ -281,10 +281,17 @@ def _handle_request(req_path: Path) -> None:
 
 
 def main() -> int:
+    import faulthandler
+
     d = _daemon_dir()
     pid_path = d / "daemon.pid"
     # Write pid + heartbeat BEFORE importing torch — parent must not wait blindly
     pid_path.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        fault_log = open(d / "daemon.log", "a", encoding="utf-8")
+        faulthandler.enable(fault_log, all_threads=True)
+    except Exception:
+        faulthandler.enable(all_threads=True)
     _heartbeat({"status": "booting"})
     print(f"StudioNels warm engine booting pid={os.getpid()}", flush=True)
 
