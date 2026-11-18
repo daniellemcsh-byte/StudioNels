@@ -657,10 +657,13 @@ export default function App() {
           m.modes.includes(clip.mode) &&
           (m.installed || m.download_status === 'installed'),
       )
-      const prefer = (...bits: string[]) =>
-        ready.find((m) => bits.some((bit) => m.id.includes(bit) || m.label.toLowerCase().includes(bit)))
+      const byId = (id: string) => ready.find((m) => m.id === id)
       const model =
-        prefer('1.3b', 'schnell', 'distilled', 'stable-audio-open') || ready[0]
+        (clip.mode === 't2v'
+          ? byId('wan21-t2v-1.3b') || ready.find((m) => !m.id.includes('ltx2'))
+          : clip.mode === 't2i'
+            ? byId('flux-schnell')
+            : byId('stable-audio-open')) || ready[0]
       if (!model) {
         goTab('models')
         notify(`Download a model for ${clip.mode.toUpperCase()} first, then press Generate test again.`)

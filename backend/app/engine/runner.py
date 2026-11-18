@@ -289,8 +289,9 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     is_rehearsal = bool(payload.get("is_rehearsal"))
     inject_continuity = payload.get("inject_continuity", True)
 
-    # Inject continuity + identity locks when attached to a project shot
-    if inject_continuity and payload.get("project_id"):
+    # Inject continuity + identity locks when this job is tied to a shot.
+    # A one-off test has a project but no shot — keep the prompt as written.
+    if inject_continuity and payload.get("project_id") and payload.get("shot_id"):
         try:
             from ..continuity import continuity_prompt_prefix
             from ..identity_lock import identity_prompt_suffix, primary_identity_ref
@@ -1289,9 +1290,10 @@ def _run_one(job: dict[str, Any]) -> None:
             f"{model_meta.get('label') or model_meta.get('id')} is not Ready on disk. "
             "Open Models → Download until the progress bar finishes (Ready), then Generate."
         )
-    # StudioNels owns Generate: Diffusers + native mmgp. Wan2GP is opt-in via
-    # STUDIONELS_PREFER_WAN2GP=1, or auto for LTX-2 when Wan2GP is installed
-    # (unless STUDIONELS_FORCE_DIFFUSERS=1).
+    # StudioNels owns Generate: Diffusers + native mmgp.
+    # Wan2GP is only used when the model has no Diffusers weights, or when
+    # STUDIONELS_PREFER_WAN2GP=1. LTX used to be forced onto Wan2GP, which
+    # fails offline when the quanto int8 file was never downloaded.
     wan_only = (
         str(model_meta.get("format") or "") == "wan2gp-engine"
         or str(job.get("model_id") or "").startswith("wgp-")
@@ -1300,18 +1302,13 @@ def _run_one(job: dict[str, Any]) -> None:
     mid = str(job.get("model_id") or model_meta.get("id") or "").lower()
     pipe_name = str(model_meta.get("pipeline") or "")
     ltx2_like = "LTX2" in pipe_name or mid.startswith("ltx2")
-    force_diffusers = os.environ.get("STUDIONELS_FORCE_DIFFUSERS", "").strip().lower() in {
+    explicit_wan = os.environ.get("STUDIONELS_PREFER_WAN2GP", "").strip().lower() in {
         "1",
         "true",
         "yes",
-    }
-    prefer_external = (
-        os.environ.get("STUDIONELS_PREFER_WAN2GP", "").strip().lower() in {"1", "true", "yes"}
-        or bool(job.get("prefer_wan2gp"))
-        or (ltx2_like and not force_diffusers)
-    )
+    } or bool(job.get("prefer_wan2gp"))
 
-    use_diffusers = (
+    can_diffusers = (
         not force_preview
         and not wan_only
         and bool(model_meta.get("hf_id") or model_meta.get("local_path") or model_meta.get("pipeline"))
@@ -1319,17 +1316,14 @@ def _run_one(job: dict[str, Any]) -> None:
         and device.get("diffusers_available")
     )
     use_wan2gp = False
-    if prefer_external and not force_preview:
+    if (explicit_wan or wan_only) and not force_preview:
         try:
-            from .wan2gp_runtime import wan2gp_available, run_wan2gp_job
+            from .wan2gp_runtime import wan2gp_available
 
-            wan = wan2gp_available()
-            use_wan2gp = bool(wan.get("available"))
+            use_wan2gp = bool(wan2gp_available().get("available"))
         except Exception:
             use_wan2gp = False
-    # When Wan2GP is preferred and available, use it instead of Diffusers
-    if use_wan2gp and prefer_external:
-        use_diffusers = False
+    use_diffusers = can_diffusers and not use_wan2gp
     use_real = use_diffusers or use_wan2gp
 
     def _run_external_wan() -> dict[str, Any] | None:
@@ -1396,13 +1390,21 @@ def _run_one(job: dict[str, Any]) -> None:
             job["message"] = wan_msg
             upsert_job(job)
             cb(wan_msg, 0.03)
-            result = _run_external_wan()
-            if result is None:
-                raise RuntimeError(
-                    "Wan2GP path failed. Unset STUDIONELS_PREFER_WAN2GP (or set "
-                    "STUDIONELS_FORCE_DIFFUSERS=1 for LTX-2) and use Models → Download "
-                    "with a StudioNels catalog model."
+            try:
+                result = _run_external_wan()
+                if result is None:
+                    raise RuntimeError("Wan2GP returned no video")
+            except Exception as exc:
+                if not can_diffusers:
+                    raise
+                cb(
+                    "Wan2GP is missing that checkpoint. StudioNels engine is running this instead…",
+                    0.03,
                 )
+                job["engine"] = "studionels-mmgp"
+                job["message"] = f"Wan2GP skipped ({exc.__class__.__name__}). Using StudioNels engine."
+                upsert_job(job)
+                result = _run_diffusers_isolated(job, out_path, cb)
             job["preview"] = bool(result.get("preview"))
         else:
             result = run_preview_job(job, out_path, cb)
