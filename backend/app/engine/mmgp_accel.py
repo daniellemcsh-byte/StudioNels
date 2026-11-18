@@ -113,20 +113,37 @@ def mmgp_status() -> dict[str, Any]:
     return dict(info)
 
 
+def wan2gp_profile_number(vram_gb: float | None) -> int:
+    """Same profile map Wan2GP is launched with in wan2gp_runtime.
+
+    1 HighRAM_HighVRAM — 24 GB and up, the fast path on an R9700.
+    3 LowRAM_HighVRAM — 16 GB.
+    2 HighRAM_LowVRAM — 10 GB.
+    4 LowRAM_LowVRAM — smaller cards.
+    """
+    if vram_gb is None:
+        return 3
+    if float(vram_gb) >= 24:
+        return 1
+    if float(vram_gb) >= 16:
+        return 3
+    if float(vram_gb) >= 10:
+        return 2
+    return 4
+
+
 def _profile_enum(vram_gb: float | None, placement: str, mem: dict[str, Any] | None = None):
     from mmgp import profile_type
 
-    mem = mem or {}
-    # HighRAM_LowVRAM is the Wan2GP-speed profile: weights stay in RAM and the
-    # GPU keeps the blocks it is using. LowRAM_LowVRAM and sequential offload
-    # are what make a load take many minutes.
-    if isinstance(vram_gb, (int, float)) and float(vram_gb) >= 8 and placement != "sequential_cpu_offload":
-        return profile_type.HighRAM_LowVRAM
-    if isinstance(vram_gb, (int, float)) and float(vram_gb) >= 10:
-        return profile_type.LowRAM_HighVRAM
+    number = wan2gp_profile_number(vram_gb if isinstance(vram_gb, (int, float)) else None)
     if placement == "sequential_cpu_offload":
-        return profile_type.VerylowRAM_LowVRAM
-    return profile_type.LowRAM_LowVRAM
+        number = 4
+    return {
+        1: profile_type.HighRAM_HighVRAM,
+        2: profile_type.HighRAM_LowVRAM,
+        3: profile_type.LowRAM_HighVRAM,
+        4: profile_type.LowRAM_LowVRAM,
+    }[number]
 
 
 def apply_mmgp_to_pipeline(
@@ -158,46 +175,70 @@ def apply_mmgp_to_pipeline(
     except Exception:
         pass
 
-    profile = _profile_enum(
-        float(vram_gb) if isinstance(vram_gb, (int, float)) else None,
-        placement,
-        mem,
-    )
+    gb = float(vram_gb) if isinstance(vram_gb, (int, float)) else None
+    number = wan2gp_profile_number(gb)
+    if placement == "sequential_cpu_offload":
+        number = 4
+    profile = _profile_enum(gb, placement, mem)
     profile_name = getattr(profile, "name", str(profile))
 
-    # Quantized transformer kernels crash Windows ROCm mid-denoise (exit 1, no stderr).
-    # Offload stays on; the transformer is fp16 and the text encoder stays in RAM.
-    rocm = False
+    # Wan2GP init_pipe + offload.profile: fp16 weights, no compile, no quantize
+    # at profile time, text encoder kept in the same profile, profiles 1 and 3
+    # preload whatever fits on the card.
     try:
         import torch
 
-        rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
+        weight_dtype = torch.float16
     except Exception:
-        rocm = False
-    quant_default = not rocm
+        weight_dtype = None
     kwargs: dict[str, Any] = {
-        "quantizeTransformer": bool(mem.get("quantize_transformer", quant_default)),
+        "quantizeTransformer": False,
+        "compile": False,
         "verboseLevel": 1,
+        "budgets": {
+            "transformer": 100,
+            "text_encoder": 100,
+            "text_encoder_2": 100,
+            "*": 3000,
+        },
+        "smartPinning": 0,
     }
+    if weight_dtype is not None:
+        kwargs["convertWeightsFloatTo"] = weight_dtype
+    if number in (1, 3):
+        kwargs["autoPreload"] = True
 
-    try:
-        offload.profile(pipe, profile, **kwargs)
-        pipe._studionels_mmgp = True  # type: ignore[attr-defined]
-        pipe._studionels_mmgp_profile = profile_name  # type: ignore[attr-defined]
-        return {
-            "used": True,
-            "profile": profile_name,
-            "detail": f"mmgp {profile_name}",
-            "quantize_transformer": kwargs["quantizeTransformer"],
-        }
-    except TypeError:
-        # Older mmgp may not accept every kwarg
+    import re
+
+    dropped: list[str] = []
+    while True:
         try:
-            offload.profile(pipe, profile)
-            pipe._studionels_mmgp = True  # type: ignore[attr-defined]
-            pipe._studionels_mmgp_profile = profile_name  # type: ignore[attr-defined]
-            return {"used": True, "profile": profile_name, "detail": f"mmgp {profile_name}"}
+            offload.profile(pipe, profile, **kwargs)
+            break
+        except TypeError as exc:
+            match = re.search(r"unexpected keyword argument '([^']+)'", str(exc))
+            key = match.group(1) if match else ""
+            if not key or key not in kwargs:
+                try:
+                    offload.profile(pipe, profile)
+                    kwargs = {}
+                    break
+                except Exception as inner:  # noqa: BLE001
+                    return {"used": False, "profile": profile_name, "detail": f"mmgp failed: {inner}"}
+            kwargs.pop(key, None)
+            dropped.append(key)
         except Exception as exc:  # noqa: BLE001
             return {"used": False, "profile": profile_name, "detail": f"mmgp failed: {exc}"}
-    except Exception as exc:  # noqa: BLE001
-        return {"used": False, "profile": profile_name, "detail": f"mmgp failed: {exc}"}
+
+    pipe._studionels_mmgp = True  # type: ignore[attr-defined]
+    pipe._studionels_mmgp_profile = profile_name  # type: ignore[attr-defined]
+    detail = f"mmgp profile {number} {profile_name}"
+    if dropped:
+        detail += f" (older mmgp skipped {', '.join(dropped)})"
+    return {
+        "used": True,
+        "profile": profile_name,
+        "profile_no": number,
+        "detail": detail,
+        "quantize_transformer": False,
+    }

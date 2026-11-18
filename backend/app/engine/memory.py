@@ -176,32 +176,13 @@ def _restore_text_encoders(pipe: Any, held: list[tuple[str, Any]]) -> None:
 
 
 def tune_memory_for_model(mem: dict[str, Any], model: dict[str, Any] | None) -> dict[str, Any]:
-    """Pick a placement the selected model can actually finish.
-
-    Wan's text encoder is the piece that asks for ~29 GB if it is copied onto
-    the GPU in one go, so that encoder stays in RAM. LTX has to keep its
-    encoder with the transformer or the first denoise step sits in VRAM and
-    never advances. Models at 13B and up stream layer by layer instead of
-    pinning the whole file on the card.
-    """
+    """Leave placement to mmgp, using Wan2GP's profile for this card."""
     mem = dict(mem or {})
-    model = model or {}
-    pipe = str(model.get("pipeline") or "")
-    mid = str(model.get("id") or "").lower()
-    ltx = "LTX" in pipe or mid.startswith("ltx")
-    wan = (not ltx) and ("Wan" in pipe or mid.startswith("wan"))
-    flux = "flux" in mid
-    huge = ltx or any(tok in mid for tok in ("14b", "22b", "19b", "13b", "hunyuan", "mochi"))
-    # Wan's text encoder stays in RAM so it is not copied onto the card in one
-    # block. The video core uses mmgp's fast profile, the same idea as Wan2GP.
-    # LTX keeps its encoder with the transformer so the first step can run.
-    mem["text_encoder_on_cpu"] = bool(wan or flux)
+    # Wan2GP keeps the text encoder inside the mmgp profile. Profiles 1 and 3
+    # preload whatever fits instead of copying the whole file in one block.
+    mem["text_encoder_on_cpu"] = False
     mem["vae_slicing"] = True
     mem["stream_weights"] = False
-    if huge and mem.get("placement") == "gpu":
-        mem["placement"] = "model_cpu_offload"
-        mem["placement_label"] = PLACEMENT_LABELS["model_cpu_offload"]
-        mem["cpu_offload"] = True
     return mem
 
 

@@ -322,15 +322,9 @@ def map_model_type(job: dict[str, Any], model: dict[str, Any] | None) -> str | N
 
 
 def _profile_for_vram(vram_gb: float | None) -> str:
-    if vram_gb is None:
-        return "3"
-    if vram_gb >= 24:
-        return "1"
-    if vram_gb >= 16:
-        return "3"
-    if vram_gb >= 10:
-        return "2"
-    return "4"
+    from .mmgp_accel import wan2gp_profile_number
+
+    return str(wan2gp_profile_number(vram_gb))
 
 
 def _infer_image_mode(job: dict[str, Any], model: dict[str, Any], model_type: str) -> int:
