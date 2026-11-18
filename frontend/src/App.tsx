@@ -641,63 +641,15 @@ export default function App() {
     window.setTimeout(() => setToast(null), 2800)
   }
 
-  const startInspirationTest = async (clip: InspirationClip) => {
+  const useInspiration = (clip: InspirationClip) => {
     if (!project) return
     setInspirationSeed({ mode: clip.mode, prompt: clip.prompt, title: clip.title })
-    if (!inspirationRunsNow(clip.mode)) {
-      goTab('generate')
-      notify(`“${clip.title}” needs a photo. Add one on Video & image, then press Generate.`)
-      return
-    }
-    setBusy(true)
-    try {
-      const engine = await api.engine()
-      const ready = engine.models.filter(
-        (m) =>
-          m.modes.includes(clip.mode) &&
-          (m.installed || m.download_status === 'installed'),
-      )
-      const byId = (id: string) => ready.find((m) => m.id === id)
-      const active = ready.find((m) => m.id === engine.active_model_id || m.active)
-      const model =
-        active ||
-        (clip.mode === 't2v'
-          ? byId('wan21-t2v-1.3b')
-          : clip.mode === 't2i'
-            ? byId('flux-schnell')
-            : byId('stable-audio-open')) ||
-        ready[0]
-      if (!model) {
-        goTab('models')
-        notify(`Download a model for ${clip.mode.toUpperCase()} first, then press Generate test again.`)
-        return
-      }
-      const video = clip.mode === 't2v'
-      await api.engineGenerate({
-        mode: clip.mode,
-        model_id: model.id,
-        prompt: clip.prompt,
-        quality: 'draft',
-        duration_sec: video ? 2 : clip.mode === 't2a' ? 6 : undefined,
-        fps: video ? 16 : undefined,
-        width: 768,
-        height: video ? 432 : 768,
-        project_id: project.id,
-        seed: Math.floor(Math.random() * 1_000_000_000),
-        inject_continuity: false,
-        visual_style: project.visual_style,
-      })
-      goTab('generate')
-      notify(
-        video
-          ? `2s test queued · ${clip.title} · ${model.label}. Watch the box at the bottom.`
-          : `Test queued · ${clip.title} · ${model.label}. Watch the box at the bottom.`,
-      )
-    } catch (err) {
-      notify(String((err as Error).message || err))
-    } finally {
-      setBusy(false)
-    }
+    goTab('generate')
+    notify(
+      inspirationRunsNow(clip.mode)
+        ? `“${clip.title}” is on Video & image. Press Generate when you want it.`
+        : `“${clip.title}” needs a photo. Add one on Video & image, then press Generate.`,
+    )
   }
 
   const refreshHome = async () => {
@@ -1255,9 +1207,7 @@ export default function App() {
         {tab === 'inspiration' && (
           <InspirationTab
             busy={busy}
-            onTry={(clip) => {
-              void startInspirationTest(clip)
-            }}
+            onTry={useInspiration}
           />
         )}
         {tab === 'agent' && (
@@ -1394,7 +1344,7 @@ export default function App() {
             onOpenDirector={() => goTab('director')}
             onMakeTest={() => {
               goTab('inspiration')
-              notify('Pick a card and press Generate test. Video tests are 2 seconds.')
+              notify('Pick a card. It fills Video & image — press Generate there.')
             }}
             onAddShot={() => {
               void api
@@ -5525,8 +5475,8 @@ function InspirationTab({
   return (
     <div>
       <p className="hint">
-        Press <em>Generate test</em> on a text card. Video tests are 2 seconds at draft size. Cards
-        that need a photo open Video & image so you can add one.
+        Press <em>Use this prompt</em>. It fills Video & image and waits. Nothing renders until you
+        press Generate. Cards that need a photo say so.
       </p>
       <div className="inspire-grid">
         {INSPIRATION_CLIPS.map((clip) => {
@@ -5536,14 +5486,14 @@ function InspirationTab({
               <div className="inspire-clip" aria-hidden>
                 <div className="inspire-scan" />
                 <span className="inspire-mode">{clip.mode.toUpperCase()}</span>
-                <span className="inspire-dur">{now && clip.mode === 't2v' ? '2s test' : clip.durationHint}</span>
+                <span className="inspire-dur">{clip.durationHint}</span>
               </div>
               <div className="inspire-body">
                 <h3>{clip.title}</h3>
                 <p>{clip.blurb}</p>
                 <div className="muted tiny">{clip.vibe}</div>
                 <button className="btn acid" type="button" disabled={busy} onClick={() => onTry(clip)}>
-                  {now ? 'Generate test' : 'Add a photo'}
+                  {now ? 'Use this prompt' : 'Add a photo'}
                 </button>
               </div>
             </article>
