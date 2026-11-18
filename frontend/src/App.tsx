@@ -5,7 +5,7 @@ import { LEARN_TOPICS, type LearnSectionId } from './learning'
 import DirectorStudio from './DirectorStudio'
 import FilmNightTab from './FilmNightTab'
 import FirstRunWizard, { shouldShowFirstRun } from './FirstRunWizard'
-import { INSPIRATION_CLIPS, type InspirationClip } from './inspiration'
+import { INSPIRATION_CLIPS, inspirationRunsNow, type InspirationClip } from './inspiration'
 import {
   DURATION_PRESETS,
   VISUAL_STYLES,
@@ -641,6 +641,59 @@ export default function App() {
     window.setTimeout(() => setToast(null), 2800)
   }
 
+  const startInspirationTest = async (clip: InspirationClip) => {
+    if (!project) return
+    setInspirationSeed({ mode: clip.mode, prompt: clip.prompt, title: clip.title })
+    if (!inspirationRunsNow(clip.mode)) {
+      goTab('generate')
+      notify(`“${clip.title}” needs a photo. Add one on Video & image, then press Generate.`)
+      return
+    }
+    setBusy(true)
+    try {
+      const engine = await api.engine()
+      const ready = engine.models.filter(
+        (m) =>
+          m.modes.includes(clip.mode) &&
+          (m.installed || m.download_status === 'installed'),
+      )
+      const prefer = (...bits: string[]) =>
+        ready.find((m) => bits.some((bit) => m.id.includes(bit) || m.label.toLowerCase().includes(bit)))
+      const model =
+        prefer('1.3b', 'schnell', 'distilled', 'stable-audio-open') || ready[0]
+      if (!model) {
+        goTab('models')
+        notify(`Download a model for ${clip.mode.toUpperCase()} first, then press Generate test again.`)
+        return
+      }
+      const video = clip.mode === 't2v'
+      await api.engineGenerate({
+        mode: clip.mode,
+        model_id: model.id,
+        prompt: clip.prompt,
+        quality: 'draft',
+        duration_sec: video ? 2 : clip.mode === 't2a' ? 6 : undefined,
+        fps: video ? 16 : undefined,
+        width: 768,
+        height: video ? 432 : 768,
+        project_id: project.id,
+        seed: Math.floor(Math.random() * 1_000_000_000),
+        inject_continuity: false,
+        visual_style: project.visual_style,
+      })
+      goTab('generate')
+      notify(
+        video
+          ? `2s test queued · ${clip.title} · ${model.label}. Watch the box at the bottom.`
+          : `Test queued · ${clip.title} · ${model.label}. Watch the box at the bottom.`,
+      )
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const refreshHome = async () => {
     const [h, p, s, list] = await Promise.all([
       api.health(),
@@ -1195,14 +1248,9 @@ export default function App() {
         <main className="studio-body">
         {tab === 'inspiration' && (
           <InspirationTab
+            busy={busy}
             onTry={(clip) => {
-              setInspirationSeed({
-                mode: clip.mode,
-                prompt: clip.prompt,
-                title: clip.title,
-              })
-              goTab('generate')
-              notify(`Loaded “${clip.title}” into Generate.`)
+              void startInspirationTest(clip)
             }}
           />
         )}
@@ -1338,7 +1386,10 @@ export default function App() {
             setBusy={setBusy}
             notify={notify}
             onOpenDirector={() => goTab('director')}
-            onMakeTest={() => goTab('generate')}
+            onMakeTest={() => {
+              goTab('inspiration')
+              notify('Pick a card and press Generate test. Video tests are 2 seconds.')
+            }}
             onAddShot={() => {
               void api
                 .addShot(project.id, {
@@ -5458,31 +5509,40 @@ function RehearsalTab({
   )
 }
 
-function InspirationTab({ onTry }: { onTry: (clip: InspirationClip) => void }) {
+function InspirationTab({
+  onTry,
+  busy,
+}: {
+  onTry: (clip: InspirationClip) => void
+  busy?: boolean
+}) {
   return (
     <div>
       <p className="hint">
-        Little idea clips of what StudioNels can do — tap <em>Try this</em> to drop the prompt into
-        Generate.
+        Press <em>Generate test</em> on a text card. Video tests are 2 seconds at draft size. Cards
+        that need a photo open Video & image so you can add one.
       </p>
       <div className="inspire-grid">
-        {INSPIRATION_CLIPS.map((clip) => (
-          <article key={clip.id} className="inspire-card" style={{ ['--accent' as string]: clip.accent }}>
-            <div className="inspire-clip" aria-hidden>
-              <div className="inspire-scan" />
-              <span className="inspire-mode">{clip.mode.toUpperCase()}</span>
-              <span className="inspire-dur">{clip.durationHint}</span>
-            </div>
-            <div className="inspire-body">
-              <h3>{clip.title}</h3>
-              <p>{clip.blurb}</p>
-              <div className="muted tiny">{clip.vibe}</div>
-              <button className="btn acid" type="button" onClick={() => onTry(clip)}>
-                Try this
-              </button>
-            </div>
-          </article>
-        ))}
+        {INSPIRATION_CLIPS.map((clip) => {
+          const now = inspirationRunsNow(clip.mode)
+          return (
+            <article key={clip.id} className="inspire-card" style={{ ['--accent' as string]: clip.accent }}>
+              <div className="inspire-clip" aria-hidden>
+                <div className="inspire-scan" />
+                <span className="inspire-mode">{clip.mode.toUpperCase()}</span>
+                <span className="inspire-dur">{now && clip.mode === 't2v' ? '2s test' : clip.durationHint}</span>
+              </div>
+              <div className="inspire-body">
+                <h3>{clip.title}</h3>
+                <p>{clip.blurb}</p>
+                <div className="muted tiny">{clip.vibe}</div>
+                <button className="btn acid" type="button" disabled={busy} onClick={() => onTry(clip)}>
+                  {now ? 'Generate test' : 'Add a photo'}
+                </button>
+              </div>
+            </article>
+          )
+        })}
       </div>
     </div>
   )

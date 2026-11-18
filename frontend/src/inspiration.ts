@@ -11,6 +11,10 @@ export interface InspirationClip {
   accent: string
 }
 
+export function inspirationRunsNow(mode: GenMode) {
+  return mode === 't2v' || mode === 't2i' || mode === 't2a'
+}
+
 export const INSPIRATION_CLIPS: InspirationClip[] = [
   {
     id: 'neon-courier',
