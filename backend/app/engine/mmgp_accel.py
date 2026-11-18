@@ -111,21 +111,13 @@ def mmgp_status() -> dict[str, Any]:
 
 
 def wan2gp_profile_number(vram_gb: float | None) -> int:
-    """Same profile map Wan2GP is launched with in wan2gp_runtime.
+    """Wan2GP's own default: profile 4, LowRAM_LowVRAM.
 
-    1 HighRAM_HighVRAM — 24 GB and up, the fast path on an R9700.
-    3 LowRAM_HighVRAM — 16 GB.
-    2 HighRAM_LowVRAM — 10 GB.
-    4 LowRAM_LowVRAM — smaller cards.
+    This is the profile that runs LTX-2.3 on a 12 GB GPU. The card holds the
+    block that is executing. The rest stays in system RAM as int8. VRAM size
+    does not pick a fatter profile — Wan2GP's saved default is 4 on every card.
     """
-    if vram_gb is None:
-        return 3
-    if float(vram_gb) >= 24:
-        return 1
-    if float(vram_gb) >= 16:
-        return 3
-    if float(vram_gb) >= 10:
-        return 2
+    del vram_gb
     return 4
 
 
@@ -179,17 +171,23 @@ def apply_mmgp_to_pipeline(
     profile = _profile_enum(gb, placement, mem)
     profile_name = getattr(profile, "name", str(profile))
 
-    # Wan2GP init_pipe + offload.profile: fp16 weights, no compile, no quantize
-    # at profile time, text encoder kept in the same profile, profiles 1 and 3
-    # preload whatever fits on the card.
+    # Wan2GP default on a 12 GB card: profile 4, int8 transformer, int8 text
+    # encoder, and a 100 MB on-GPU budget so one block is resident at a time.
+    # Profile 4 only auto-quantizes encoders whose class name contains
+    # t5/llama/llm. Gemma does not, so the text encoder is listed explicitly.
     try:
         import torch
 
         weight_dtype = torch.float16
     except Exception:
         weight_dtype = None
+    text_encoders = [
+        name
+        for name in ("text_encoder", "text_encoder_2", "text_encoder_3")
+        if getattr(pipe, name, None) is not None
+    ]
     kwargs: dict[str, Any] = {
-        "quantizeTransformer": False,
+        "quantizeTransformer": True,
         "compile": False,
         "verboseLevel": 1,
         "budgets": {
@@ -198,12 +196,11 @@ def apply_mmgp_to_pipeline(
             "text_encoder_2": 100,
             "*": 3000,
         },
-        "smartPinning": 0,
     }
+    if text_encoders:
+        kwargs["extraModelsToQuantize"] = text_encoders
     if weight_dtype is not None:
         kwargs["convertWeightsFloatTo"] = weight_dtype
-    if number in (1, 3):
-        kwargs["autoPreload"] = True
 
     import re
 
@@ -237,5 +234,5 @@ def apply_mmgp_to_pipeline(
         "profile": profile_name,
         "profile_no": number,
         "detail": detail,
-        "quantize_transformer": False,
+        "quantize_transformer": True,
     }

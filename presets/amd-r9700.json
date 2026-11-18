@@ -1,6 +1,6 @@
 {
   "id": "amd-r9700",
-  "label": "R9700 — Wan2GP profile 1",
+  "label": "R9700 — Wan2GP profile 4",
   "target_vram_gb": 32,
   "memory": {
     "placement": "gpu",
@@ -9,7 +9,7 @@
     "vae_slicing": true,
     "vae_tiling": false,
     "text_encoder_on_cpu": false,
-    "blurb": "Wan2GP profile 1: float16, SDPA, preload what fits on the 32 GB card."
+    "blurb": "Wan2GP profile 4, the 12 GB setup: int8 transformer, int8 text encoder, one block on the GPU."
   },
   "agent": {
     "provider": "ollama",
@@ -34,5 +34,5 @@
     "attention_slicing": false,
     "sequential": false
   },
-  "notes": "Same setup Wan2GP uses on this card: profile 1, float16, SDPA. The first clip loads the model. The next one reuses it."
+  "notes": "Wan2GP's default, including on a 12 GB card: profile 4 and int8. The GPU holds the block that is running. The first clip loads the model. The next one reuses it."
 }

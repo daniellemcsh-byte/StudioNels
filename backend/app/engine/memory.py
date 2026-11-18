@@ -176,13 +176,13 @@ def _restore_text_encoders(pipe: Any, held: list[tuple[str, Any]]) -> None:
 
 
 def tune_memory_for_model(mem: dict[str, Any], model: dict[str, Any] | None) -> dict[str, Any]:
-    """Leave placement to mmgp, using Wan2GP's profile for this card."""
+    """Wan2GP profile 4: int8 weights, one block on the GPU."""
     mem = dict(mem or {})
-    # Wan2GP keeps the text encoder inside the mmgp profile. Profiles 1 and 3
-    # preload whatever fits instead of copying the whole file in one block.
     mem["text_encoder_on_cpu"] = False
     mem["vae_slicing"] = True
-    mem["stream_weights"] = False
+    # If mmgp is missing, stream layers instead of copying the whole model onto the GPU.
+    mem["stream_weights"] = True
+    mem["quantize_transformer"] = True
     return mem
 
 
