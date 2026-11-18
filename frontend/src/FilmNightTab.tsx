@@ -25,6 +25,8 @@ export default function FilmNightTab({
   setBusy,
   notify,
   onOpenDirector,
+  onMakeTest,
+  onAddShot,
 }: {
   project: Project
   setProject: (p: Project) => void
@@ -32,6 +34,8 @@ export default function FilmNightTab({
   setBusy: (v: boolean) => void
   notify: (m: string) => void
   onOpenDirector: () => void
+  onMakeTest: () => void
+  onAddShot: () => void
 }) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [steps, setSteps] = useState<string[]>([])
@@ -76,29 +80,50 @@ export default function FilmNightTab({
   return (
     <div>
       <p className="hint">
-        One path to a short: greybox → pick winners → final continue-chain → stitch. Open{' '}
-        <em>Director</em> anytime to upload clips, captions, and audio.
+        Film night cuts a short from shots you already have: draft, pick a winner, finish, then stitch.
+        A single test clip starts in Video & image.
       </p>
 
-      <div className="panel film-night-hero">
-        <h3>Film night</h3>
-        <p className="muted">
-          {project.shots.length} shots · {project.takes.length} takes ·{' '}
-          {project.aspect_ratio || '16:9'} · {project.width || 768}×{project.height || 432}
-        </p>
-        <div className="cta-row">
-          <button className="btn acid" type="button" disabled={busy} onClick={() => run('full')}>
-            Run Film night
-          </button>
-          <button className="btn secondary" type="button" disabled={busy} onClick={onOpenDirector}>
-            Open Director
-          </button>
-          <button className="btn ghost" type="button" disabled={busy} onClick={stitchOnly}>
-            Stitch only
-          </button>
+      {project.shots.length === 0 ? (
+        <div className="panel film-night-hero">
+          <h3>Nothing to cut yet</h3>
+          <p>
+            This project has 0 shots and 0 takes, so Rehearse, Finals, and Stitch have nothing to run.
+          </p>
+          <p className="muted">
+            Make a 2 second test first, or add a shot and write what happens in it.
+          </p>
+          <div className="cta-row">
+            <button className="btn acid" type="button" disabled={busy} onClick={onMakeTest}>
+              Make a test clip
+            </button>
+            <button className="btn secondary" type="button" disabled={busy} onClick={onAddShot}>
+              Add a first shot
+            </button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="panel film-night-hero">
+          <h3>Film night</h3>
+          <p className="muted">
+            {project.shots.length} shots · {project.takes.length} takes ·{' '}
+            {project.aspect_ratio || '16:9'} · {project.width || 768}×{project.height || 432}
+          </p>
+          <div className="cta-row">
+            <button className="btn acid" type="button" disabled={busy} onClick={() => run('full')}>
+              Run Film night
+            </button>
+            <button className="btn secondary" type="button" disabled={busy} onClick={onOpenDirector}>
+              Open Director
+            </button>
+            <button className="btn ghost" type="button" disabled={busy} onClick={stitchOnly}>
+              Stitch only
+            </button>
+          </div>
+        </div>
+      )}
 
+      {project.shots.length > 0 && (
       <div className="mode-grid" style={{ marginTop: 16 }}>
         {STAGES.filter((s) => s.id !== 'full').map((s) => (
           <button
@@ -113,6 +138,7 @@ export default function FilmNightTab({
           </button>
         ))}
       </div>
+      )}
 
       {steps.length > 0 && (
         <div className="panel" style={{ marginTop: 16 }}>

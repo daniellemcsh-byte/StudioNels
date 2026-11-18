@@ -1338,6 +1338,22 @@ export default function App() {
             setBusy={setBusy}
             notify={notify}
             onOpenDirector={() => goTab('director')}
+            onMakeTest={() => goTab('generate')}
+            onAddShot={() => {
+              void api
+                .addShot(project.id, {
+                  title: 'Shot 1',
+                  action: '',
+                  camera: 'medium',
+                  duration_sec: 2,
+                })
+                .then((p) => {
+                  setProject(p)
+                  goTab('shots')
+                  notify('First shot added. Write what happens, then come back to Film night.')
+                })
+                .catch((err) => notify(String((err as Error).message || err)))
+            }}
           />
         )}
         {tab === 'director' && (
@@ -1503,6 +1519,7 @@ function GenerationDock({
   const topDl = downloads.find((m) => m.download_status === 'downloading') || downloads[0]
   const topJob = active[0] || recent[0]
   const topAct = topJob ? describeJobActivity(topJob, nowMs) : null
+  const lastFailed = !active.length && topAct?.tone === 'fail'
   const topProgress = topDl
     ? Math.round((topDl.download_progress || 0) * 100)
     : active.length
@@ -1550,9 +1567,11 @@ function GenerationDock({
                   ? warm?.message || 'Preloading model…'
                   : warmReadyLabel
                     ? `Ready: ${warmReadyLabel}`
-                    : topAct
-                      ? topAct.phase
-                      : 'Engine'}
+                    : lastFailed
+                      ? `Failed · ${(topAct?.detail || 'see the job').slice(0, 80)}`
+                      : topAct
+                        ? topAct.phase
+                        : 'Engine'}
           </span>
           {active.length > 0 ? (
             <span className="gen-dock-mini-bar" aria-hidden>
@@ -1603,13 +1622,17 @@ function GenerationDock({
                 ? `${topAct?.phase || 'Generating'} · ${active.length} active`
                 : warmBusy
                   ? 'Preloading model'
-                  : topAct?.phase || (recent.length || downloads.length ? 'Generation' : 'Engine')}
+                  : lastFailed
+                    ? 'Last job failed'
+                    : topAct?.phase || (recent.length || downloads.length ? 'Generation' : 'Engine')}
           </strong>
           <span className="muted tiny">
             {topDl && topDl.download_status === 'downloading'
               ? topDl.download_message || topDl.label
               : topAct && active.length > 0
                 ? `${topAct.timerLabel ? `${topAct.timerLabel} · ` : ''}${topAct.detail}`
+                : lastFailed
+                  ? (topAct?.detail || 'The job stopped. The reason is on the line below.').slice(0, 220)
                 : warmBusy
                   ? warm?.message || 'Loading into RAM/VRAM…'
                   : warmReadyLabel
@@ -1784,10 +1807,10 @@ function GenerationDock({
             </button>
           )}
           <button className="btn ghost tiny" type="button" onClick={onOpenGenerate}>
-            Generate
+            Video & image
           </button>
           <button className="btn ghost tiny" type="button" onClick={onOpenSampling}>
-            Sampling
+            Takes
           </button>
         </div>
       </div>
