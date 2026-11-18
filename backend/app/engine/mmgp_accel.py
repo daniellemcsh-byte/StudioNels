@@ -51,15 +51,12 @@ def tune_amd_inference() -> None:
             torch.set_float32_matmul_precision("high")
         except Exception:
             pass
+        # Wan2GP on AMD uses SDPA. AOTriton (set above) is the fast kernel.
+        # Forcing the math kernel is the slow fallback Wan2GP turns off.
         try:
-            if hip:
-                torch.backends.cuda.enable_flash_sdp(False)
-                torch.backends.cuda.enable_mem_efficient_sdp(False)
-                torch.backends.cuda.enable_math_sdp(True)
-            else:
-                torch.backends.cuda.enable_flash_sdp(True)
-                torch.backends.cuda.enable_mem_efficient_sdp(True)
-                torch.backends.cuda.enable_math_sdp(True)
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+            torch.backends.cuda.enable_math_sdp(True)
         except Exception:
             pass
     except Exception:

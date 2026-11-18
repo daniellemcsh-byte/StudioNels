@@ -1350,22 +1350,14 @@ def _build_pipeline(
         )
     placement = apply_memory_to_pipeline(pipe, device, mem)
     _progress(cb, f"Device ready ({placement})", 0.17)
-    # ROCm flash-attn segfaults during Wan denoise. Force the math backend.
+    # Wan2GP attention mode is sdpa, with AOTriton enabled for AMD.
     try:
         import torch
 
-        if getattr(getattr(torch, "version", None), "hip", None):
-            torch.backends.cuda.enable_flash_sdp(False)
-            torch.backends.cuda.enable_mem_efficient_sdp(False)
-            torch.backends.cuda.enable_math_sdp(True)
-            for backend_name in ("native", "_native_math", "sdpa"):
-                try:
-                    if hasattr(pipe, "set_attention_backend"):
-                        pipe.set_attention_backend(backend_name)
-                        break
-                except Exception:
-                    continue
-        elif hasattr(pipe, "set_attention_backend"):
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        torch.backends.cuda.enable_math_sdp(True)
+        if hasattr(pipe, "set_attention_backend"):
             pipe.set_attention_backend("sdpa")
     except Exception:
         pass

@@ -1,15 +1,15 @@
 {
   "id": "amd-r9700",
-  "label": "R9700 — light GPU",
-  "target_vram_gb": 12,
+  "label": "R9700 — Wan2GP profile 1",
+  "target_vram_gb": 32,
   "memory": {
-    "placement": "model_cpu_offload",
+    "placement": "gpu",
     "dtype": "float16",
     "attention_slicing": false,
     "vae_slicing": true,
     "vae_tiling": false,
-    "text_encoder_on_cpu": true,
-    "blurb": "Video core on the GPU in float16. The big text encoder stays in RAM."
+    "text_encoder_on_cpu": false,
+    "blurb": "Wan2GP profile 1: float16, SDPA, preload what fits on the 32 GB card."
   },
   "agent": {
     "provider": "ollama",
@@ -30,9 +30,9 @@
     "default_t2a": "stable-audio-open",
     "default_ref2i": "flux-schnell",
     "default_ref2v": "cogvideox-i2v-5b",
-    "cpu_offload": true,
+    "cpu_offload": false,
     "attention_slicing": false,
-    "sequential": true
+    "sequential": false
   },
-  "notes": "R9700: float16, text encoder in RAM, Wan 1.3B at 768×432 for tests. LTX-2.3 is still in the model list when you want a heavier clip."
+  "notes": "Same setup Wan2GP uses on this card: profile 1, float16, SDPA. The first clip loads the model. The next one reuses it."
 }
