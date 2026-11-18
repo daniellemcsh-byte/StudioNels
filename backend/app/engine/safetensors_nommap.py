@@ -159,6 +159,41 @@ def _framework_is_torch(framework: str) -> bool:
     return framework.lower() in {"pt", "torch", "pytorch"}
 
 
+def _read_at(path: str, offset: int, nbytes: int) -> bytes:
+    """Read nbytes at offset. Each call uses its own file position.
+
+    Transformers materializes weights on a thread pool and slices them with
+    ``tensor[...]``. One shared file handle cannot do that: a second seek
+    lands the first read at the end of the file, which comes back as 0 bytes.
+    """
+    if nbytes <= 0:
+        return b""
+    flags = os.O_RDONLY
+    binary = getattr(os, "O_BINARY", 0)
+    if binary:
+        flags |= binary
+    fd = os.open(path, flags)
+    try:
+        pread = getattr(os, "pread", None)
+        out = bytearray()
+        if pread is not None:
+            while len(out) < nbytes:
+                part = pread(fd, nbytes - len(out), offset + len(out))
+                if not part:
+                    break
+                out += part
+            return bytes(out)
+        os.lseek(fd, offset, os.SEEK_SET)
+        while len(out) < nbytes:
+            part = os.read(fd, nbytes - len(out))
+            if not part:
+                break
+            out += part
+        return bytes(out)
+    finally:
+        os.close(fd)
+
+
 class _Slice:
     def __init__(self, owner: "NoMmapSafetensors", name: str):
         self._owner = owner
@@ -213,10 +248,9 @@ class NoMmapSafetensors:
     def get_tensor(self, name: str) -> Any:
         info = self._header[name]
         start, end = info["data_offsets"]
-        self._file.seek(self._data_base + int(start))
         nbytes = int(end) - int(start)
         try:
-            raw = self._file.read(nbytes)
+            raw = _read_at(self.filename, self._data_base + int(start), nbytes)
             tensor = _tensor_from_bytes(raw, str(info["dtype"]), list(info["shape"]))
             del raw
             tensor = _maybe_cast(tensor)
