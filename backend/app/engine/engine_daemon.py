@@ -18,6 +18,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from .atomic_io import write_json
+
 
 def _daemon_dir() -> Path:
     from ..paths import MEDIA_DIR, ensure_dirs
@@ -30,10 +32,7 @@ def _daemon_dir() -> Path:
 
 
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload), encoding="utf-8")
-    tmp.replace(path)
+    write_json(path, payload, required=False)
 
 
 def _cache_labels() -> list[str]:

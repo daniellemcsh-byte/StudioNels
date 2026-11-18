@@ -14,12 +14,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-
-def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload), encoding="utf-8")
-    tmp.replace(path)
+from .atomic_io import write_json
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -39,14 +34,19 @@ def main(argv: list[str] | None = None) -> int:
     out_path = Path(args.out_path)
 
     def cb(message: str, frac: float) -> None:
-        _atomic_write(
-            progress_path,
-            {
-                "message": message,
-                "progress": float(frac),
-                "ts": time.time(),
-            },
-        )
+        # The UI polls this file. A locked rename is not a failed generation.
+        try:
+            write_json(
+                progress_path,
+                {
+                    "message": message,
+                    "progress": float(frac),
+                    "ts": time.time(),
+                },
+                required=False,
+            )
+        except Exception:
+            return
 
     # Progress BEFORE heavy imports — first torch/diffusers import can take minutes on AMD
     cb("Worker boot — importing PyTorch / Diffusers (first time can take 1–2 min)…", 0.03)
@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         job = json.loads(job_path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
-        _atomic_write(
+        write_json(
             result_path,
             {"ok": False, "error": f"Bad job file: {exc}", "traceback": ""},
         )
@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         label = "mmgp" if mmgp_available() else "Diffusers"
         cb(f"Worker started — StudioNels {label} engine…", 0.05)
         result = run_diffusers_job(job, out_path, cb)
-        _atomic_write(
+        write_json(
             result_path,
             {
                 "ok": True,
@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     except Exception as exc:  # noqa: BLE001
-        _atomic_write(
+        write_json(
             result_path,
             {
                 "ok": False,
