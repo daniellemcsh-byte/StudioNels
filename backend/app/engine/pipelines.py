@@ -243,16 +243,16 @@ def _heartbeat_while(
             frac = min(end_frac, frac + (end_frac - start_frac) / 50.0)
             if is_local is True:
                 hint = " · still reading this model from disk into RAM"
-                if elapsed >= 60:
-                    hint = " · large file, still reading. Leave it — the clock means it is working"
+                if elapsed >= 45:
+                    hint = " · mmgp is placing this model, same fast path Wan2GP uses"
             elif is_local is False:
                 hint = " · reading the cached weights into RAM"
-                if elapsed >= 60:
-                    hint = " · large file, still reading. Leave it — the clock means it is working"
+                if elapsed >= 45:
+                    hint = " · mmgp is placing this model, same fast path Wan2GP uses"
             else:
                 hint = " · still reading this model into RAM"
-                if elapsed >= 60:
-                    hint = " · large file, still reading. Leave it — the clock means it is working"
+                if elapsed >= 45:
+                    hint = " · mmgp is placing this model, same fast path Wan2GP uses"
             _progress(
                 cb,
                 f"{label} ({elapsed}s — first AMD load){hint}…",
@@ -822,7 +822,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             0.05,
             0.18,
             lambda: _build_pipeline(model, device, dtype, cpu_offload, mem, cb=cb),
-            max_sec=20 * 60,
+            max_sec=8 * 60,
             is_local=is_local_src,
         )
         if job.get("warm_cache") and pipe is not None:
@@ -1463,7 +1463,7 @@ def preload_diffusers_model(
         0.08,
         0.9,
         lambda: _build_pipeline(model, device, dtype, cpu_offload, mem, cb=cb),
-        max_sec=20 * 60,
+        max_sec=8 * 60,
         is_local=is_local_src,
     )
     if pipe is None:

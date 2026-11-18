@@ -192,12 +192,15 @@ def tune_memory_for_model(mem: dict[str, Any], model: dict[str, Any] | None) -> 
     wan = (not ltx) and ("Wan" in pipe or mid.startswith("wan"))
     flux = "flux" in mid
     huge = ltx or any(tok in mid for tok in ("14b", "22b", "19b", "13b", "hunyuan", "mochi"))
+    # Wan's text encoder stays in RAM so it is not copied onto the card in one
+    # block. The video core uses mmgp's fast profile, the same idea as Wan2GP.
+    # LTX keeps its encoder with the transformer so the first step can run.
     mem["text_encoder_on_cpu"] = bool(wan or flux)
     mem["vae_slicing"] = True
-    mem["stream_weights"] = bool(huge)
-    if huge and mem.get("placement") in {"gpu", "model_cpu_offload"}:
-        mem["placement"] = "sequential_cpu_offload"
-        mem["placement_label"] = PLACEMENT_LABELS["sequential_cpu_offload"]
+    mem["stream_weights"] = False
+    if huge and mem.get("placement") == "gpu":
+        mem["placement"] = "model_cpu_offload"
+        mem["placement_label"] = PLACEMENT_LABELS["model_cpu_offload"]
         mem["cpu_offload"] = True
     return mem
 

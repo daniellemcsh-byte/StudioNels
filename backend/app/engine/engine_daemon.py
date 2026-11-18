@@ -197,6 +197,29 @@ def _handle_request(req_path: Path) -> None:
         return
 
     action = str(req.get("action") or "generate").strip().lower()
+    if action == "release":
+        try:
+            from .pipe_cache import clear
+
+            clear()
+        except Exception:
+            pass
+        try:
+            import gc
+
+            gc.collect()
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        try:
+            req_path.unlink()
+        except Exception:
+            pass
+        _heartbeat({"status": "idle", "message": "Weights released. Engine still warm."})
+        return
     if action == "preload":
         _handle_preload(req, req_path)
         return

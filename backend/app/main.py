@@ -97,13 +97,13 @@ def _startup_engine_worker() -> None:
     import threading
 
     def _warm_in_background() -> None:
-        # Queue thread only. Do not import torch, start the warm daemon, or
-        # preload weights here — that pegs the GPU and pops a backend window
-        # the moment Pinokio opens the app, before anyone presses Generate.
+        # Start the hidden engine process so torch is already imported.
+        # Do not preload weights — the GPU stays idle until Generate.
         try:
-            from .engine.runner import _ensure_worker
+            from .engine.runner import _ensure_warm_daemon, _ensure_worker
 
             _ensure_worker()
+            _ensure_warm_daemon()
         except Exception:
             pass
 
@@ -598,14 +598,21 @@ async def put_settings(body: Settings):
     saved = save_settings(body)
     # Reflect Keep model loaded immediately (overrides Pinokio default env for this process)
     try:
-        from .engine.runner import _kill_warm_daemon
+        import json
 
-        if getattr(saved, "keep_model_loaded", False):
-            # Remember the choice. Weights load on the next Generate, not on Save.
-            os.environ["STUDIONELS_WARM_ENGINE"] = "1"
-        else:
-            os.environ["STUDIONELS_WARM_ENGINE"] = "0"
-            _kill_warm_daemon()
+        from .engine.runner import _daemon_paths, _ensure_warm_daemon
+
+        # The engine process stays up either way. Unchecking drops the cached
+        # weights inside that process; torch stays imported.
+        os.environ["STUDIONELS_WARM_ENGINE"] = "1"
+        _ensure_warm_daemon()
+        if not getattr(saved, "keep_model_loaded", True):
+            req_dir = _daemon_paths()["requests"]
+            req_dir.mkdir(parents=True, exist_ok=True)
+            (req_dir / "release-cache.json").write_text(
+                json.dumps({"action": "release"}),
+                encoding="utf-8",
+            )
     except Exception:
         pass
     return settings_public(saved)

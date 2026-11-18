@@ -43,12 +43,11 @@ _PROC_LOCK = threading.Lock()
 # If Diffusers/ROCm stops writing progress this long, treat as hung.
 _STALL_SEC = 120
 # Hard cap for a whole job.
-_MAX_JOB_SEC = 45 * 60
+_MAX_JOB_SEC = 30 * 60
 # First denoise step should arrive well before this on a healthy GPU path.
 _FIRST_STEP_SEC = 8 * 60
-# Weight load (from_pretrained / mmgp). A 22B file can take well over 6 minutes
-# just to read into RAM — killing it there is what looked like "the model will not load".
-_LOAD_MAX_SEC = 20 * 60
+# Safety cap only. A warm mmgp load should finish well inside this.
+_LOAD_MAX_SEC = 8 * 60
 # After last denoise step, VAE decode can be slow on AMD — but not forever.
 _POST_STEP_MAX_SEC = 10 * 60
 
@@ -452,37 +451,21 @@ def _daemon_alive() -> bool:
         os.kill(pid, 0)
     except Exception:
         return False
-    # Heartbeat should be recent when idle or busy
-    try:
-        hb = json.loads(paths["heartbeat"].read_text(encoding="utf-8"))
-        if time.time() - float(hb.get("ts") or 0) > 90:
-            return False
-    except Exception:
-        # pid lives; treat as starting up
-        pass
+    # A live pid is enough. Torch import on AMD can go quiet for a minute
+    # before the heartbeat updates; a stale file must not start a second engine.
     return True
 
 
 def _ensure_warm_daemon() -> bool:
-    """Start the warm engine daemon if needed. Returns True when a daemon is usable.
+    """Start the long-lived engine process. Returns True when it is usable.
 
-    On by default so Generate after Start reuses weights in RAM (VRAM stays 0 until
-    the first load finishes). Opt out with STUDIONELS_COLD_WORKER=1, set
-    STUDIONELS_WARM_ENGINE to 0/false/no/off, or Settings → Keep model loaded off.
+    Wan2GP is fast because the process is already imported and the last model
+    stays in memory. This daemon does that. It does not load weights until
+    Generate, so opening the app does not fill the GPU. Opt out with
+    STUDIONELS_COLD_WORKER=1.
     """
     if os.environ.get("STUDIONELS_COLD_WORKER", "").strip().lower() in {"1", "true", "yes"}:
         return False
-    warm_env = os.environ.get("STUDIONELS_WARM_ENGINE")
-    if warm_env is not None and warm_env.strip() != "":
-        warm_raw = warm_env.strip().lower()
-        if warm_raw in {"0", "false", "no", "off"}:
-            return False
-    else:
-        try:
-            if not bool(getattr(load_settings(), "keep_model_loaded", False)):
-                return False
-        except Exception:
-            pass
     if _daemon_alive():
         return True
     backend_root = Path(__file__).resolve().parents[2]
@@ -579,7 +562,7 @@ def warm_engine_status() -> dict[str, Any]:
     from .models_manager import get_active_model_id
 
     settings = load_settings()
-    keep = bool(getattr(settings, "keep_model_loaded", False))
+    keep = bool(getattr(settings, "keep_model_loaded", True))
     alive = _daemon_alive()
     cached: list[str] = []
     message: str | None = None
@@ -1005,8 +988,7 @@ def _run_diffusers_isolated(
                 loading = last_frac_pulse < 0.2 or "load" in last_msg_pulse.lower() or "reading" in last_msg_pulse.lower()
                 if loading:
                     cb(
-                        f"Still reading {job.get('model_label') or 'this model'} into RAM… "
-                        f"{int(elapsed)}s. Leave it.",
+                        f"Loading {job.get('model_label') or 'this model'} with mmgp… {int(elapsed)}s",
                         max(0.06, min(0.18, last_frac_pulse)),
                     )
                 else:
@@ -1021,7 +1003,7 @@ def _run_diffusers_isolated(
             # Boot watchdog — jobs stuck at ~3% "Starting…" with no worker pulse
             last_msg = str((last_payload or {}).get("message") or job.get("message") or "")
             last_frac = float((last_payload or {}).get("progress") or job.get("progress") or 0)
-            if (not saw_step) and last_frac < 0.08 and elapsed >= 90:
+            if (not saw_step) and last_frac < 0.08 and elapsed >= 180:
                 _stop_worker(kill=True)
                 raise RuntimeError(
                     "Engine never left boot (stuck near 3%). "

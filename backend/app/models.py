@@ -235,7 +235,7 @@ class Settings(BaseModel):
     cpu_offload: bool = True
     # After a Generate, keep that model resident. Off by default so opening
     # the app does not load weights or spin the GPU.
-    keep_model_loaded: bool = False
+    keep_model_loaded: bool = True
     # Wan2GP paths — point at existing install; no need to copy huge weights.
     wan2gp_ckpts_path: str = ""
     wan2gp_loras_path: str = ""

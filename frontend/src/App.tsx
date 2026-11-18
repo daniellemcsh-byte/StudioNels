@@ -362,8 +362,7 @@ function SpeedTipsPanel({
           <strong>First load is slow</strong> — ROCm compiles kernels once; later runs are quicker.
         </li>
         <li>
-          <strong>Keep a model resident</strong> — StudioNels can keep one model loaded like Wan2GP —
-          use <em>Load into studio</em> on Models, or leave Keep model loaded on.
+          <strong>The engine stays warm</strong> — the first clip loads the model, the next one reuses it.
         </li>
       </ol>
       {onOpenLearning ? (
@@ -5171,8 +5170,8 @@ function SettingsTab({
           Keep the last model loaded after Generate
         </label>
         <div className="muted tiny" style={{ gridColumn: '1 / -1' }}>
-          Off by default, so opening the app leaves the GPU idle. Turn this on only if you want the
-          next clip to skip reloading. Models → Load into studio still loads one model on purpose.
+          The engine stays open like Wan2GP, so the next clip skips the long load. Opening the app
+          does not put a model on the GPU. Uncheck this to drop the weights after a clip.
         </div>
         <div className="muted" style={{ gridColumn: '1 / -1' }}>
           Engine: built-in · Torch: {health?.torch ? 'yes' : 'no'} · GPU:{' '}

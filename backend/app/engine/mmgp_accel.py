@@ -117,11 +117,10 @@ def _profile_enum(vram_gb: float | None, placement: str, mem: dict[str, Any] | N
     from mmgp import profile_type
 
     mem = mem or {}
-    # 13B–22B models fill a 32 GB card if the profile tries to keep them resident.
-    # Stream those. Smaller models keep a low-VRAM profile so the video core can run.
-    if mem.get("stream_weights") or placement == "sequential_cpu_offload":
-        return profile_type.LowRAM_LowVRAM
-    if isinstance(vram_gb, (int, float)) and float(vram_gb) >= 16:
+    # HighRAM_LowVRAM is the Wan2GP-speed profile: weights stay in RAM and the
+    # GPU keeps the blocks it is using. LowRAM_LowVRAM and sequential offload
+    # are what make a load take many minutes.
+    if isinstance(vram_gb, (int, float)) and float(vram_gb) >= 8 and placement != "sequential_cpu_offload":
         return profile_type.HighRAM_LowVRAM
     if isinstance(vram_gb, (int, float)) and float(vram_gb) >= 10:
         return profile_type.LowRAM_HighVRAM
