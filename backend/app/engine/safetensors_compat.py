@@ -8,7 +8,6 @@ mmgp redirects reject that kwarg with:
 from __future__ import annotations
 
 import functools
-import inspect
 import sys
 from typing import Any
 
@@ -26,34 +25,21 @@ def apply_safetensors_backend_compat(*, force: bool = False) -> bool:
     if orig is None:
         return False
 
+    if getattr(orig, "_studionels_safe_open", False):
+        _repoint_safe_open(orig)
+        return True
+
     # Already wrapped this exact function object
     if not force and id(orig) in _PATCHED_ORIG_IDS:
         return True
 
-    supports_backend = False
-    try:
-        params = inspect.signature(orig).parameters
-        supports_backend = "backend" in params or any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-        )
-    except Exception:
-        supports_backend = False
-
-    if supports_backend and not force:
-        _PATCHED_ORIG_IDS.add(id(orig))
-        return True
+    from .safetensors_nommap import open_safetensors
 
     @functools.wraps(orig)
     def _safe_open(*args: Any, **kwargs: Any):
-        if "backend" not in kwargs:
-            return orig(*args, **kwargs)
-        try:
-            return orig(*args, **kwargs)
-        except TypeError as exc:
-            if "backend" not in str(exc):
-                raise
-            stripped = {k: v for k, v in kwargs.items() if k != "backend"}
-            return orig(*args, **stripped)
+        return open_safetensors(orig, args, kwargs)
+
+    _safe_open._studionels_safe_open = True  # type: ignore[attr-defined]
 
     try:
         st.safe_open = _safe_open  # type: ignore[attr-defined]
@@ -62,8 +48,17 @@ def apply_safetensors_backend_compat(*, force: bool = False) -> bool:
 
     _PATCHED_ORIG_IDS.add(id(orig))
     _PATCHED_ORIG_IDS.add(id(_safe_open))
+    _repoint_safe_open(_safe_open)
+    return True
 
-    # Patch modules that already did `from safetensors import safe_open`
+
+def _repoint_safe_open(wrapper) -> None:
+    """Point every already-imported safe_open at the wrapper.
+
+    diffusers, transformers, and mmgp often did `from safetensors import safe_open`
+    before this patch runs. Those bindings still map the whole shard and raise
+    WinError 1455 on Windows.
+    """
     for mod_name, mod in list(sys.modules.items()):
         if mod is None:
             continue
@@ -77,9 +72,11 @@ def apply_safetensors_backend_compat(*, force: bool = False) -> bool:
             continue
         try:
             current = getattr(mod, "safe_open", None)
-            if current is orig or current is None:
-                if current is orig:
-                    setattr(mod, "safe_open", _safe_open)
+        except Exception:
+            continue
+        if current is None or getattr(current, "_studionels_safe_open", False):
+            continue
+        try:
+            setattr(mod, "safe_open", wrapper)
         except Exception:
             pass
-    return True

@@ -822,7 +822,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             0.05,
             0.18,
             lambda: _build_pipeline(model, device, dtype, cpu_offload, mem, cb=cb),
-            max_sec=8 * 60,
+            max_sec=_load_timeout_sec(model),
             is_local=is_local_src,
         )
         if job.get("warm_cache") and pipe is not None:
@@ -1204,6 +1204,43 @@ def _resolve_pipeline_cls(model: dict[str, Any]):
     return DiffusionPipeline
 
 
+def _load_timeout_sec(model: dict[str, Any]) -> int:
+    """LTX-2.3 is ~90 GB of shards. Give a cold disk read time to finish."""
+    ident = f"{model.get('id') or ''} {model.get('pipeline') or ''}".lower()
+    if "ltx" in ident:
+        return 15 * 60
+    return 8 * 60
+
+
+def _release_resident_model(cb: ProgressCb | None) -> None:
+    """Free the warm pipeline before a new checkpoint is read.
+
+    The cache used to keep the previous model until the new one finished
+    loading, so both were committed at once. LTX-2.3 then hits Windows
+    error 1455 even when the new weights would have fit on their own.
+    """
+    try:
+        from .pipe_cache import clear as cache_clear
+        from .pipe_cache import status as cache_status
+
+        if int((cache_status() or {}).get("count") or 0) <= 0:
+            return
+        _progress(cb, "Releasing the previous model so this one can load…", 0.05)
+        cache_clear()
+    except Exception:
+        return
+    try:
+        import gc
+
+        gc.collect()
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _build_pipeline(
     model: dict[str, Any],
     device: str,
@@ -1280,7 +1317,18 @@ def _build_pipeline(
                 raise RuntimeError(_LTX2_UPGRADE_MSG) from exc
             raise
 
-    # Always materialize on CPU first so mmgp can own device placement
+    # Always materialize on CPU first so mmgp can own device placement.
+    # Drop the previous resident model first — LTX-2.3 will not fit beside it.
+    _release_resident_model(cb)
+    from .safetensors_nommap import (
+        explain_weight_load_error,
+        reset_load_cast_dtype,
+        set_load_cast_dtype,
+    )
+
+    # Large float32 matrices (the Gemma text encoder) are stored as float16
+    # while they are read, so a 49 GB shard does not have to sit in RAM twice.
+    set_load_cast_dtype(dtype)
     try:
         pipe = _from_pretrained(source, **load_kwargs)
     except TypeError as first_exc:
@@ -1294,10 +1342,7 @@ def _build_pipeline(
                 pass
             pipe = _from_pretrained(source, **load_kwargs)
         elif is_local:
-            raise RuntimeError(
-                f"Could not load local weights from {source}: {first_exc}. "
-                "Pinokio Update (upgrades safetensors), then retry."
-            ) from first_exc
+            raise RuntimeError(explain_weight_load_error(str(source), first_exc)) from first_exc
         else:
             raise
     except AttributeError as first_exc:
@@ -1323,15 +1368,14 @@ def _build_pipeline(
                     "Pinokio → Update, or: pip install -U 'safetensors>=0.5.3'"
                 ) from retry_exc
         elif is_local:
-            raise RuntimeError(
-                f"Could not load local weights from {source}: {first_exc}. "
-                "Re-download the model in Models (do not wait on a silent HF fetch)."
-            ) from first_exc
+            raise RuntimeError(explain_weight_load_error(str(source), first_exc)) from first_exc
         else:
             raise RuntimeError(
                 f"Could not load weights in float16: {first_exc}. "
                 "A float32 retry would ask the GPU for about 29 GB."
             ) from first_exc
+    finally:
+        reset_load_cast_dtype()
 
     _progress(cb, "Weights in RAM — applying StudioNels mmgp / device placement…", 0.14)
     try:
@@ -1455,7 +1499,7 @@ def preload_diffusers_model(
         0.08,
         0.9,
         lambda: _build_pipeline(model, device, dtype, cpu_offload, mem, cb=cb),
-        max_sec=8 * 60,
+        max_sec=_load_timeout_sec(model),
         is_local=is_local_src,
     )
     if pipe is None:
