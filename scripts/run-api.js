@@ -10,7 +10,7 @@ const fs = require("fs")
 const path = require("path")
 const { assertVenv, cleanEnv } = require("./venv-env")
 
-const BUILD = "2026-11-18-direct8787"
+const BUILD = "2026-11-18-idlegpu"
 const root = path.join(__dirname, "..")
 const backend = path.join(root, "backend")
 const cache = path.join(root, "cache")
@@ -87,13 +87,12 @@ function startPython() {
   const childOpts = {
     cwd: backend,
     env,
+    // windowsHide + no detached: detached opens a new console on Windows,
+    // which is the backend window that kept popping up on every restart.
     windowsHide: true,
+    shell: false,
     // Open stdin pipe: closing stdin makes uvicorn exit on Windows.
     stdio: ["pipe", "pipe", "pipe"],
-  }
-  if (process.platform === "win32") {
-    // New process group so Pinokio CTRL+C does not stop uvicorn.
-    childOpts.detached = true
   }
   child = spawn(pyPath, ["-u", bootPy], childOpts)
   if (child.stdin) child.stdin.unref?.()

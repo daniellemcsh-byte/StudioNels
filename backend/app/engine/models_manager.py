@@ -64,7 +64,27 @@ def _hf_cache_has(repo_id: str | None) -> bool:
     return False
 
 
+_STATUS_CACHE: dict[str, Any] = {"at": 0.0, "key": None, "rows": None}
+
+
 def list_models_with_status(active_model_id: str | None = None) -> list[dict[str, Any]]:
+    now = time.time()
+    key = active_model_id or ""
+    cached = _STATUS_CACHE.get("rows")
+    if (
+        cached is not None
+        and _STATUS_CACHE.get("key") == key
+        and now - float(_STATUS_CACHE.get("at") or 0) < 3
+    ):
+        return [dict(row) for row in cached]
+    rows = _list_models_with_status(active_model_id)
+    _STATUS_CACHE["at"] = now
+    _STATUS_CACHE["key"] = key
+    _STATUS_CACHE["rows"] = rows
+    return [dict(row) for row in rows]
+
+
+def _list_models_with_status(active_model_id: str | None = None) -> list[dict[str, Any]]:
     status = _load_status()
     settings_active = active_model_id or status.get("active_model_id")
     out = []

@@ -67,7 +67,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels is running. Open <b>Web UI</b>. Stamps must say <code>2026-11-18-direct8787</code>.",
+          "StudioNels is running. Open <b>Web UI</b>. Stamps must say <code>2026-11-18-idlegpu</code>. Make is the first menu.",
       },
     },
   ],

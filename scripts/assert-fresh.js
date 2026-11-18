@@ -4,7 +4,7 @@
 const fs = require("fs")
 const path = require("path")
 
-const BUILD = "2026-11-18-direct8787"
+const BUILD = "2026-11-18-idlegpu"
 const root = path.join(__dirname, "..")
 
 const required = [

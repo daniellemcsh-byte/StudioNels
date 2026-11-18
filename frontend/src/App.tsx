@@ -514,58 +514,62 @@ function ModelDownloadProgress({
   )
 }
 
-const NAV_GROUPS: { id: string; label: string; items: { id: TabId; label: string }[] }[] = [
+const NAV_GROUPS: { id: string; label: string; blurb: string; items: { id: TabId; label: string }[] }[] = [
   {
-    id: 'cut',
-    label: 'Cut',
+    id: 'make',
+    label: 'Make',
+    blurb: 'Video, stills, sound',
+    items: [
+      { id: 'generate', label: 'Video & image' },
+      { id: 'audio', label: 'Audio' },
+      { id: 'models', label: 'Models' },
+      { id: 'upsample', label: 'Sharpen' },
+    ],
+  },
+  {
+    id: 'film',
+    label: 'Film',
+    blurb: 'Cuts and finished takes',
     items: [
       { id: 'filmnight', label: 'Film night' },
       { id: 'director', label: 'Director' },
       { id: 'shots', label: 'Shots' },
+      { id: 'storyboard', label: 'Storyboard' },
+      { id: 'sampling', label: 'Takes' },
     ],
   },
   {
-    id: 'start',
+    id: 'story',
     label: 'Story',
+    blurb: 'People, look, and script',
     items: [
       { id: 'agent', label: 'Agent' },
-      { id: 'profiles', label: 'Profiles' },
-      { id: 'time', label: 'Time & Style' },
-      { id: 'inspiration', label: 'Inspiration' },
-    ],
-  },
-  {
-    id: 'advanced',
-    label: 'Advanced',
-    items: [
-      { id: 'generate', label: 'Generate' },
-      { id: 'rehearsal', label: 'Rehearsal' },
-      { id: 'sampling', label: 'Sampling' },
-      { id: 'continuity', label: 'Continuity' },
-      { id: 'audio', label: 'Audio' },
-      { id: 'upsample', label: 'Upsample' },
-      { id: 'storyboard', label: 'Storyboard' },
       { id: 'characters', label: 'Characters' },
-      { id: 'creator', label: 'Creator' },
-      { id: 'templates', label: 'Templates' },
-      { id: 'models', label: 'Models' },
+      { id: 'creator', label: 'New character' },
+      { id: 'profiles', label: 'People & places' },
+      { id: 'time', label: 'Look & length' },
+      { id: 'inspiration', label: 'Inspiration' },
+      { id: 'continuity', label: 'Match looks' },
     ],
   },
   {
-    id: 'system',
-    label: 'System',
+    id: 'more',
+    label: 'More',
+    blurb: 'Tests, help, settings',
     items: [
+      { id: 'rehearsal', label: 'Rehearsal' },
+      { id: 'templates', label: 'Templates' },
       { id: 'learning', label: 'Learning' },
       { id: 'sources', label: 'My links' },
       { id: 'addons', label: 'Add-ons' },
-      { id: 'info', label: 'Info' },
+      { id: 'info', label: 'About' },
       { id: 'settings', label: 'Settings' },
     ],
   },
 ]
 
 function groupForTab(tabId: TabId): string {
-  return NAV_GROUPS.find((g) => g.items.some((i) => i.id === tabId))?.id || 'start'
+  return NAV_GROUPS.find((g) => g.items.some((i) => i.id === tabId))?.id || 'make'
 }
 
 export type InspirationSeed = {
@@ -609,12 +613,9 @@ export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [project, setProject] = useState<Project | null>(null)
-  const [tab, setTab] = useState<TabId>('filmnight')
+  const [tab, setTab] = useState<TabId>('generate')
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
-    cut: true,
-    start: true,
-    advanced: false,
-    system: false,
+    make: true,
   })
   const [showWizard, setShowWizard] = useState(false)
   const [newFrameSize, setNewFrameSize] = useState('16:9-draft')
@@ -625,8 +626,7 @@ export default function App() {
 
   const goTab = (id: TabId) => {
     setTab(id)
-    const gid = groupForTab(id)
-    setOpenGroups((prev) => ({ ...prev, [gid]: true }))
+    setOpenGroups({ [groupForTab(id)]: true })
   }
   const [showNew, setShowNew] = useState(false)
   const [homeView, setHomeView] = useState<'home' | 'learning' | 'sources'>('home')
@@ -1155,6 +1155,7 @@ export default function App() {
         <aside className={`side-nav ${navOpen ? 'open' : 'closed'}`} aria-label="Studio sections">
           <div className="side-nav-inner">
             <div className="side-nav-head">Studio</div>
+            <p className="nav-blurb">One section at a time. Everything is still here.</p>
             {NAV_GROUPS.map((group) => {
               const open = !!openGroups[group.id]
               return (
@@ -1162,12 +1163,13 @@ export default function App() {
                   <button
                     type="button"
                     className={`nav-group-btn ${open ? 'open' : ''}`}
-                    onClick={() =>
-                      setOpenGroups((prev) => ({ ...prev, [group.id]: !prev[group.id] }))
-                    }
+                    onClick={() => setOpenGroups(open ? {} : { [group.id]: true })}
                     aria-expanded={open}
                   >
-                    <span>{group.label}</span>
+                    <span>
+                      {group.label}
+                      <small className="nav-group-blurb">{group.blurb}</small>
+                    </span>
                     <span className="chev">{open ? '▾' : '▸'}</span>
                   </button>
                   {open && (
@@ -1486,7 +1488,7 @@ function GenerationDock({
       }
     }
     void tick()
-    const t = window.setInterval(() => void tick(), 1000)
+    const t = window.setInterval(() => void tick(), 2500)
     return () => {
       cancelled = true
       window.clearInterval(t)
@@ -3288,7 +3290,7 @@ function GenerateTab({
   const [steps, setSteps] = useState(0) // 0 = model/quality default
   const [guidance, setGuidance] = useState(-1) // -1 = model default
   const [strength, setStrength] = useState(0.85)
-  const [showAdvanced, setShowAdvanced] = useState(true)
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [textEncoder, setTextEncoder] = useState('auto')
   const [audioPath, setAudioPath] = useState<string | null>(null)
   const [audioLabel, setAudioLabel] = useState('')
@@ -3404,13 +3406,11 @@ function GenerateTab({
       })
       .catch((err) => notify(String(err.message || err)))
     const t = window.setInterval(() => {
-      Promise.all([api.engineJobs(), api.engine()])
-        .then(([j, e]) => {
-          setJobs(j)
-          setEngine(e)
-        })
+      api
+        .engineJobs()
+        .then((j) => setJobs(j))
         .catch(() => undefined)
-    }, 1000)
+    }, 2500)
     return () => window.clearInterval(t)
   }, [])
 
@@ -3442,17 +3442,20 @@ function GenerateTab({
     if (continuePrev && (mode === 't2v' || mode === 'i2v')) {
       payload.mode = 'i2v'
     }
-    api
-      .engineEstimate(payload)
-      .then((e) => {
-        if (!cancelled) setEstimate(e)
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setEstimating(false)
-      })
+    const timer = window.setTimeout(() => {
+      api
+        .engineEstimate(payload)
+        .then((e) => {
+          if (!cancelled) setEstimate(e)
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (!cancelled) setEstimating(false)
+        })
+    }, 450)
     return () => {
       cancelled = true
+      window.clearTimeout(timer)
     }
   }, [
     mode,
@@ -3576,7 +3579,7 @@ function GenerateTab({
         quality,
         duration_sec: durationSec,
         fps,
-        frames: frames > 0 ? frames : effectiveFrames,
+        frames: frames > 0 ? frames : undefined,
         seed: renderSeed,
         steps: steps > 0 ? steps : undefined,
         guidance: guidance >= 0 ? guidance : undefined,
@@ -3617,12 +3620,8 @@ function GenerateTab({
   return (
     <div>
       <p className="hint">
-        {engine?.mmgp?.available
-          ? 'Fast path: Draft · Wan 1.3B / LTX Distilled · Load into studio (or Keep model loaded) so Generate skips reload.'
-          : 'mmgp missing — in Pinokio run Update (or Install AMD engine), then Stop → Start. Until then Generate looks stuck at ~3% while PyTorch imports.'}
-        {health?.gpu
-          ? ` GPU: ${health.device_name}.`
-          : ' Running preview until ROCm PyTorch + weights are installed.'}
+        Write a prompt, pick Video or Image, then Generate. A 1–3 second clip is the right first test.
+        {health?.gpu ? ` GPU stays idle until you press Generate · ${health.device_name}.` : ' Preview mode until the AMD engine is installed.'}
       </p>
 
       <div className="gen-layout">
@@ -3874,21 +3873,43 @@ function GenerateTab({
                 <option value="max">Max</option>
               </select>
             </div>
-            <div className="field">
-              <label>Clip length (sec)</label>
-              <input
-                type="number"
-                min={0.5}
-                step={0.5}
-                value={durationSec}
-                onChange={(e) => setDurationSec(Number(e.target.value))}
-              />
-            </div>
+            {mode === 't2v' || mode === 'i2v' || mode === 'ref2v' ? (
+              <div className="field">
+                <label>Clip length</label>
+                <div className="inline-actions" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                  {[1, 2, 3, 5].map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      className={`btn tiny ${durationSec === s ? 'acid' : 'ghost'}`}
+                      onClick={() => {
+                        setDurationSec(s)
+                        setFrames(0)
+                      }}
+                    >
+                      {s}s
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="number"
+                  min={1}
+                  step={0.5}
+                  value={durationSec}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (!Number.isFinite(n)) return
+                    setDurationSec(Math.max(1, n))
+                    setFrames(0)
+                  }}
+                />
+              </div>
+            ) : null}
           </div>
 
           <div className="panel" style={{ marginTop: 14, padding: 12 }}>
             <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-              <strong>Video / render edits</strong>
+              <strong>More options</strong>
               <button
                 className="btn ghost tiny"
                 type="button"
@@ -3917,7 +3938,11 @@ function GenerateTab({
                       min={0}
                       step={1}
                       value={frames}
-                      onChange={(e) => setFrames(Math.max(0, Number(e.target.value) || 0))}
+                      onChange={(e) => {
+                        const n = Math.max(0, Number(e.target.value) || 0)
+                        setFrames(n)
+                        if (n > 0) setDurationSec(Math.max(1, Math.round((n / Math.max(1, fps)) * 10) / 10))
+                      }}
                       title="0 = duration × fps"
                     />
                   </div>
@@ -4884,8 +4909,8 @@ function SettingsTab({
   return (
     <div>
       <p className="hint">
-        Default is AMD Low VRAM so friends with smaller cards can use StudioNels. Pick a free local
-        agent (Ollama / built-in) or plug in a paid LLM API for smarter shot planning.
+        On a 32GB Radeon, choose the R9700 preset. Keep model loaded stays off so the GPU is quiet
+        until you generate. Agent can use Ollama on this PC, or a cloud model if you add a key.
       </p>
       <div className="settings-grid panel">
         <div className="field" style={{ gridColumn: '1 / -1' }}>
@@ -5110,14 +5135,14 @@ function SettingsTab({
         <label className="muted">
           <input
             type="checkbox"
-            checked={draft.keep_model_loaded !== false}
+            checked={draft.keep_model_loaded === true}
             onChange={(e) => setDraft({ ...draft, keep_model_loaded: e.target.checked })}
           />{' '}
-          Keep model loaded (preload active Ready model like Wan2GP)
+          Keep the last model loaded after Generate
         </label>
         <div className="muted tiny" style={{ gridColumn: '1 / -1' }}>
-          When ON, Save starts loading the active model into the warm engine. Or use Models → Load
-          into studio anytime.
+          Off by default, so opening the app leaves the GPU idle. Turn this on only if you want the
+          next clip to skip reloading. Models → Load into studio still loads one model on purpose.
         </div>
         <div className="muted" style={{ gridColumn: '1 / -1' }}>
           Engine: built-in · Torch: {health?.torch ? 'yes' : 'no'} · GPU:{' '}
@@ -5307,7 +5332,7 @@ function RehearsalTab({
     <div>
       <p className="hint">
         Greybox pass — cheap draft takes for blocking and timing before you spend VRAM on finals.
-        Promote winners, then generate high quality in Generate / Sampling.
+        Promote winners, then finish them in Video & image or Film → Takes.
       </p>
       <div className="panel">
         <div className="controls-grid">
@@ -6023,10 +6048,8 @@ function AudioTab({
   return (
     <div>
       <p className="hint">
-        Dedicated audio studio — instrumentals, songs with a voice accent, film scores, ambience, and
-        SFX. Saves as {project.audio_format || 'wav'}. Finished clips play in the queue below and under{' '}
-        <strong>Sampling → Library / standalone generations</strong>
-        {health?.gpu ? ` · GPU: ${health.device_name}.` : ' · Preview tones until audio models are installed.'}
+        Music, songs, scores, ambience, and sound effects. Finished clips show up here and under Film → Takes.
+        {health?.gpu ? ` GPU: ${health.device_name}.` : ' Preview tones until an audio model is installed.'}
       </p>
 
       <div className="gen-layout">
@@ -6375,7 +6398,7 @@ function ModelsTab({
           if (warmPack) setWarm(warmPack)
         })
         .catch(() => undefined)
-    }, 2000)
+    }, 5000)
     return () => window.clearInterval(t)
   }, [])
 
@@ -6542,10 +6565,9 @@ function ModelsTab({
       <div className="panel" style={{ marginTop: 16 }}>
         <h3>Choose a model</h3>
         <p className="hint">
-          Filter by Generate tab (t2v, i2v, ref2v…). Pick a model and press Download —
-          StudioNels stores weights under <code>models/</code> and marks them Ready. No Wan2GP needed.
-          StudioNels can keep one model loaded like Wan2GP — use <strong>Load into studio</strong>, or
-          leave Keep model loaded on.
+          Pick a model and press Download. Weights land in <code>models/</code> and show Ready.
+          The GPU stays idle until you generate. <strong>Load into studio</strong> is optional if you
+          want the next clip to start faster.
         </p>
         {warm?.preloading ? (
           <p className="job-phase tone-load tiny" style={{ marginTop: 8 }}>

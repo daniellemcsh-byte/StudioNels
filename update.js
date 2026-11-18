@@ -50,7 +50,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels updated. Look for <code>update-ok: pull-main 2026-11-18-direct8787</code>. Then <b>Stop → Start</b>. The API now listens on <code>127.0.0.1:8787</code> itself.",
+          "StudioNels updated. Look for <code>update-ok: pull-main 2026-11-18-idlegpu</code>. Then <b>Stop → Start</b>. The GPU stays idle until you press Generate.",
       },
     },
   ],

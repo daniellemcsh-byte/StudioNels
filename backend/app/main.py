@@ -97,51 +97,13 @@ def _startup_engine_worker() -> None:
     import threading
 
     def _warm_in_background() -> None:
-        try:
-            from .engine.mmgp_accel import apply_runtime_env
-
-            apply_runtime_env()
-        except Exception:
-            pass
+        # Queue thread only. Do not import torch, start the warm daemon, or
+        # preload weights here — that pegs the GPU and pops a backend window
+        # the moment Pinokio opens the app, before anyone presses Generate.
         try:
             from .engine.runner import _ensure_worker
 
             _ensure_worker()
-        except Exception:
-            pass
-        try:
-            import os
-
-            from .engine.models_manager import get_active_model_id, list_models_with_status
-            from .engine.runner import _ensure_warm_daemon, start_preload_background
-            from .storage import load_settings
-
-            if getattr(load_settings(), "keep_model_loaded", True):
-                os.environ["STUDIONELS_WARM_ENGINE"] = "1"
-                try:
-                    _ensure_warm_daemon()
-                except Exception:
-                    pass
-                try:
-                    active = get_active_model_id()
-                    if not active:
-                        return
-                    row = next(
-                        (m for m in list_models_with_status() if m.get("id") == active),
-                        None,
-                    )
-                    if not row:
-                        return
-                    if not (
-                        row.get("installed")
-                        or str(row.get("download_status") or "") == "installed"
-                    ):
-                        return
-                    start_preload_background(active)
-                except Exception:
-                    pass
-            else:
-                os.environ["STUDIONELS_WARM_ENGINE"] = "0"
         except Exception:
             pass
 
@@ -633,33 +595,14 @@ async def get_settings():
 async def put_settings(body: Settings):
     import os
 
-    prev = load_settings()
     saved = save_settings(body)
     # Reflect Keep model loaded immediately (overrides Pinokio default env for this process)
     try:
-        from .engine.models_manager import get_active_model_id, list_models_with_status
-        from .engine.runner import _ensure_warm_daemon, _kill_warm_daemon, start_preload_background
+        from .engine.runner import _kill_warm_daemon
 
-        if getattr(saved, "keep_model_loaded", True):
+        if getattr(saved, "keep_model_loaded", False):
+            # Remember the choice. Weights load on the next Generate, not on Save.
             os.environ["STUDIONELS_WARM_ENGINE"] = "1"
-            _ensure_warm_daemon()
-            # When Keep model loaded is ON, preload active Ready model (background)
-            turned_on = not bool(getattr(prev, "keep_model_loaded", True))
-            if turned_on:
-                active = get_active_model_id()
-                if active:
-                    try:
-                        row = next(
-                            (m for m in list_models_with_status() if m.get("id") == active),
-                            None,
-                        )
-                    except Exception:
-                        row = None
-                    if row and (
-                        row.get("installed")
-                        or str(row.get("download_status") or "") == "installed"
-                    ):
-                        start_preload_background(active)
         else:
             os.environ["STUDIONELS_WARM_ENGINE"] = "0"
             _kill_warm_daemon()

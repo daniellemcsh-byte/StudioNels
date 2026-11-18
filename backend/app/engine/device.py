@@ -1,9 +1,24 @@
 from __future__ import annotations
 
+import time
 from typing import Any
+
+_CACHE: dict[str, Any] = {"at": 0.0, "info": None}
 
 
 def detect_device() -> dict[str, Any]:
+    """Cached GPU probe. Polling this every second imports torch and stalls the UI."""
+    now = time.time()
+    cached = _CACHE.get("info")
+    if isinstance(cached, dict) and now - float(_CACHE.get("at") or 0) < 30:
+        return dict(cached)
+    info = _detect_device()
+    _CACHE["info"] = info
+    _CACHE["at"] = now
+    return dict(info)
+
+
+def _detect_device() -> dict[str, Any]:
     """Detect torch + AMD ROCm / CUDA / CPU for in-app inference."""
     info: dict[str, Any] = {
         "torch_available": False,

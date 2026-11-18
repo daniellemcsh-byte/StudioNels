@@ -56,6 +56,37 @@ function freeUnix(port) {
   }
 }
 
+function killRecorded(relPath) {
+  const file = path.join(__dirname, "..", relPath)
+  let pid = ""
+  try {
+    pid = fs.readFileSync(file, "utf8").trim()
+  } catch {
+    return
+  }
+  if (!/^\d+$/.test(pid) || pid === "0") return
+  try {
+    if (process.platform === "win32") {
+      execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore", windowsHide: true })
+    } else {
+      execSync(`kill -9 ${pid}`, { stdio: "ignore" })
+    }
+    console.log(`Stopped leftover process ${pid} (${relPath})`)
+  } catch {
+    /* already gone */
+  }
+  try {
+    fs.unlinkSync(file)
+  } catch {
+    /* ignore */
+  }
+}
+
+const path = require("path")
+const fs = require("fs")
+killRecorded("cache/api.pid")
+killRecorded(path.join("outputs", "_engine_daemon", "daemon.pid"))
+
 const free = process.platform === "win32" ? freeWindows : freeUnix
 for (const port of PORTS) free(port)
 // On Windows, lingering sockets can flap "address already in use" if we bind

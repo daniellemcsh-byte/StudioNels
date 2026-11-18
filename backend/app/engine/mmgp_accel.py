@@ -44,7 +44,9 @@ def tune_amd_inference() -> None:
         hip = bool(getattr(getattr(torch, "version", None), "hip", None))
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-        torch.backends.cudnn.benchmark = True
+        # benchmark=True runs a GPU search the first time a conv shows up and
+        # can sit at 100% while the app is just open. Off on AMD.
+        torch.backends.cudnn.benchmark = not hip
         try:
             torch.set_float32_matmul_precision("high")
         except Exception:
@@ -86,9 +88,18 @@ def mmgp_available() -> bool:
         return False
 
 
+_MMGP_STATUS: dict[str, Any] = {"at": 0.0, "info": None}
+
+
 def mmgp_status() -> dict[str, Any]:
+    import time
+
+    now = time.time()
+    cached = _MMGP_STATUS.get("info")
+    if isinstance(cached, dict) and now - float(_MMGP_STATUS.get("at") or 0) < 30:
+        return dict(cached)
     ok = mmgp_available()
-    return {
+    info = {
         "available": ok,
         "package": "mmgp",
         "blurb": (
@@ -97,6 +108,9 @@ def mmgp_status() -> dict[str, Any]:
             else "Install engine extras (pip install -r requirements-engine.txt) for native mmgp speed."
         ),
     }
+    _MMGP_STATUS["info"] = info
+    _MMGP_STATUS["at"] = now
+    return dict(info)
 
 
 def _profile_enum(vram_gb: float | None, placement: str):

@@ -67,8 +67,44 @@ async def _serve() -> None:
     print("boot-api: uvicorn.serve returned (server stopped)", flush=True)
 
 
+def _stop_orphan_gpu() -> None:
+    """Kill a warm-engine python left behind by a previous Start. That process
+    holds the GPU at full load even after Pinokio Stop."""
+    pid_file = Path(__file__).resolve().parent.parent / "outputs" / "_engine_daemon" / "daemon.pid"
+    if not pid_file.exists():
+        return
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except Exception:
+        return
+    if pid <= 0:
+        return
+    print(f"boot-api: stopping leftover GPU worker pid={pid}", flush=True)
+    try:
+        if sys.platform == "win32":
+            import subprocess
+
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=0x08000000,
+            )
+        else:
+            import os
+
+            os.kill(pid, 9)
+    except Exception as exc:
+        print(f"boot-api: leftover worker kill failed: {exc}", flush=True)
+    try:
+        pid_file.unlink()
+    except Exception:
+        pass
+
+
 def main() -> None:
     _ignore_windows_ctrl()
+    _stop_orphan_gpu()
     print("boot-api: importing uvicorn …", flush=True)
     while True:
         try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import subprocess
@@ -266,17 +267,15 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     duration_sec = payload.get("duration_sec")
     frames = payload.get("frames")
     fps = int(payload.get("fps") or gen.get("fps") or model.get("fps") or 16)
-    if duration_sec and not frames and mode in video_modes:
-        frames = max(8, int(float(duration_sec) * fps))
-    if not frames:
+    # Typed length wins. A preset frame count (often 81) must not stretch a
+    # 1–3s test into a ~10s clip.
+    if mode in video_modes and duration_sec:
+        frames = max(9, int(round(float(duration_sec) * max(1, fps))))
+    elif not frames:
         frames = int(gen.get("default_frames") or model.get("default_frames") or 49)
-    # Soft frame cap from quality — 5s @ 24fps (=120f) is a common speed trap.
-    # On 32GB, allow up to 81 frames (~3.4s @ 24fps) even on Draft so clips stay usable.
-    max_frames = qmeta.get("max_frames")
-    if large_gpu and mode in video_modes and not payload.get("frames"):
-        max_frames = max(int(max_frames or 0), 81)
-    if max_frames and not payload.get("frames") and mode in video_modes:
-        frames = min(int(frames), int(max_frames))
+        max_frames = qmeta.get("max_frames")
+        if max_frames and mode in video_modes:
+            frames = min(int(frames), int(max_frames))
     if mode in video_modes:
         from .pipelines import snap_video_frames
 
@@ -496,14 +495,14 @@ def _ensure_warm_daemon() -> bool:
     except Exception:
         log_f = subprocess.DEVNULL
     try:
-        subprocess.Popen(
+        _popen_hidden(
             [sys.executable, "-m", "app.engine.engine_daemon"],
             cwd=str(backend_root),
             env=env,
             stdout=log_f,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
         )
+        _kill_daemon_on_exit()
     except Exception:
         return False
     # Wait briefly for heartbeat
@@ -520,18 +519,46 @@ def _kill_warm_daemon() -> None:
         return
     try:
         pid = int(paths["pid"].read_text(encoding="utf-8").strip())
-        os.kill(pid, 15)
-        time.sleep(0.5)
-        try:
-            os.kill(pid, 9)
-        except Exception:
-            pass
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=0x08000000,
+            )
+        else:
+            os.kill(pid, 15)
+            time.sleep(0.4)
+            try:
+                os.kill(pid, 9)
+            except Exception:
+                pass
     except Exception:
         pass
     try:
         paths["pid"].unlink()
     except Exception:
         pass
+
+
+_KILL_ON_EXIT = False
+
+
+def _kill_daemon_on_exit() -> None:
+    global _KILL_ON_EXIT
+    if _KILL_ON_EXIT:
+        return
+    _KILL_ON_EXIT = True
+    atexit.register(_kill_warm_daemon)
+
+
+def _popen_hidden(cmd: list[str], **kwargs: Any) -> subprocess.Popen:
+    """Start a worker without a console window (Windows python.exe pops one)."""
+    if os.name == "nt":
+        flags = int(kwargs.pop("creationflags", 0) or 0)
+        flags |= 0x08000000  # CREATE_NO_WINDOW
+        kwargs["creationflags"] = flags
+    return subprocess.Popen(cmd, **kwargs)
 
 
 _PRELOAD_STATE: dict[str, Any] = {
@@ -882,7 +909,7 @@ def _run_diffusers_isolated(
             "--out-path",
             str(out_path),
         ]
-        proc = subprocess.Popen(
+        proc = _popen_hidden(
             cmd,
             cwd=str(backend_root),
             env=env,

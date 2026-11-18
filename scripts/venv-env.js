@@ -34,9 +34,9 @@ function cleanEnv(pyPath) {
   const next = [scripts, cur].filter(Boolean).join(path.delimiter)
   env.PATH = next
   env.Path = next
-  // Warm engine on by default so Generate after Start reuses loaded weights.
-  // Opt out with STUDIONELS_COLD_WORKER=1 or STUDIONELS_WARM_ENGINE=0.
-  env.STUDIONELS_WARM_ENGINE = env.STUDIONELS_WARM_ENGINE || "1"
+  // Do not force the warm engine on. Opening the app must leave the GPU idle.
+  // Settings → Keep model loaded, or Models → Load into studio, turns it on.
+  if (!env.STUDIONELS_WARM_ENGINE) env.STUDIONELS_WARM_ENGINE = "0"
   env.MIOPEN_FIND_MODE = env.MIOPEN_FIND_MODE || "FAST"
   env.TORCHINDUCTOR_DISABLE = env.TORCHINDUCTOR_DISABLE || "1"
   env.TORCH_COMPILE_DISABLE = env.TORCH_COMPILE_DISABLE || "1"
