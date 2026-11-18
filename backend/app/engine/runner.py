@@ -43,11 +43,12 @@ _PROC_LOCK = threading.Lock()
 # If Diffusers/ROCm stops writing progress this long, treat as hung.
 _STALL_SEC = 120
 # Hard cap for a whole job.
-_MAX_JOB_SEC = 20 * 60
+_MAX_JOB_SEC = 45 * 60
 # First denoise step should arrive well before this on a healthy GPU path.
 _FIRST_STEP_SEC = 8 * 60
-# Weight load (from_pretrained / mmgp) — heartbeats used to keep this alive forever at ~18%.
-_LOAD_MAX_SEC = 6 * 60
+# Weight load (from_pretrained / mmgp). A 22B file can take well over 6 minutes
+# just to read into RAM — killing it there is what looked like "the model will not load".
+_LOAD_MAX_SEC = 20 * 60
 # After last denoise step, VAE decode can be slow on AMD — but not forever.
 _POST_STEP_MAX_SEC = 10 * 60
 
@@ -999,12 +1000,22 @@ def _run_diffusers_isolated(
 
             # Parent-side pulse so UI never sits mute if the child is wedged in HIP
             if child_silent >= 5 and (now - last_parent_pulse) >= 5:
-                soft = min(0.55, 0.2 + child_silent / 600.0)
-                cb(
-                    f"Waiting on GPU… {int(elapsed)}s elapsed · "
-                    f"{job.get('model_label') or 'this model'} is still on the current step",
-                    max(float(job.get("progress") or 0.2), soft),
-                )
+                last_msg_pulse = str((last_payload or {}).get("message") or job.get("message") or "")
+                last_frac_pulse = float((last_payload or {}).get("progress") or job.get("progress") or 0)
+                loading = last_frac_pulse < 0.2 or "load" in last_msg_pulse.lower() or "reading" in last_msg_pulse.lower()
+                if loading:
+                    cb(
+                        f"Still reading {job.get('model_label') or 'this model'} into RAM… "
+                        f"{int(elapsed)}s. Leave it.",
+                        max(0.06, min(0.18, last_frac_pulse)),
+                    )
+                else:
+                    soft = min(0.55, 0.2 + child_silent / 600.0)
+                    cb(
+                        f"Waiting on GPU… {int(elapsed)}s elapsed · "
+                        f"{job.get('model_label') or 'this model'} is still on the current step",
+                        max(float(job.get("progress") or 0.2), soft),
+                    )
                 last_parent_pulse = now
 
             # Boot watchdog — jobs stuck at ~3% "Starting…" with no worker pulse

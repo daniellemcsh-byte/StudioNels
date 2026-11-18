@@ -242,21 +242,17 @@ def _heartbeat_while(
             elapsed = int(time.time() - started)
             frac = min(end_frac, frac + (end_frac - start_frac) / 50.0)
             if is_local is True:
-                hint = " · still loading from disk into RAM"
+                hint = " · still reading this model from disk into RAM"
                 if elapsed >= 60:
-                    hint = " · large safetensors into RAM — VRAM fills after this"
-                if elapsed >= 90:
-                    hint = " · if this passes 5–6 min, Stop and use a smaller Ready model (or link Wan2GP)"
+                    hint = " · large file, still reading. Leave it — the clock means it is working"
             elif is_local is False:
-                hint = " · VRAM stays 0 until download/cache load finishes"
+                hint = " · reading the cached weights into RAM"
                 if elapsed >= 60:
-                    hint = " · if this is a fresh download it can take a long time — prefer Models → Ready local"
-                if elapsed >= 90:
-                    hint = " · if this passes 5–6 min, Stop and use a smaller Ready model (or link Wan2GP)"
+                    hint = " · large file, still reading. Leave it — the clock means it is working"
             else:
-                hint = " · still in RAM (VRAM fills after this step)"
-                if elapsed >= 90:
-                    hint = " · if this passes 5–6 min, Stop and use a smaller Ready model (or link Wan2GP)"
+                hint = " · still reading this model into RAM"
+                if elapsed >= 60:
+                    hint = " · large file, still reading. Leave it — the clock means it is working"
             _progress(
                 cb,
                 f"{label} ({elapsed}s — first AMD load){hint}…",
@@ -826,7 +822,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             0.05,
             0.18,
             lambda: _build_pipeline(model, device, dtype, cpu_offload, mem, cb=cb),
-            max_sec=6 * 60,
+            max_sec=20 * 60,
             is_local=is_local_src,
         )
         if job.get("warm_cache") and pipe is not None:
@@ -1245,6 +1241,8 @@ def _build_pipeline(
         return {"dtype": dt}
 
     load_kwargs: dict[str, Any] = _dtype_kwargs(dtype)
+    # Stream shards into RAM. A 22B file must not be allocated in one block.
+    load_kwargs["low_cpu_mem_usage"] = True
     if is_local:
         load_kwargs["local_files_only"] = True
         # Incomplete local packs used to silently fall through to a multi-GB HF download
@@ -1264,12 +1262,17 @@ def _build_pipeline(
         try:
             return pipe_cls.from_pretrained(src, **kwargs)
         except TypeError as exc:
-            # Older diffusers: dtype= unknown → fall back to torch_dtype=
-            if "dtype" in kwargs and ("dtype" in str(exc) or "unexpected" in str(exc).lower()):
+            # Older diffusers: dtype= unknown, or low_cpu_mem_usage not accepted.
+            msg = str(exc)
+            if "dtype" in kwargs and ("dtype" in msg or "unexpected" in msg.lower()):
                 alt = dict(kwargs)
                 dt = alt.pop("dtype", None)
                 if dt is not None:
                     alt["torch_dtype"] = dt
+                return pipe_cls.from_pretrained(src, **alt)
+            if "low_cpu_mem_usage" in kwargs and "low_cpu_mem_usage" in msg:
+                alt = dict(kwargs)
+                alt.pop("low_cpu_mem_usage", None)
                 return pipe_cls.from_pretrained(src, **alt)
             raise
         except AttributeError as exc:
@@ -1460,7 +1463,7 @@ def preload_diffusers_model(
         0.08,
         0.9,
         lambda: _build_pipeline(model, device, dtype, cpu_offload, mem, cb=cb),
-        max_sec=6 * 60,
+        max_sec=20 * 60,
         is_local=is_local_src,
     )
     if pipe is None:

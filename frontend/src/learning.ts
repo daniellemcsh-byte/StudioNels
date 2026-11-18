@@ -172,7 +172,7 @@ export const LEARN_TOPICS: LearnTopic[] = [
           'Quality → Draft (fewer steps).',
           'Shorter clip: 2–3 seconds, 8–16 fps, or fewer frames.',
           'Smaller frame size (e.g. 768×432) before you go bigger.',
-          'Prefer a small video model (Wan 1.3B) over 14B until the look works.',
+          'Wan, LTX, and the other Ready models all run. A shorter clip finishes sooner.',
           'Skip LoRA / custom text encoders for test shots.',
           'Keep CPU offload on if VRAM is tight; turn it off only when fit is comfortable.',
         ],
@@ -346,8 +346,8 @@ export const LEARN_TOPICS: LearnTopic[] = [
       {
         title: 'If it says won’t fit',
         steps: [
-          'Switch to a smaller model (e.g. Wan 1.3B).',
-          'Lower width/height and use Draft.',
+          'Keep the model you picked. Large ones stream from RAM.',
+          'Lower width/height and use Draft if you want it to finish sooner.',
           'Keep CPU offload on.',
           'Shorten clip length / frames.',
         ],

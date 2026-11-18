@@ -116,8 +116,8 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         fit = "wont_fit"
         warnings.append(
-            f"Needs ~{vram_need:.1f} GB; GPU reports {available} GB. "
-            "Switch model, lower resolution, or enable the low-VRAM preset."
+            f"Estimate ~{vram_need:.1f} GB on a {available} GB card. "
+            "Large models stream from RAM, so this can still run."
         )
 
     # ETA seconds — rough (mmgp is faster than plain accelerate offload)
@@ -154,14 +154,14 @@ def estimate_job(payload: dict[str, Any]) -> dict[str, Any]:
     coach = {
         "comfortable": f"GO — {device.get('device_name') or 'GPU'} can handle this (~{_fmt_eta(eta)}).",
         "tight": f"TIGHT — close to VRAM limit. One job at a time; ETA ~{_fmt_eta(eta)}.",
-        "wont_fit": "STOP — this will not fit. Drop to 16:9 draft / 9:16 draft / 1:1 draft, or AMD Low VRAM preset.",
+        "wont_fit": "TIGHT — keep the clip short. Large models stream from RAM instead of filling the card.",
         "cpu_slow": "CPU ONLY — expect a long wait or preview frames. Install ROCm PyTorch for AMD.",
         "preview_only": "PREVIEW MODE — PyTorch/Diffusers missing. Jobs draw placeholders until the engine is installed.",
         "unknown": "Checking your GPU… pick a draft size if unsure.",
     }
     coach_headline = coach.get(fit, coach["unknown"])
     if fit == "wont_fit":
-        advice.append("Try Wan 1.3B / SDXL Turbo, 768×432 landscape draft, or 432×768 portrait draft.")
+        advice.append("Keep it at 768×432 and a few seconds. The model you picked still loads.")
     elif fit == "tight":
         advice.append("Draft size is fine for a short clip — Generate is still allowed.")
     elif fit == "comfortable":
