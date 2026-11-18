@@ -1,12 +1,12 @@
 /**
  * Wait until http://127.0.0.1:8787/api/ready reports ready:true.
- * Node proxy binds immediately; Python on :8788 may take longer.
+ * Python binds 127.0.0.1:8787 itself. Import can take a while on Windows.
  */
 const fs = require("fs")
 const http = require("http")
 const path = require("path")
 
-const BUILD = "2026-11-15-detach"
+const BUILD = "2026-11-18-direct8787"
 const HOST = "127.0.0.1"
 const PORT = 8787
 const MAX_MS = Number(process.env.STUDIONELS_WAIT_API_MS || 300000)

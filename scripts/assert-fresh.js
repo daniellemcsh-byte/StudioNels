@@ -4,15 +4,15 @@
 const fs = require("fs")
 const path = require("path")
 
-const BUILD = "2026-11-15-vitefix"
+const BUILD = "2026-11-18-direct8787"
 const root = path.join(__dirname, "..")
 
 const required = [
   ["scripts/run-frontend.js", BUILD],
   ["scripts/run-frontend.js", "vite/bin/vite.js"],
-  ["scripts/wait-api.js", "2026-11-15-detach"],
-  ["scripts/run-api.js", "node-proxy"],
-  ["scripts/run-api.js", "detached"],
+  ["scripts/wait-api.js", "127.0.0.1:8787"],
+  ["scripts/run-api.js", BUILD],
+  ["scripts/run-api.js", "no proxy"],
   ["scripts/boot-api.py", "boot-api: python alive"],
   ["scripts/boot-api.py", "SetConsoleCtrlHandler"],
   ["backend/app/gateway.py", "Light ASGI entry"],

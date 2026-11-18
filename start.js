@@ -19,14 +19,13 @@ module.exports = {
         message: ["node scripts/check-backend.js"],
       },
     },
-    // Node proxy prints this as soon as :8787 is bound (before Python finishes).
     {
       method: "shell.run",
       params: {
         message: ["node scripts/run-api.js"],
         on: [
           {
-            event: "/node-proxy: bound/i",
+            event: "/boot-api: python alive/i",
             done: true,
           },
           {
@@ -68,7 +67,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels is running. Open <b>Web UI</b>. Stamps must say <code>2026-11-15-vitefix</code>.",
+          "StudioNels is running. Open <b>Web UI</b>. Stamps must say <code>2026-11-18-direct8787</code>.",
       },
     },
   ],

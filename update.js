@@ -50,7 +50,7 @@ module.exports = {
       method: "notify",
       params: {
         html:
-          "StudioNels updated. Look for <code>update-ok: pull-main 2026-11-15-vitefix</code>. Then <b>Start</b>. Vite is launched via node (no npm.cmd / spawn EINVAL).",
+          "StudioNels updated. Look for <code>update-ok: pull-main 2026-11-18-direct8787</code>. Then <b>Stop → Start</b>. The API now listens on <code>127.0.0.1:8787</code> itself.",
       },
     },
   ],
