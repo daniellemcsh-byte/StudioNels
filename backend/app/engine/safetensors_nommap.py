@@ -18,8 +18,8 @@ import struct
 import sys
 from typing import Any
 
-# Shards at or above this size are the ones that blow a small Windows page file.
-_NOMMAP_MIN_BYTES = 1536 * 1024 * 1024
+# The LTX VAE is about 1.5 GB. Windows still charges that against the paging
+# file when it is memory-mapped, and the old cutoff skipped it.
 # Gemma stores its 12B text encoder in float32. Downcast the big matrices only.
 _DOWNCAST_MIN_NUMEL = 1_000_000
 
@@ -59,47 +59,74 @@ def _is_alloc_error(exc: BaseException) -> bool:
 
 
 def is_pagefile_error(exc: BaseException) -> bool:
-    winerror = getattr(exc, "winerror", None)
-    if winerror == 1455:
-        return True
-    msg = str(exc).lower()
-    return (
-        "paging file" in msg
-        or "os error 1455" in msg
-        or "[winerror 1455]" in msg
-        or "error 1455" in msg
-    )
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        winerror = getattr(current, "winerror", None)
+        if winerror == 1455:
+            return True
+        msg = str(current).lower()
+        if (
+            "paging file" in msg
+            or "os error 1455" in msg
+            or "[winerror 1455]" in msg
+            or "error 1455" in msg
+        ):
+            return True
+        nxt = current.__cause__ or current.__context__
+        current = nxt if isinstance(nxt, BaseException) else None
+    return False
+
+
+def _error_text(exc: BaseException) -> str:
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        parts.append(str(current))
+        nxt = current.__cause__ or current.__context__
+        current = nxt if isinstance(nxt, BaseException) else None
+    return " ".join(parts)
 
 
 def explain_weight_load_error(source: str, exc: BaseException) -> str:
-    if is_pagefile_error(exc):
+    text = _error_text(exc)
+    low = text.lower()
+    if is_pagefile_error(exc) or "paging file" in low or "1455" in low:
         return (
             "Windows paging file is too small to open this model "
             f"({source}). The download is already on disk. "
-            "Update StudioNels and retry — large checkpoints are read without a page-file mapping. "
+            "Update StudioNels and retry — checkpoints are read without a page-file mapping. "
             "If it still fails, set a custom paging file of at least 64 GB "
             "(System → Advanced system settings → Performance → Advanced → Virtual memory) and reboot."
         )
-    msg = str(exc).lower()
-    if "not enough memory" in msg or "out of memory" in msg or "cannot allocate" in msg:
+    if "not enough memory" in low or "out of memory" in low or "cannot allocate" in low:
         return (
             "This model does not fit in RAM plus the Windows paging file "
             f"({source}). LTX-2.3 keeps a 12B text encoder and a 22B transformer. "
             "Set a custom paging file of at least 64 GB and reboot, then retry. "
             "The weights do not need to be downloaded again."
         )
+    if "git-lfs" in low or "git lfs" in low or low.strip().startswith("version https://git-lfs"):
+        return (
+            f"A weight file under {source} is still a Git LFS pointer, not the real checkpoint. "
+            "In Models, download this model again."
+        )
     return (
-        f"Could not load local weights from {source}: {exc}. "
-        "The files are already on disk. Pinokio → Update, then retry."
+        f"Could not load local weights from {source}: {text}. "
+        "The folder is already on disk. Pinokio → Update, then retry."
     )
 
 
 def prefer_nommap(filename: str, *, platform: str | None = None) -> bool:
+    """Windows maps even a 1.5 GB VAE into the paging file. Read the file instead."""
     plat = platform if platform is not None else sys.platform
     if plat != "win32":
         return False
     try:
-        return os.path.getsize(filename) >= _NOMMAP_MIN_BYTES
+        return os.path.isfile(filename)
     except OSError:
         return False
 
@@ -215,6 +242,10 @@ class NoMmapSafetensors:
 
 def _read_header(handle) -> tuple[dict[str, dict], int, dict | None]:
     prefix = handle.read(8)
+    if prefix.startswith(b"version"):
+        raise RuntimeError(
+            "This file is a Git LFS pointer, not the weight data. Download the model again in Models."
+        )
     if len(prefix) != 8:
         raise RuntimeError("Safetensors file is missing its header length.")
     (header_len,) = struct.unpack("<Q", prefix)
@@ -325,10 +356,14 @@ def open_safetensors(orig, args: tuple, kwargs: dict):
                 continue
             raise
         except Exception as exc:  # noqa: BLE001
-            if is_pagefile_error(exc):
+            # Diffusers hides the real safetensors error behind "Unable to load
+            # weights". Any failed native open is retried without a memory map.
+            try:
                 alt = fallback()
-                if alt is not None:
-                    return alt
+            except Exception as reader_exc:
+                raise reader_exc from exc
+            if alt is not None:
+                return alt
             raise
         if filename and hasattr(opened, "__enter__"):
             return _EnterFallback(opened, filename, framework, device)
@@ -353,12 +388,12 @@ class _EnterFallback:
             self._active = self._native.__enter__()
             return self._active
         except Exception as exc:
-            if is_pagefile_error(exc) and _framework_is_torch(self._framework):
+            if _framework_is_torch(self._framework):
                 self._active = NoMmapSafetensors(
                     self._filename, framework=self._framework, device=self._device
                 )
                 return self._active.__enter__()
-            raise
+            raise exc
 
     def __exit__(self, exc_type, exc, tb):
         if self._active is None:
