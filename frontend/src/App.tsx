@@ -3432,7 +3432,6 @@ function GenerateTab({
     fps,
     frames: frames > 0 ? frames : effectiveFrames,
     steps: steps > 0 ? steps : undefined,
-    cpu_offload: true,
     preset_id: project.preset_id,
   })
 
@@ -3572,7 +3571,6 @@ function GenerateTab({
         video_path: videoPath,
         project_id: project.id,
         shot_id: shotId || undefined,
-        cpu_offload: true,
         width,
         height,
         quality,

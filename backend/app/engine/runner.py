@@ -233,17 +233,35 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     if mode_meta.get("needs_video") and not payload.get("video_path"):
         raise ValueError("Upsample video needs a video/clip — add a file in Generate.")
 
-    # Default Draft for video — matches how other local apps feel snappy
+    # Default Draft for video on small cards. R9700-class stays on full model steps
+    # (draft ×0.4 broke distilled sigma schedules and made Wan look failed).
     video_modes = {"t2v", "i2v", "ref2v", "upsample_video"}
-    quality = payload.get("quality") or ("draft" if mode in video_modes else "balanced")
+    vram_gb = None
+    try:
+        vram_gb = detect_device().get("vram_gb")
+    except Exception:
+        vram_gb = None
+    large_gpu = isinstance(vram_gb, (int, float)) and float(vram_gb) >= 20
+    if payload.get("quality"):
+        quality = payload.get("quality")
+    elif large_gpu:
+        quality = "balanced"
+    else:
+        quality = "draft" if mode in video_modes else "balanced"
     qmeta = next((q for q in QUALITY_PRESETS if q["id"] == quality), QUALITY_PRESETS[0])
     base_steps = int(payload.get("steps") or model.get("default_steps") or 20)
-    base_guidance = float(payload.get("guidance") or model.get("default_guidance") or 5)
+    base_guidance = float(
+        payload.get("guidance")
+        if payload.get("guidance") is not None
+        else (model.get("default_guidance") if model.get("default_guidance") is not None else 5)
+    )
     steps = max(1, int(base_steps * float(qmeta["steps_scale"])))
     guidance = float(base_guidance * float(qmeta["guidance_scale"]))
-    # Distilled models: keep step count low even on Balanced
+    # Distilled schedules are a fixed length — scaling steps down crashes the sampler.
     if model.get("distilled") and not payload.get("steps"):
-        steps = min(steps, int(model.get("default_steps") or 8))
+        steps = int(model.get("default_steps") or 8)
+        if model.get("default_guidance") is not None and payload.get("guidance") is None:
+            guidance = float(model.get("default_guidance"))
 
     duration_sec = payload.get("duration_sec")
     frames = payload.get("frames")
@@ -252,10 +270,18 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         frames = max(8, int(float(duration_sec) * fps))
     if not frames:
         frames = int(gen.get("default_frames") or model.get("default_frames") or 49)
-    # Soft frame cap from quality — 5s @ 24fps (=120f) is a common speed trap
+    # Soft frame cap from quality — 5s @ 24fps (=120f) is a common speed trap.
+    # On 32GB, allow up to 81 frames (~3.4s @ 24fps) even on Draft so clips stay usable.
     max_frames = qmeta.get("max_frames")
+    if large_gpu and mode in video_modes and not payload.get("frames"):
+        max_frames = max(int(max_frames or 0), 81)
     if max_frames and not payload.get("frames") and mode in video_modes:
         frames = min(int(frames), int(max_frames))
+    if mode in video_modes:
+        from .pipelines import snap_video_frames
+
+        family = f"{model.get('pipeline') or ''} {model.get('id') or ''}"
+        frames = snap_video_frames(int(frames), family)
     if mode == "t2a" and not duration_sec:
         duration_sec = float(model.get("default_duration_sec") or 8)
 

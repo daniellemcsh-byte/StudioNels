@@ -35,6 +35,21 @@ def snap_frame_size(width: int, height: int, *, multiple: int = 32) -> tuple[int
     return snap_dim(width, multiple), snap_dim(height, multiple)
 
 
+def snap_video_frames(frames: int, family: str = "") -> int:
+    """Wan wants 4n+1 frames, LTX/CogVideo 8n+1. Wrong counts raise and abort the job."""
+    frames = max(9, int(frames or 49))
+    fam = (family or "").lower()
+    if any(k in fam for k in ("ltx", "cogvideo", "mochi")):
+        n = max(1, round((frames - 1) / 8))
+        return int(n * 8 + 1)
+    if any(k in fam for k in ("wan", "hunyuan", "skyreel")):
+        n = max(1, round((frames - 1) / 4))
+        return int(n * 4 + 1)
+    # Unknown video family: still snap to 4n+1 (safe for most DiT video pipes)
+    n = max(1, round((frames - 1) / 4))
+    return int(n * 4 + 1)
+
+
 def _progress(cb: ProgressCb | None, message: str, frac: float) -> None:
     if cb:
         cb(message, max(0.0, min(1.0, frac)))
@@ -286,17 +301,112 @@ def _export_video_frames(frames, path: Path, fps: int = 16) -> str:
             frames[-1].save(path.with_name(path.stem + "_last.png"))
         except Exception:
             pass
+    import numpy as np
+
+    arrs = [np.asarray(f.convert("RGB")) for f in frames]
+    mp4 = path.with_suffix(".mp4")
+    errors: list[str] = []
     try:
         import imageio.v2 as imageio
-        import numpy as np
 
-        arrs = [np.asarray(f.convert("RGB")) for f in frames]
-        imageio.mimsave(path.with_suffix(".mp4"), arrs, fps=fps)
+        imageio.mimsave(
+            mp4,
+            arrs,
+            fps=max(1, int(fps or 16)),
+            codec="libx264",
+            quality=8,
+            macro_block_size=1,
+        )
+        if mp4.exists() and mp4.stat().st_size > 256:
+            frames[0].save(path.with_suffix(".png"))
+            return str(mp4)
+        errors.append("imageio wrote an empty file")
+    except Exception as exc:
+        errors.append(f"imageio: {exc}")
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        try:
+            import imageio_ffmpeg
+
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception as exc:
+            errors.append(f"ffmpeg missing: {exc}")
+            ffmpeg = None
+    if ffmpeg:
+        h, w = arrs[0].shape[0], arrs[0].shape[1]
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-f",
+            "rawvideo",
+            "-vcodec",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            f"{w}x{h}",
+            "-r",
+            str(max(1, int(fps or 16))),
+            "-i",
+            "-",
+            "-an",
+            "-vcodec",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-crf",
+            "16",
+            "-preset",
+            "veryfast",
+            str(mp4),
+        ]
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            assert proc.stdin is not None
+            for frame in arrs:
+                proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+            proc.stdin.close()
+            err = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+            code = proc.wait(timeout=180)
+            if code == 0 and mp4.exists() and mp4.stat().st_size > 256:
+                frames[0].save(path.with_suffix(".png"))
+                return str(mp4)
+            errors.append(f"ffmpeg exit {code}: {err[-400:]}")
+        except Exception as exc:
+            errors.append(f"ffmpeg: {exc}")
+
+    try:
         frames[0].save(path.with_suffix(".png"))
-        return str(path.with_suffix(".mp4"))
     except Exception:
-        frames[0].save(path.with_suffix(".png"))
-        return str(path.with_suffix(".png"))
+        pass
+    raise RuntimeError(
+        "Video denoise finished but MP4 export failed. "
+        + " | ".join(errors[:3])
+        + " Install ffmpeg (or pip install imageio-ffmpeg) and retry."
+    )
+
+
+def _write_audio_array(audio, path: Path, sample_rate: int) -> str:
+    """Write Stable Audio output (torch or numpy, several layouts) to wav."""
+    import numpy as np
+    import soundfile as sf
+
+    arr = audio.detach().float().cpu().numpy() if hasattr(audio, "detach") else np.asarray(audio)
+    if arr.ndim == 3:
+        arr = arr[0]
+    # (channels, samples) → (samples, channels) for soundfile
+    if arr.ndim == 2 and arr.shape[0] <= 8 and arr.shape[0] < arr.shape[1]:
+        arr = arr.T
+    out = path.with_suffix(".wav")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(out), arr, int(sample_rate or 44100))
+    return str(out)
 
 
 def _write_preview_wav(path: Path, duration_sec: float, seed: int) -> str:
@@ -558,6 +668,9 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     import torch
 
     from .memory import resolve_memory_for_job
+    from .mmgp_accel import tune_amd_inference
+
+    tune_amd_inference()
 
     device_info = detect_device()
     device = device_info["device"] if device_info["ready_for_inference"] else "cpu"
@@ -570,6 +683,10 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         dtype = torch.float16
     elif dtype_name in ("float32", "fp32"):
         dtype = torch.float32
+    elif device_info.get("rocm"):
+        # Windows ROCm VAE often errors on bfloat16. fp16 is faster and stable on R9700.
+        dtype = torch.float16
+        dtype_name = "float16"
     else:
         dtype = torch.bfloat16
 
@@ -603,15 +720,25 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     if model.get("distilled") and job.get("guidance") is None:
         guidance = float(model.get("default_guidance") if model.get("default_guidance") is not None else 1.0)
     seed = job.get("seed")
-    frames_n = int(job.get("frames") or model.get("default_frames") or 49)
+    kind = model["kind"]
+    is_video = kind == "video" or mode in {"t2v", "i2v", "ref2v"}
+    raw_frames = int(job.get("frames") or model.get("default_frames") or 49)
+    family = f"{model.get('pipeline') or ''} {model.get('id') or ''} {kind or ''}"
+    frames_n = snap_video_frames(raw_frames, family) if is_video else raw_frames
+    if frames_n != raw_frames:
+        job["frames"] = frames_n
+        _progress(
+            cb,
+            f"Snapped frames {raw_frames} → {frames_n} (model requires 4n+1 or 8n+1)",
+            0.04,
+        )
     fps = int(job.get("fps") or model.get("fps") or 16)
     duration_sec = float(job.get("duration_sec") or model.get("default_duration_sec") or 8)
     cpu_offload = bool(mem.get("cpu_offload", job.get("cpu_offload", True)))
+    # CPU generator is reliable on Windows ROCm (cuda Generator often errors or desyncs).
     generator = None
     if seed is not None:
-        generator = torch.Generator(device=device if device != "cpu" else "cpu").manual_seed(int(seed))
-
-    kind = model["kind"]
+        generator = torch.Generator(device="cpu").manual_seed(int(seed))
     # Big AMD cards often keep the Low-VRAM preset by mistake — sequential offload
     # can sit at 20% for tens of minutes while Wan2GP finishes in ~1 min.
     vram = device_info.get("vram_gb")
@@ -628,7 +755,8 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         mem["placement_label"] = "GPU VRAM (auto — large card)"
         mem["cpu_offload"] = False
         mem["attention_slicing"] = False
-        mem["vae_slicing"] = False
+        # Slicing avoids VAE OOM on long 720p clips; tiling is what hangs Wan on AMD.
+        mem["vae_slicing"] = bool(is_video)
         mem["vae_tiling"] = False
         mem["text_encoder_on_cpu"] = False
         cpu_offload = False
@@ -645,37 +773,43 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
 
     if kind == "audio" or mode == "t2a":
         _progress(cb, "Loading audio model…", 0.05)
-        # Stable Audio / AudioGen APIs vary — try Diffusers StableAudio first.
         try:
             from diffusers import StableAudioPipeline
             from .memory import apply_memory_to_pipeline
+        except Exception as exc:
+            raise RuntimeError(
+                "Stable Audio needs Diffusers in the venv. Pinokio → Update, then retry."
+            ) from exc
 
-            pipe = StableAudioPipeline.from_pretrained(model["hf_id"], torch_dtype=dtype)
-            apply_memory_to_pipeline(pipe, device, mem)
-            _progress(cb, "Generating audio…", 0.25)
-            result = pipe(
-                prompt,
-                negative_prompt=negative or None,
-                num_inference_steps=steps,
-                audio_end_in_s=duration_sec,
-                num_waveforms_per_prompt=1,
-                generator=generator,
-            )
-            audio = result.audios[0]
-            import numpy as np
-            import soundfile as sf
-
-            out = out_path.with_suffix(".wav")
-            out.parent.mkdir(parents=True, exist_ok=True)
-            # audios may be torch tensor
-            arr = audio.T.float().cpu().numpy() if hasattr(audio, "T") else np.asarray(audio)
-            sf.write(str(out), arr, result.sr if hasattr(result, "sr") else 44100)
-            _progress(cb, "Done", 1.0)
-            return {"media_path": str(out), "thumb_path": None, "frames": 0}
-        except Exception:
-            # Fall through to preview tone if model API mismatches
-            media = _write_preview_wav(out_path, duration_sec, int(seed or 1))
-            return {"media_path": media, "thumb_path": None, "frames": 0, "preview": True}
+        source, _is_local = _resolve_model_source(model)
+        try:
+            pipe = StableAudioPipeline.from_pretrained(source, torch_dtype=dtype)
+        except TypeError:
+            pipe = StableAudioPipeline.from_pretrained(source, dtype=dtype)
+        apply_memory_to_pipeline(pipe, device, mem)
+        _progress(cb, f"Generating audio · {steps} steps · {duration_sec:.1f}s…", 0.25)
+        audio_kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "num_inference_steps": max(8, int(steps)),
+            "audio_end_in_s": max(1.0, float(duration_sec)),
+            "num_waveforms_per_prompt": 1,
+            "generator": generator,
+        }
+        if guidance and guidance > 0:
+            audio_kwargs["guidance_scale"] = guidance
+        if negative:
+            audio_kwargs["negative_prompt"] = negative
+        try:
+            result = pipe(**audio_kwargs)
+        except TypeError:
+            audio_kwargs.pop("negative_prompt", None)
+            audio_kwargs.pop("guidance_scale", None)
+            result = pipe(**audio_kwargs)
+        audio = result.audios[0]
+        sr = getattr(result, "sample_rate", None) or getattr(result, "sr", None) or 44100
+        media = _write_audio_array(audio, out_path, int(sr))
+        _progress(cb, "Done", 1.0)
+        return {"media_path": media, "thumb_path": None, "frames": 0}
 
     # Warm cache (engine daemon): skip multi-minute reload when model matches
     pipe = None
@@ -1269,6 +1403,10 @@ def preload_diffusers_model(
         dtype = torch.float16
     elif dtype_name in ("float32", "fp32"):
         dtype = torch.float32
+    elif device_info.get("rocm"):
+        # Windows ROCm VAE often errors on bfloat16. fp16 is faster and stable on R9700.
+        dtype = torch.float16
+        dtype_name = "float16"
     else:
         dtype = torch.bfloat16
 

@@ -20,11 +20,39 @@ def apply_runtime_env() -> None:
     os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
     # Faster MIOpen autotune path — reduces post-denoise VAE stalls on ROCm
     os.environ.setdefault("MIOPEN_FIND_MODE", "FAST")
+    # Fewer mid-job OOMs on 32GB cards when VAE + DiT peak together
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    os.environ.setdefault("PYTORCH_HIP_ALLOC_CONF", "expandable_segments:True")
+    tune_amd_inference()
     # transformers↔safetensors(+mmgp) version skew on Windows ROCm installs
     try:
         from .safetensors_compat import apply_safetensors_backend_compat
 
         apply_safetensors_backend_compat()
+    except Exception:
+        pass
+
+
+def tune_amd_inference() -> None:
+    """TF32 + cuDNN benchmark — fastest stable matmul path on Radeon ROCm."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
+        try:
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+            torch.backends.cuda.enable_math_sdp(True)
+        except Exception:
+            pass
     except Exception:
         pass
 

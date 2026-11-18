@@ -76,7 +76,6 @@ export default function FirstRunWizard({
         width: frame.width,
         height: frame.height,
         quality: 'draft',
-        cpu_offload: true,
         force_preview: Boolean(health?.will_preview),
       })
       setSampleJob(job.id)

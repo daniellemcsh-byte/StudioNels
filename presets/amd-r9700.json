@@ -4,7 +4,7 @@
   "target_vram_gb": 28,
   "memory": {
     "placement": "gpu",
-    "dtype": "bfloat16",
+    "dtype": "float16",
     "attention_slicing": false,
     "vae_slicing": false,
     "vae_tiling": false,
@@ -24,14 +24,15 @@
     "default_height": 720,
     "default_frames": 81,
     "fps": 24,
-    "default_t2v": "wan21-t2v-1.3b",
+    "default_t2v": "ltx2.3-22b-distilled-v11-diffusers",
     "default_t2i": "flux-schnell",
-    "default_i2v": "wan21-i2v-14b-480p",
+    "default_i2v": "ltx2.3-22b-distilled-v11-diffusers",
+    "default_t2a": "stable-audio-open",
     "default_ref2i": "flux-schnell",
-    "default_ref2v": "wan21-i2v-14b-480p",
+    "default_ref2v": "ltx2.3-22b-distilled-v11-diffusers",
     "cpu_offload": false,
     "attention_slicing": false,
     "sequential": true
   },
-  "notes": "Built-in engine on R9700. Leave ~4GB headroom; still one job at a time."
+  "notes": "R9700 32GB: GPU-resident fp16, LTX-2.3 distilled (8 steps, 720p) for video, FLUX Schnell for stills, Stable Audio for sound. Download those models in Models if they are not Ready yet. Wan 1.3B still works if you pick it."
 }
