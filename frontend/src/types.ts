@@ -599,4 +599,7 @@ export interface Preset {
   target_vram_gb: number
   notes?: string
   memory?: MemoryProfile['memory']
+  generation?: {
+    cpu_offload?: boolean
+  }
 }

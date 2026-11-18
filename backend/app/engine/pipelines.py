@@ -739,32 +739,10 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     generator = None
     if seed is not None:
         generator = torch.Generator(device="cpu").manual_seed(int(seed))
-    # Big AMD cards often keep the Low-VRAM preset by mistake — sequential offload
-    # can sit at 20% for tens of minutes while Wan2GP finishes in ~1 min.
-    vram = device_info.get("vram_gb")
-    placement = str(mem.get("placement") or "")
-    # Large cards: Low-VRAM sequential offload can look "stuck at 20%" for 40+ min
-    # while Wan2GP finishes in ~1 min. Prefer resident GPU unless already on GPU/CPU.
-    if (
-        isinstance(vram, (int, float))
-        and float(vram) >= 20
-        and placement in {"sequential_cpu_offload", "model_cpu_offload"}
-    ):
-        mem = dict(mem)
-        mem["placement"] = "gpu"
-        mem["placement_label"] = "GPU VRAM (auto — large card)"
-        mem["cpu_offload"] = False
-        mem["attention_slicing"] = False
-        # Slicing avoids VAE OOM on long 720p clips; tiling is what hangs Wan on AMD.
-        mem["vae_slicing"] = bool(is_video)
-        mem["vae_tiling"] = False
-        mem["text_encoder_on_cpu"] = False
-        cpu_offload = False
-        _progress(
-            cb,
-            f"Auto memory → GPU VRAM ({vram} GB detected; offload was stalling Wan/LTX)",
-            0.03,
-        )
+    mem = dict(mem)
+    mem["text_encoder_on_cpu"] = True
+    mem["vae_slicing"] = True
+    _release_gpu_cache()
     _progress(
         cb,
         f"Memory: {mem.get('placement_label') or mem.get('placement')} · {dtype_name}",
@@ -1074,6 +1052,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             _save_image(video_frames[0], Path(thumb))
         except Exception:
             pass
+    _release_gpu_cache()
     _progress(cb, "Done", 1.0)
     return {
         "media_path": media,
@@ -1128,6 +1107,40 @@ def _resolve_model_source(model: dict[str, Any]) -> tuple[str, bool]:
     except Exception:
         pass
     return hf_id, False
+
+
+def _release_gpu_cache() -> None:
+    """Drop PyTorch's cached blocks so the next load does not see a full card."""
+    try:
+        import gc
+
+        import torch
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _park_text_encoders(pipe) -> None:
+    """Keep UMT5 / CLIP in RAM. That is the piece that asks for ~29 GB."""
+    try:
+        import torch
+    except Exception:
+        return
+    for name in ("text_encoder", "text_encoder_2", "text_encoder_3"):
+        mod = getattr(pipe, name, None)
+        if mod is None:
+            continue
+        try:
+            mod.to(device="cpu", dtype=torch.float16)
+        except Exception:
+            try:
+                mod.to("cpu")
+            except Exception:
+                pass
+    _release_gpu_cache()
 
 
 _LTX2_UPGRADE_MSG = (
@@ -1303,20 +1316,10 @@ def _build_pipeline(
                 "Re-download the model in Models (do not wait on a silent HF fetch)."
             ) from first_exc
         else:
-            import torch
-
-            _progress(cb, f"Retrying load (float32)… {first_exc}", 0.08)
-            retry_kwargs: dict[str, Any] = _dtype_kwargs(torch.float32)
-            try:
-                pipe = _from_pretrained(source, **retry_kwargs)
-            except Exception as second_exc:
-                if wants_ltx2 and _is_ltx2_attr_error(second_exc):
-                    raise RuntimeError(_LTX2_UPGRADE_MSG) from second_exc
-                hf = model.get("hf_id")
-                if not hf:
-                    raise RuntimeError(f"Pipeline load failed: {second_exc}") from second_exc
-                _progress(cb, f"Fetching from Hugging Face: {hf}", 0.09)
-                pipe = _from_pretrained(hf, **_dtype_kwargs(torch.float32))
+            raise RuntimeError(
+                f"Could not load weights in float16: {first_exc}. "
+                "A float32 retry would ask the GPU for about 29 GB."
+            ) from first_exc
 
     _progress(cb, "Weights in RAM — applying StudioNels mmgp / device placement…", 0.14)
     try:
@@ -1362,6 +1365,7 @@ def _build_pipeline(
         pipe._studionels_placement = placement  # type: ignore[attr-defined]
     except Exception:
         pass
+    _park_text_encoders(pipe)
     return pipe
 
 
@@ -1421,22 +1425,8 @@ def preload_diffusers_model(
     else:
         dtype = torch.bfloat16
 
-    vram = device_info.get("vram_gb")
-    placement = str(mem.get("placement") or "")
-    if (
-        isinstance(vram, (int, float))
-        and float(vram) >= 20
-        and placement in {"sequential_cpu_offload", "model_cpu_offload"}
-    ):
-        mem = dict(mem)
-        mem["placement"] = "gpu"
-        mem["placement_label"] = "GPU VRAM (auto — large card)"
-        mem["cpu_offload"] = False
-        mem["attention_slicing"] = False
-        mem["vae_slicing"] = False
-        mem["vae_tiling"] = False
-        mem["text_encoder_on_cpu"] = False
-
+    mem["text_encoder_on_cpu"] = True
+    mem["vae_slicing"] = True
     cpu_offload = bool(mem.get("cpu_offload", True))
     dtype_key = str(getattr(dtype, "__name__", None) or dtype)
     key = cache_key(str(model.get("id") or model_id), mem, dtype_key)

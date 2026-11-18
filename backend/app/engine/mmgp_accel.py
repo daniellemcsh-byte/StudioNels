@@ -116,9 +116,9 @@ def mmgp_status() -> dict[str, Any]:
 def _profile_enum(vram_gb: float | None, placement: str):
     from mmgp import profile_type
 
-    # Map StudioNels placement / VRAM → mmgp profile
-    if placement == "gpu" or (isinstance(vram_gb, (int, float)) and float(vram_gb) >= 24):
-        return profile_type.HighRAM_HighVRAM  # fastest on R9700-class
+    # HighRAM_HighVRAM pins the text encoder and transformer together and is
+    # what asks a 32 GB card for a 29 GB block. Low VRAM profile keeps RAM full
+    # and the GPU to the piece that is actually denoising.
     if isinstance(vram_gb, (int, float)) and float(vram_gb) >= 16:
         return profile_type.HighRAM_LowVRAM
     if isinstance(vram_gb, (int, float)) and float(vram_gb) >= 10:
@@ -164,7 +164,7 @@ def apply_mmgp_to_pipeline(
     profile_name = getattr(profile, "name", str(profile))
 
     # Quantized transformer kernels crash Windows ROCm mid-denoise (exit 1, no stderr).
-    # 32GB cards keep fp16 resident; smaller cards still offload, just without quant.
+    # Offload stays on; the transformer is fp16 and the text encoder stays in RAM.
     rocm = False
     try:
         import torch

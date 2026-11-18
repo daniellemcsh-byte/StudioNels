@@ -478,7 +478,7 @@ def _ensure_warm_daemon() -> bool:
             return False
     else:
         try:
-            if not bool(getattr(load_settings(), "keep_model_loaded", True)):
+            if not bool(getattr(load_settings(), "keep_model_loaded", False)):
                 return False
         except Exception:
             pass
@@ -578,7 +578,7 @@ def warm_engine_status() -> dict[str, Any]:
     from .models_manager import get_active_model_id
 
     settings = load_settings()
-    keep = bool(getattr(settings, "keep_model_loaded", True))
+    keep = bool(getattr(settings, "keep_model_loaded", False))
     alive = _daemon_alive()
     cached: list[str] = []
     message: str | None = None

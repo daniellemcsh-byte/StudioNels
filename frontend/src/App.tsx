@@ -5009,7 +5009,7 @@ function SettingsTab({
                     setDraft({
                       ...draft,
                       preset_id: p.id,
-                      cpu_offload: p.target_vram_gb < 20,
+                      cpu_offload: p.generation?.cpu_offload ?? p.target_vram_gb < 20,
                     })
                   }
                 >
@@ -5207,7 +5207,7 @@ function SettingsTab({
             checked={draft.cpu_offload}
             onChange={(e) => setDraft({ ...draft, cpu_offload: e.target.checked })}
           />{' '}
-          CPU offload (saves VRAM)
+          Keep the text encoder in RAM (saves GPU)
         </label>
         <label className="muted">
           <input

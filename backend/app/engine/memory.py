@@ -120,35 +120,54 @@ def resolve_memory_for_job(payload: dict[str, Any] | None = None) -> dict[str, A
             mem["placement"] = "model_cpu_offload"
             mem["cpu_offload"] = True
             mem["placement_label"] = PLACEMENT_LABELS["model_cpu_offload"]
-        elif not payload["cpu_offload"] and mem["placement"] != "cpu":
-            mem["placement"] = "gpu"
+        elif not payload["cpu_offload"] and mem["placement"] == "gpu":
+            # Leave a GPU preset on the GPU for the video core only.
+            # The text encoder is parked in RAM below, so this is not a 29 GB copy.
             mem["cpu_offload"] = False
-            mem["placement_label"] = PLACEMENT_LABELS["gpu"]
-    # Auto-upgrade Low VRAM offload when the live GPU is large (R9700-class).
-    # Sequential offload is the usual cause of "stuck at 20% for 40 minutes".
-    try:
-        from .device import detect_device
-
-        vram = detect_device().get("vram_gb")
-        if (
-            isinstance(vram, (int, float))
-            and float(vram) >= 20
-            and mem.get("placement") in {"sequential_cpu_offload", "model_cpu_offload"}
-            and not payload.get("memory_placement")
-        ):
-            mem["placement"] = "gpu"
-            mem["placement_label"] = PLACEMENT_LABELS["gpu"]
-            mem["cpu_offload"] = False
-            mem["attention_slicing"] = False
-            # Keep VAE slicing/tiling — full VAE decode is a common AMD hang after last step
-            mem["vae_slicing"] = True
-            mem["vae_tiling"] = True
-            mem["text_encoder_on_cpu"] = False
-            mem["auto_upgraded_from_offload"] = True
-    except Exception:
-        pass
+    # The text encoder (UMT5-XXL on Wan) is the 11–23 GB piece. Keep it in RAM
+    # on every card so a 1.3B video model does not ask the GPU for ~29 GB.
+    mem["text_encoder_on_cpu"] = True
+    mem["vae_slicing"] = True
     mem["preset_id"] = preset.get("id") or preset_id
     return mem
+
+
+_TEXT_ENCODER_NAMES = ("text_encoder", "text_encoder_2", "text_encoder_3")
+
+
+def _detach_text_encoders(pipe: Any) -> list[tuple[str, Any]]:
+    """Take the text encoder off the pipeline before any GPU move."""
+    held: list[tuple[str, Any]] = []
+    for name in _TEXT_ENCODER_NAMES:
+        mod = getattr(pipe, name, None)
+        if mod is None:
+            continue
+        try:
+            setattr(pipe, name, None)
+        except Exception:
+            continue
+        held.append((name, mod))
+    return held
+
+
+def _restore_text_encoders(pipe: Any, held: list[tuple[str, Any]]) -> None:
+    try:
+        import torch
+    except Exception:
+        torch = None  # type: ignore[assignment]
+    for name, mod in held:
+        if torch is not None:
+            try:
+                mod.to(device="cpu", dtype=torch.float16)
+            except Exception:
+                try:
+                    mod.to("cpu")
+                except Exception:
+                    pass
+        try:
+            setattr(pipe, name, mod)
+        except Exception:
+            pass
 
 
 def apply_memory_to_pipeline(pipe: Any, device: str, mem: dict[str, Any]) -> str:
@@ -159,6 +178,7 @@ def apply_memory_to_pipeline(pipe: Any, device: str, mem: dict[str, Any]) -> str
     """
     placement = mem.get("placement") or "model_cpu_offload"
     used = placement
+    held_encoders = _detach_text_encoders(pipe) if mem.get("text_encoder_on_cpu", True) else []
 
     # Detect VRAM for mmgp profile selection
     vram_gb = None
@@ -213,8 +233,24 @@ def apply_memory_to_pipeline(pipe: Any, device: str, mem: dict[str, Any]) -> str
                 pipe.to(device)
                 used = "gpu"
         else:
-            pipe.to(device)
-            used = "gpu"
+            try:
+                pipe.to(device)
+                used = "gpu"
+            except Exception:
+                used = placement
+
+    if held_encoders:
+        _restore_text_encoders(pipe, held_encoders)
+        try:
+            import gc
+
+            import torch
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     # Skip attention slicing when mmgp is managing the pipe (it fights SDPA speed)
     if mem.get("attention_slicing") and not str(used).startswith("mmgp"):
