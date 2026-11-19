@@ -1490,13 +1490,21 @@ def _component_gb16(folder: Path) -> float:
     total = 0.0
     for f in folder.glob("*.safetensors"):
         try:
-            size = f.stat().st_size
             with open(f, "rb") as fh:
                 n = _struct.unpack("<Q", fh.read(8))[0]
                 header = _json.loads(fh.read(min(n, 50_000_000)))
-            dts = [v.get("dtype") for k, v in header.items() if k != "__metadata__" and isinstance(v, dict)]
-            widest = max((_DTYPE_BYTES.get(d or "", 2) for d in dts), default=2)
-            total += size * (2.0 / widest) if widest > 2 else size
+            # Count each tensor at its own width. A shard is not all-float32 just
+            # because it holds a few small float32 tensors (LTX-2.3's bf16
+            # transformer has 0.02 GB of them, which used to halve all 35 GB).
+            shard = 0.0
+            for k, v in header.items():
+                if k == "__metadata__" or not isinstance(v, dict):
+                    continue
+                start, end = v["data_offsets"]
+                width = _DTYPE_BYTES.get(str(v.get("dtype") or ""), 2)
+                nbytes = float(end) - float(start)
+                shard += nbytes * (2.0 / width) if width > 2 else nbytes
+            total += shard
         except Exception:
             try:
                 total += f.stat().st_size
