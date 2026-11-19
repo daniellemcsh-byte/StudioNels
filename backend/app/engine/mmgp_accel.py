@@ -110,28 +110,191 @@ def mmgp_status() -> dict[str, Any]:
     return dict(info)
 
 
-def wan2gp_profile_number(vram_gb: float | None) -> int:
-    """Wan2GP's own default: profile 4, LowRAM_LowVRAM.
+# ---------------------------------------------------------------------------
+# Hardware-aware mmgp plan.
+#
+# Before: every card got Wan2GP profile 4 (the 12 GB-card setup) with a 100 MB
+# GPU budget, and the transformer + text encoder were re-quantized to int8 on
+# every load. On a 32 GB R9700 that meant (a) minutes of CPU quantization even
+# for models that fit, and (b) streaming weights from RAM on every single step.
+#
+# Now: measure the model and the machine, then pick the fastest profile that
+# fits. A model that ran out of GPU memory once is remembered and drops back to
+# the old profile-4 "safe" path automatically. STUDIONELS_MMGP_PROFILE=1..5
+# forces a profile by hand.
+# ---------------------------------------------------------------------------
 
-    This is the profile that runs LTX-2.3 on a 12 GB GPU. The card holds the
-    block that is executing. The rest stays in system RAM as int8. VRAM size
-    does not pick a fatter profile — Wan2GP's saved default is 4 on every card.
+_GB = 1024**3
+_SAFE_FILE = "mmgp_safe_models.json"
+
+
+def system_ram_gb() -> float | None:
+    try:
+        import psutil
+
+        return psutil.virtual_memory().total / _GB
+    except Exception:
+        pass
+    try:  # Windows fallback without psutil
+        import ctypes
+
+        class _MS(ctypes.Structure):
+            _fields_ = [("l", ctypes.c_ulong), ("m", ctypes.c_ulong), ("t", ctypes.c_ulonglong),
+                        ("a", ctypes.c_ulonglong), ("tp", ctypes.c_ulonglong), ("ap", ctypes.c_ulonglong),
+                        ("tv", ctypes.c_ulonglong), ("av", ctypes.c_ulonglong), ("e", ctypes.c_ulonglong)]
+
+        st = _MS()
+        st.l = ctypes.sizeof(_MS)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st))  # type: ignore[attr-defined]
+        return st.t / _GB
+    except Exception:
+        return None
+
+
+def _safe_path():
+    from ..paths import CACHE_DIR
+
+    return CACHE_DIR / _SAFE_FILE
+
+
+def safe_models() -> set[str]:
+    import json
+
+    try:
+        p = _safe_path()
+        return set(json.loads(p.read_text(encoding="utf-8"))) if p.exists() else set()
+    except Exception:
+        return set()
+
+
+def mark_model_safe(model_id: str | None) -> None:
+    """After a GPU out-of-memory error, run this model on the low-VRAM path next time."""
+    import json
+
+    if not model_id:
+        return
+    try:
+        ids = safe_models()
+        ids.add(str(model_id))
+        p = _safe_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(sorted(ids)), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def clear_safe_models() -> None:
+    try:
+        _safe_path().unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _module_gb(mod: Any) -> float:
+    try:
+        total = 0
+        for t in list(mod.parameters()) + list(mod.buffers()):
+            total += t.numel() * t.element_size()
+        return total / _GB
+    except Exception:
+        return 0.0
+
+
+def plan_mmgp(
+    sizes_gb: dict[str, float],
+    vram_gb: float | None,
+    ram_gb: float | None,
+    placement: str = "gpu",
+    safe: bool = False,
+    prequantized: set[str] | None = None,
+) -> dict[str, Any]:
+    """Pick the mmgp profile + overrides for these component sizes (16-bit GB).
+
+    Pure function (no torch) so it is easy to test.
     """
-    del vram_gb
-    return 4
+    forced = os.environ.get("STUDIONELS_MMGP_PROFILE", "").strip()
+    pre = set(prequantized or ())
+    # Already int8 from the RAM-safe loader: count them at half size, never re-quantize.
+    sizes_gb = {n: (g / 2 if n in pre else g) for n, g in sizes_gb.items()}
+    text_names = [n for n in sizes_gb if n.startswith("text_encoder")]
+    t_gb = float(sizes_gb.get("transformer") or sizes_gb.get("unet") or 0.0)
+
+    if safe or placement == "sequential_cpu_offload" or not vram_gb:
+        why = (
+            "safe mode (this model ran out of GPU memory before)" if safe
+            else "low-VRAM preset" if placement == "sequential_cpu_offload"
+            else "GPU size unknown"
+        )
+        # Exactly the previous behaviour: proven to run, slowest.
+        return {
+            "profile_no": 4,
+            "quantize_transformer": not ({"transformer", "unet"} & pre),
+            "quantize_extra": [n for n in text_names if n not in pre],
+            "budgets": {"transformer": 100, "text_encoder": 100, "text_encoder_2": 100, "*": 3000},
+            "reason": why,
+        }
+
+    usable = max(4.0, float(vram_gb) - 6.0)  # room for activations + VAE decode
+    quant_t = t_gb > usable * 0.85 and not ({"transformer", "unet"} & pre)
+    quant_text = [n for n in text_names if n not in pre and float(sizes_gb.get(n) or 0) > usable * 0.7]
+    after = {
+        n: (g / 2 if (n in ("transformer", "unet") and quant_t) or n in quant_text else g)
+        for n, g in sizes_gb.items()
+    }
+    largest = max(after.values()) if after else 0.0
+    total = sum(after.values())
+    fits = largest <= usable
+    # Profile 1/2 pin every model in page-locked RAM. Leave Windows + the app
+    # ~20 GB, so a 64 GB PC pins everything for Wan 14B but only the
+    # transformer (profile 3) for LTX 22B + its 12B text encoder.
+    high_ram = bool(ram_gb) and float(ram_gb) >= total * 1.3 + 20
+
+    if fits:
+        profile_no = 1 if high_ram else 3
+        budgets = None
+    else:
+        profile_no = 2 if high_ram else 4
+        # Keep as much of the model resident as fits (old code: 100 MB).
+        budgets = {"transformer": int((usable - 2) * 1024), "*": 3000}
+
+    if forced in {"1", "2", "3", "4", "5"}:
+        profile_no = int(forced)
+        budgets = None if profile_no in (1, 3) else budgets or {"transformer": 1200, "*": 3000}
+
+    return {
+        "profile_no": profile_no,
+        "quantize_transformer": quant_t,
+        "quantize_extra": quant_text,
+        "budgets": budgets,
+        "reason": (
+            f"{'fits' if fits else 'too big for'} {usable:.0f} GB usable VRAM"
+            f" · RAM {ram_gb:.0f} GB" if ram_gb else f"{'fits' if fits else 'too big for'} {usable:.0f} GB usable VRAM"
+        ) + (" · int8 transformer" if quant_t else "") + (f" · int8 {', '.join(quant_text)}" if quant_text else ""),
+    }
 
 
-def _profile_enum(vram_gb: float | None, placement: str, mem: dict[str, Any] | None = None):
+def wan2gp_profile_number(vram_gb: float | None) -> int:
+    """Profile for the external Wan2GP runtime (Wan2GP's own guidance):
+    1 = 64 GB RAM + 24 GB VRAM, 3 = 32 GB RAM + 24 GB VRAM, 4 = 12 GB cards.
+    """
+    forced = os.environ.get("STUDIONELS_MMGP_PROFILE", "").strip()
+    if forced in {"1", "2", "3", "4", "5"}:
+        return int(forced)
+    if not isinstance(vram_gb, (int, float)) or vram_gb < 20:
+        return 4
+    ram = system_ram_gb() or 0
+    return 1 if ram >= 64 else 3
+
+
+def _profile_enum(number: int):
     from mmgp import profile_type
 
-    number = wan2gp_profile_number(vram_gb if isinstance(vram_gb, (int, float)) else None)
-    if placement == "sequential_cpu_offload":
-        number = 4
     return {
         1: profile_type.HighRAM_HighVRAM,
         2: profile_type.HighRAM_LowVRAM,
         3: profile_type.LowRAM_HighVRAM,
         4: profile_type.LowRAM_LowVRAM,
+        5: profile_type.VerylowRAM_LowVRAM,
     }[number]
 
 
@@ -164,41 +327,37 @@ def apply_mmgp_to_pipeline(
     except Exception:
         pass
 
+    components = getattr(pipe, "components", {}) or {}
+    sizes = {
+        name: _module_gb(mod)
+        for name, mod in components.items()
+        if hasattr(mod, "parameters")
+    }
     gb = float(vram_gb) if isinstance(vram_gb, (int, float)) else None
-    number = wan2gp_profile_number(gb)
-    if placement == "sequential_cpu_offload":
-        number = 4
-    profile = _profile_enum(gb, placement, mem)
+    safe = mem.get("mmgp_mode") == "safe"
+    pre = set(getattr(pipe, "_studionels_prequantized", None) or ())
+    plan = plan_mmgp(sizes, gb, system_ram_gb(), placement, safe=safe, prequantized=pre)
+    number = int(plan["profile_no"])
+    profile = _profile_enum(number)
     profile_name = getattr(profile, "name", str(profile))
 
-    # Wan2GP default on a 12 GB card: profile 4, int8 transformer, int8 text
-    # encoder, and a 100 MB on-GPU budget so one block is resident at a time.
-    # Profile 4 only auto-quantizes encoders whose class name contains
-    # t5/llama/llm. Gemma does not, so the text encoder is listed explicitly.
     try:
         import torch
 
         weight_dtype = torch.float16
     except Exception:
         weight_dtype = None
-    text_encoders = [
-        name
-        for name in ("text_encoder", "text_encoder_2", "text_encoder_3")
-        if getattr(pipe, name, None) is not None
-    ]
     kwargs: dict[str, Any] = {
-        "quantizeTransformer": True,
+        "quantizeTransformer": bool(plan["quantize_transformer"]),
         "compile": False,
         "verboseLevel": 1,
-        "budgets": {
-            "transformer": 100,
-            "text_encoder": 100,
-            "text_encoder_2": 100,
-            "*": 3000,
-        },
+        # Profile 3/4 auto-quantize any text encoder named t5/llama/llm; pass the
+        # plan's list explicitly (empty = keep the encoder in 16-bit, no slow
+        # re-quantization at load).
+        "extraModelsToQuantize": list(plan["quantize_extra"]),
     }
-    if text_encoders:
-        kwargs["extraModelsToQuantize"] = text_encoders
+    if plan["budgets"] is not None:
+        kwargs["budgets"] = plan["budgets"]
     if weight_dtype is not None:
         kwargs["convertWeightsFloatTo"] = weight_dtype
 
@@ -226,13 +385,17 @@ def apply_mmgp_to_pipeline(
 
     pipe._studionels_mmgp = True  # type: ignore[attr-defined]
     pipe._studionels_mmgp_profile = profile_name  # type: ignore[attr-defined]
-    detail = f"mmgp profile {number} {profile_name}"
+    detail = f"mmgp profile {number} {profile_name} · {plan['reason']}"
     if dropped:
         detail += f" (older mmgp skipped {', '.join(dropped)})"
+    try:
+        print(f"[studionels] {detail}", flush=True)
+    except Exception:
+        pass
     return {
         "used": True,
         "profile": profile_name,
         "profile_no": number,
         "detail": detail,
-        "quantize_transformer": True,
+        "quantize_transformer": bool(plan["quantize_transformer"]),
     }

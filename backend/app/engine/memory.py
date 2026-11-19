@@ -176,13 +176,27 @@ def _restore_text_encoders(pipe: Any, held: list[tuple[str, Any]]) -> None:
 
 
 def tune_memory_for_model(mem: dict[str, Any], model: dict[str, Any] | None) -> dict[str, Any]:
-    """Wan2GP profile 4: int8 weights, one block on the GPU."""
+    """mmgp picks the profile from the real model size, VRAM and RAM (mmgp_accel.plan_mmgp).
+
+    A model that once ran out of GPU memory is pinned to the old profile-4
+    "safe" path ("mmgp_mode": "safe"), which is part of the warm-cache key so the
+    resident pipeline is rebuilt when the mode changes.
+    """
     mem = dict(mem or {})
     mem["text_encoder_on_cpu"] = False
     mem["vae_slicing"] = True
-    # If mmgp is missing, stream layers instead of copying the whole model onto the GPU.
+    # Only used when mmgp is missing: stream layers instead of copying the whole model onto the GPU.
     mem["stream_weights"] = True
-    mem["quantize_transformer"] = True
+    model_id = str((model or {}).get("id") or "")
+    mem["model_id"] = model_id
+    try:
+        from .mmgp_accel import safe_models
+
+        mem["mmgp_mode"] = "safe" if model_id and model_id in safe_models() else "auto"
+    except Exception:
+        mem["mmgp_mode"] = "auto"
+    # Decided per model inside mmgp_accel.plan_mmgp now.
+    mem["quantize_transformer"] = mem["mmgp_mode"] == "safe"
     return mem
 
 

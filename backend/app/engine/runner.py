@@ -1473,6 +1473,19 @@ def _run_one(job: dict[str, Any]) -> None:
             job["status"] = "failed"
             job["error"] = f"{exc}\n{traceback.format_exc()[-1500:]}"
             job["message"] = str(exc)
+            low = str(exc).lower()
+            if "out of memory" in low or "outofmemory" in low or "hip error: out of memory" in low:
+                # Next run of this model uses the proven low-VRAM mmgp path.
+                try:
+                    from .mmgp_accel import mark_model_safe
+
+                    mark_model_safe(job.get("model_id"))
+                    job["message"] = (
+                        "Ran out of GPU memory with the fast memory profile. "
+                        "This model now uses the safe low-VRAM profile — Generate again."
+                    )
+                except Exception:
+                    pass
         job["updated_at"] = utc_now()
         upsert_job(job)
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import math
 import struct
 import threading
@@ -241,21 +243,16 @@ def _heartbeat_while(
         while not stop.wait(2.0):
             elapsed = int(time.time() - started)
             frac = min(end_frac, frac + (end_frac - start_frac) / 50.0)
-            if is_local is True:
-                hint = " · still reading this model from disk into RAM"
-                if elapsed >= 45:
-                    hint = " · mmgp is placing this model, same fast path Wan2GP uses"
-            elif is_local is False:
-                hint = " · reading the cached weights into RAM"
-                if elapsed >= 45:
-                    hint = " · mmgp is placing this model, same fast path Wan2GP uses"
-            else:
-                hint = " · still reading this model into RAM"
-                if elapsed >= 45:
-                    hint = " · mmgp is placing this model, same fast path Wan2GP uses"
+            # Real, live progress instead of a guessed label: what step we are on
+            # and how much of the model is already in RAM.
+            note = _LOAD_NOTE.get("text") or (
+                "reading this model from disk into RAM" if is_local is not False
+                else "reading the cached weights into RAM"
+            )
+            mem = _ram_in_use_note()
             _progress(
                 cb,
-                f"{label} ({elapsed}s — first AMD load){hint}…",
+                f"{label} ({elapsed}s — first load) · {note}{mem}…",
                 frac,
             )
 
@@ -1326,6 +1323,34 @@ def _build_pipeline(
         set_load_cast_dtype,
     )
 
+    quant_plan = None
+    if is_local:
+        try:
+            from .mmgp_accel import system_ram_gb
+
+            quant_plan = ram_safe_quant_plan(str(source), system_ram_gb())
+        except Exception:
+            quant_plan = None
+    _set_load_note("")
+    if quant_plan:
+        try:
+            load_kwargs["quantization_config"] = _quanto_mapping(quant_plan["components"])
+            _set_load_note(
+                f"reading + shrinking {' & '.join(quant_plan['components'])} to 8-bit "
+                f"(target ~{quant_plan['after_gb']:.0f} GB of {quant_plan['gb16']:.0f} GB) — "
+                "first load only, takes a few minutes"
+            )
+            _progress(
+                cb,
+                f"Model is {quant_plan['gb16']} GB at 16-bit — bigger than RAM allows. "
+                f"Shrinking {', '.join(quant_plan['components'])} to 8-bit while reading "
+                f"(~{quant_plan['after_gb']} GB). First load only; it stays loaded after.",
+                0.07,
+            )
+        except Exception as exc:  # noqa: BLE001
+            quant_plan = None
+            _progress(cb, f"8-bit load not available ({exc}); loading at 16-bit", 0.07)
+
     # Large float32 matrices (the Gemma text encoder) are stored as float16
     # while they are read, so a 49 GB shard does not have to sit in RAM twice.
     set_load_cast_dtype(dtype)
@@ -1377,6 +1402,12 @@ def _build_pipeline(
     finally:
         reset_load_cast_dtype()
 
+    if quant_plan:
+        try:
+            pipe._studionels_prequantized = list(quant_plan["components"])  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    _set_load_note("weights in RAM — mmgp is placing them on the GPU")
     _progress(cb, "Weights in RAM — applying StudioNels mmgp / device placement…", 0.14)
     try:
         pipe.to("cpu")
@@ -1417,6 +1448,116 @@ def _build_pipeline(
         _park_text_encoders(pipe)
     return pipe
 
+
+
+# ---------------------------------------------------------------------------
+# RAM-safe loading for models bigger than system RAM (LTX-2.3 22B on 64 GB).
+#
+# from_pretrained used to read every component at 16-bit before mmgp shrank
+# it: ~38 GB transformer + ~24 GB Gemma encoder = more than 61.6 GB usable, so
+# Windows swapped and the load froze ("mmgp is placing this model" for 6+ min).
+# When the 16-bit size would not fit comfortably, the big components are
+# quantized to int8 *while they are read* (quanto), so RAM peaks at ~half.
+# ---------------------------------------------------------------------------
+
+
+# What the loader is doing right now (shown by the load heartbeat).
+_LOAD_NOTE: dict[str, str] = {"text": ""}
+
+
+def _set_load_note(text: str) -> None:
+    _LOAD_NOTE["text"] = text
+
+
+def _ram_in_use_note() -> str:
+    try:
+        import psutil
+
+        rss = psutil.Process().memory_info().rss / 1024**3
+        vm = psutil.virtual_memory()
+        return f" · {rss:.1f} GB loaded · PC RAM {vm.percent:.0f}% used"
+    except Exception:
+        return ""
+
+_DTYPE_BYTES = {"F64": 8, "F32": 4, "BF16": 2, "F16": 2, "F8_E4M3": 1, "F8_E5M2": 1, "I8": 1, "U8": 1}
+
+
+def _component_gb16(folder: Path) -> float:
+    """Size of one component folder once loaded at 16-bit (reads only shard headers)."""
+    import json as _json
+    import struct as _struct
+
+    total = 0.0
+    for f in folder.glob("*.safetensors"):
+        try:
+            size = f.stat().st_size
+            with open(f, "rb") as fh:
+                n = _struct.unpack("<Q", fh.read(8))[0]
+                header = _json.loads(fh.read(min(n, 50_000_000)))
+            dts = [v.get("dtype") for k, v in header.items() if k != "__metadata__" and isinstance(v, dict)]
+            widest = max((_DTYPE_BYTES.get(d or "", 2) for d in dts), default=2)
+            total += size * (2.0 / widest) if widest > 2 else size
+        except Exception:
+            try:
+                total += f.stat().st_size
+            except Exception:
+                pass
+    return total / 1024**3
+
+
+def ram_safe_quant_plan(source: str, ram_gb: float | None) -> dict[str, Any] | None:
+    """Return {components:{name: library}, gb16, after_gb} if int8-at-load is needed, else None."""
+    import json as _json
+
+    root = Path(str(source))
+    index = root / "model_index.json"
+    if not ram_gb or not index.exists():
+        return None
+    if os.environ.get("STUDIONELS_LOAD_QUANT", "auto").lower() in ("0", "off", "false"):
+        return None
+    try:
+        spec = _json.loads(index.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    sizes: dict[str, float] = {}
+    libs: dict[str, str] = {}
+    for name, val in spec.items():
+        if name.startswith("_") or not isinstance(val, list) or len(val) != 2:
+            continue
+        folder = root / name
+        if folder.is_dir():
+            sizes[name] = _component_gb16(folder)
+            libs[name] = str(val[0])
+    gb16 = sum(sizes.values())
+    budget = float(ram_gb) * 0.7  # leave Windows + the app ~30%
+    forced = os.environ.get("STUDIONELS_LOAD_QUANT", "auto").lower() in ("1", "on", "true", "always")
+    if gb16 <= budget and not forced:
+        return None
+    picks = {
+        n: libs[n]
+        for n, g in sorted(sizes.items(), key=lambda kv: -kv[1])
+        if g >= 4.0 and libs.get(n) in ("diffusers", "transformers")
+    }
+    if not picks:
+        return None
+    after = gb16 - sum(sizes[n] / 2 for n in picks)
+    return {"components": picks, "gb16": round(gb16, 1), "after_gb": round(after, 1)}
+
+
+def _quanto_mapping(components: dict[str, str]):
+    """PipelineQuantizationConfig with int8 quanto per component (diffusers vs transformers class)."""
+    from diffusers import PipelineQuantizationConfig
+    from diffusers import QuantoConfig as DiffusersQuanto
+
+    mapping: dict[str, Any] = {}
+    for name, lib in components.items():
+        if lib == "transformers":
+            from transformers import QuantoConfig as TransformersQuanto
+
+            mapping[name] = TransformersQuanto(weights="int8")
+        else:
+            mapping[name] = DiffusersQuanto(weights_dtype="int8")
+    return PipelineQuantizationConfig(quant_mapping=mapping)
 
 def preload_diffusers_model(
     model_id: str,

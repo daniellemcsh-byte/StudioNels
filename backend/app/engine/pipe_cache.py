@@ -23,6 +23,7 @@ def cache_key(model_id: str, mem: dict[str, Any] | None, dtype_name: str) -> str
             str(mem.get("preset_id") or ""),
             str(dtype_name or ""),
             "q1" if mem.get("quantize_transformer", True) else "q0",
+            str(mem.get("mmgp_mode") or "auto"),
         ]
     )
 
