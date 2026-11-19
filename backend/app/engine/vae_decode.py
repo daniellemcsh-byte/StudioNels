@@ -120,6 +120,14 @@ def install_safe_video_decode(pipe, progress=None, *, chunk=4):
     if vae is None:
         return
     _disable_tiling(pipe, vae)
+    # LTX(-2) VAEs: decode in overlapping 16-frame chunks. One big 3D conv over
+    # all frames falls onto MIOpen's slow fallback on RDNA4: 73 frames at
+    # 768x448 took 70 s in one pass and 6 s framewise (17 frames alone: 0.8 s).
+    if not _is_wan_vae(vae) and hasattr(vae, "use_framewise_decoding"):
+        try:
+            vae.use_framewise_decoding = True
+        except Exception:
+            pass
     vae._studionels_decode_progress = progress
     if getattr(vae, "_studionels_decode_wrapped", False):
         return

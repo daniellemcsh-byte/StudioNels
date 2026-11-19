@@ -447,13 +447,38 @@ def _daemon_alive() -> bool:
         pid = int(paths["pid"].read_text(encoding="utf-8").strip())
     except Exception:
         return False
-    try:
-        os.kill(pid, 0)
-    except Exception:
-        return False
     # A live pid is enough. Torch import on AMD can go quiet for a minute
     # before the heartbeat updates; a stale file must not start a second engine.
-    return True
+    return _pid_is_engine(pid)
+
+
+def _pid_is_engine(pid: int) -> bool:
+    """True when pid is a running engine_daemon.
+
+    Not os.kill(pid, 0): on Windows signal 0 is CTRL_C_EVENT, which fails from
+    the console-less API process. Every check then said "dead", so each job
+    started another engine and ran in a cold worker that reloaded the model.
+    """
+    try:
+        import psutil
+    except Exception:
+        if os.name == "nt":
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except Exception:
+            return False
+    try:
+        proc = psutil.Process(pid)
+        if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+            return False
+        try:
+            return "engine_daemon" in " ".join(proc.cmdline())
+        except psutil.AccessDenied:
+            return True
+    except Exception:
+        return False
 
 
 def _ensure_warm_daemon() -> bool:
