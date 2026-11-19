@@ -849,6 +849,11 @@ def _run_diffusers_isolated(
     env.setdefault("MIOPEN_FIND_MODE", "FAST")
 
     proc: subprocess.Popen | None = None
+    # Worker stderr goes to a file, never a pipe. Nothing reads a pipe until the
+    # worker exits, so the transformers/tqdm load bars filled the Windows pipe
+    # buffer and froze the load thread forever ("stuck at 18%", 0% CPU).
+    err_log_path = progress_file.parent / "worker_stderr.log"
+    err_log = None
     if use_daemon:
         # File-based IPC to the long-lived warm engine (model stays loaded)
         req = {
@@ -894,12 +899,13 @@ def _run_diffusers_isolated(
             "--out-path",
             str(out_path),
         ]
+        err_log = open(err_log_path, "wb")
         proc = _popen_hidden(
             cmd,
             cwd=str(backend_root),
             env=env,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=err_log,
         )
         with _PROC_LOCK:
             _CURRENT_PROC = proc
@@ -1076,8 +1082,12 @@ def _run_diffusers_isolated(
         stderr = ""
         if proc is not None:
             try:
-                err_bytes = proc.stderr.read() if proc.stderr else b""
-                stderr = (err_bytes or b"")[-2000:].decode("utf-8", errors="replace")
+                if err_log is not None:
+                    err_log.flush()
+                with open(err_log_path, "rb") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    fh.seek(max(0, fh.tell() - 2000))
+                    stderr = fh.read().decode("utf-8", errors="replace")
             except Exception:
                 stderr = ""
 
@@ -1108,6 +1118,11 @@ def _run_diffusers_isolated(
             try:
                 if proc.poll() is None:
                     proc.kill()
+            except Exception:
+                pass
+        if err_log is not None:
+            try:
+                err_log.close()
             except Exception:
                 pass
 

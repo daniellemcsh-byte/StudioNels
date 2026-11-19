@@ -637,6 +637,18 @@ def _upsample_video_file(src: str, out_path: Path, scale: int, fps: int, cb: Pro
         return {"media_path": media, "thumb_path": media, "frames": 1}
 
 
+def _model_safe_dtype(model: dict[str, Any] | None, device: str, dtype: Any, dtype_name: str, mem: dict[str, Any]):
+    """LTX-2 overflows in float16 (NaN -> all-black frames). Its weights are
+    bfloat16 and the R9700 runs bfloat16 natively, so never run it in fp16."""
+    import torch
+
+    pipe_name = str((model or {}).get("pipeline") or "")
+    if str(device).startswith("cuda") and "LTX2" in pipe_name and dtype == torch.float16:
+        mem["dtype"] = "bfloat16"
+        return torch.bfloat16, "bfloat16"
+    return dtype, dtype_name
+
+
 def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None = None) -> dict[str, Any]:
     """Run a real in-process Diffusers / upsample / audio pipeline."""
     model = get_model(job["model_id"])
@@ -691,6 +703,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         dtype_name = "float16"
     else:
         dtype = torch.bfloat16
+    dtype, dtype_name = _model_safe_dtype(model, device, dtype, dtype_name, mem)
 
     prompt = job.get("prompt") or ""
     negative = job.get("negative_prompt") or ""
@@ -1622,6 +1635,7 @@ def preload_diffusers_model(
         dtype_name = "float16"
     else:
         dtype = torch.bfloat16
+    dtype, dtype_name = _model_safe_dtype(model, device, dtype, dtype_name, mem)
 
     from .memory import tune_memory_for_model
 
