@@ -1345,7 +1345,24 @@ def _build_pipeline(
         except Exception:
             quant_plan = None
     _set_load_note("")
+    # Saved int8 copies (written after the first load) skip reading the 16/32-bit
+    # weights and quantizing them on the CPU again — the Wan2GP fast-start trick.
+    dtype_label = str(dtype).replace("torch.", "")
+    cached_parts = None
     if quant_plan:
+        try:
+            from .int8_cache import load_pipeline_components
+
+            _set_load_note("reading saved 8-bit copies")
+            cached_parts = load_pipeline_components(
+                str(source), list(quant_plan["components"]), dtype_label, cb
+            )
+        except Exception:
+            cached_parts = None
+    if cached_parts:
+        load_kwargs.update(cached_parts)
+        _set_load_note("saved 8-bit transformer + text encoder loaded — reading the small parts")
+    elif quant_plan:
         try:
             load_kwargs["quantization_config"] = _quanto_mapping(quant_plan["components"])
             _set_load_note(
@@ -1420,6 +1437,14 @@ def _build_pipeline(
             pipe._studionels_prequantized = list(quant_plan["components"])  # type: ignore[attr-defined]
         except Exception:
             pass
+        if not cached_parts:
+            try:
+                from .int8_cache import save_pipeline
+
+                _set_load_note("saving 8-bit copies for faster starts (one time)")
+                save_pipeline(str(source), pipe, list(quant_plan["components"]), dtype_label, cb)
+            except Exception:
+                pass
     _set_load_note("weights in RAM — mmgp is placing them on the GPU")
     _progress(cb, "Weights in RAM — applying StudioNels mmgp / device placement…", 0.14)
     try:
