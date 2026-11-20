@@ -57,6 +57,125 @@ def _progress(cb: ProgressCb | None, message: str, frac: float) -> None:
         cb(message, max(0.0, min(1.0, frac)))
 
 
+def check_frames_look_real(arr: Any) -> None:
+    """Fail loudly on NaN or blank output instead of saving a black video.
+
+    arr: float frames (any layout), values 0..1 or 0..255. A fp16 overflow used
+    to come out as an all-black MP4 that looked like a successful job.
+    """
+    import numpy as np
+
+    a = np.asarray(arr)
+    if a.size == 0 or a.dtype == np.uint8:
+        return
+    sample = a[::4] if a.ndim >= 4 and a.shape[0] > 8 else a
+    sample = sample.astype(np.float32, copy=False)
+    bad = float(np.mean(~np.isfinite(sample)))
+    if bad > 0.001:
+        raise RuntimeError(
+            f"The model produced invalid pixel values ({bad:.0%} NaN/inf), so the result would be "
+            "black. This is usually a precision problem (float16 overflow) for this model."
+        )
+    scale = 255.0 if float(np.nanmax(sample)) > 1.5 else 1.0
+    std = float(np.nanstd(sample)) / scale
+    mean = float(np.nanmean(sample)) / scale
+    if std < 2.0 / 255.0:
+        what = "black" if mean < 0.03 else "a single flat colour"
+        raise RuntimeError(
+            f"The result came out {what} (no picture detail), so it was not saved as a take. "
+            "Try again; if it repeats, report it with this job's settings."
+        )
+
+
+def _sync_gpu() -> None:
+    """Wait for queued GPU work. Step callbacks otherwise fire when work is
+    queued, not done: "step 8/8" showed while the GPU still had a minute left."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    except Exception:
+        pass
+
+
+class _LivePreview:
+    """Write a small JPEG of where the clip is heading, every step (LTX-2).
+
+    Flow-matching Euler steps are x_next = x + (s_next - s) * v, so two
+    consecutive latents give v and the clean estimate x0 = x_next - s_next * v.
+    One middle latent frame of x0 is decoded with the VAE (~0.1 s).
+    """
+
+    def __init__(self, pipe: Any, path: Path, *, frames: int, height: int, width: int):
+        self.pipe = pipe
+        self.path = Path(path)
+        self.prev = None
+        self.off = False
+        t_ratio = int(getattr(pipe, "vae_temporal_compression_ratio", 8) or 8)
+        s_ratio = int(getattr(pipe, "vae_spatial_compression_ratio", 32) or 32)
+        self.lf = (int(frames) - 1) // t_ratio + 1
+        self.lh = int(height) // s_ratio
+        self.lw = int(width) // s_ratio
+        self.timings: list[float] = []
+
+    @staticmethod
+    def supported(pipe: Any) -> bool:
+        return all(hasattr(pipe, a) for a in ("_unpack_latents", "_denormalize_latents", "vae", "scheduler"))
+
+    def update(self, step_index: int, latents: Any) -> None:
+        if self.off or latents is None:
+            return
+        import torch
+
+        prev, self.prev = self.prev, latents.detach().clone()
+        if prev is None:
+            return
+        started = time.time()
+        try:
+            sigmas = self.pipe.scheduler.sigmas
+            s_prev = float(sigmas[step_index])
+            s_next = float(sigmas[step_index + 1])
+            if abs(s_next - s_prev) < 1e-6:
+                return
+            with torch.no_grad():
+                x = latents.float()
+                v = (x - prev.float()) / (s_next - s_prev)
+                x0 = (x - s_next * v).to(latents.dtype)
+                pipe = self.pipe
+                z = pipe._unpack_latents(
+                    x0,
+                    self.lf,
+                    self.lh,
+                    self.lw,
+                    getattr(pipe, "transformer_spatial_patch_size", 1),
+                    getattr(pipe, "transformer_temporal_patch_size", 1),
+                )
+                vae = pipe.vae
+                z = pipe._denormalize_latents(
+                    z, vae.latents_mean, vae.latents_std, vae.config.scaling_factor
+                )
+                mid = max(0, int(z.shape[2]) // 2)
+                zf = z[:, :, mid : mid + 1].to(dtype=vae.dtype)
+                # temb= routes past vae_decode's wrapper, which would announce
+                # "Denoise finished — decoding frames" in the middle of denoising.
+                img = vae.decode(zf, temb=None, return_dict=False)[0]
+                frame = (img[0, :, 0].float() / 2 + 0.5).clamp(0, 1)
+                arr = (frame.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
+            from PIL import Image
+
+            pic = Image.fromarray(arr)
+            pic.thumbnail((480, 480))
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            pic.save(tmp, format="JPEG", quality=80)
+            os.replace(tmp, self.path)
+            self.timings.append(time.time() - started)
+        except Exception as exc:  # noqa: BLE001
+            # A preview must never cost the generation: switch it off for this job.
+            self.off = True
+            print(f"[studionels] live preview disabled: {exc}", flush=True)
+
+
 def _call_pipe_with_progress(
     pipe: Any,
     kwargs: dict[str, Any],
@@ -64,6 +183,7 @@ def _call_pipe_with_progress(
     *,
     steps: int,
     label: str = "Generating",
+    live: "_LivePreview | None" = None,
 ) -> Any:
     """Run pipe(**kwargs) with step callbacks + heartbeat so UI doesn't sit at 20%."""
     total = max(1, int(steps or 1))
@@ -90,8 +210,11 @@ def _call_pipe_with_progress(
             return
         eta = ""
         if i >= 1:
-            per = elapsed / i
-            left = max(0, int(per * (total - i)))
+            # Average of finished steps, minus time already spent on the current
+            # one, so the countdown falls between steps instead of growing.
+            done_at = float(state.get("last_step_at") or time.time())
+            per = max(0.1, (done_at - started) / i)
+            left = max(0, int(per * (total - i) - (time.time() - done_at)))
             if left >= 60:
                 eta = f" · ~{left // 60}m{left % 60:02d}s left"
             else:
@@ -122,6 +245,9 @@ def _call_pipe_with_progress(
             i = int(idx) + 1 if idx is not None else state["step"] + 1
         except Exception:
             i = state["step"] + 1
+        _sync_gpu()
+        if live is not None and i < total:
+            live.update(i - 1, callback_kwargs.get("latents"))
         _report(i)
         return callback_kwargs
 
@@ -973,6 +1099,14 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     attempts.append({**kwargs, "num_frames": frames_n, "height": height, "width": width})
     attempts.append(kwargs)
 
+    live = None
+    if _LivePreview.supported(pipe):
+        try:
+            live_path = Path(str(out_path) + ".live.jpg")
+            live_path.parent.mkdir(parents=True, exist_ok=True)
+            live = _LivePreview(pipe, live_path, frames=frames_n, height=height, width=width)
+        except Exception:
+            live = None
     for attempt in attempts:
         try:
             result = _call_pipe_with_progress(
@@ -981,6 +1115,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
                 cb,
                 steps=steps,
                 label="Generating video",
+                live=live,
             )
             break
         except TypeError as exc:
@@ -1035,6 +1170,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
                 arr = arr[0]
             if arr.ndim == 4 and arr.shape[1] in (1, 3, 4) and arr.shape[1] < arr.shape[-1]:
                 arr = np.transpose(arr, (0, 2, 3, 1))
+            check_frames_look_real(arr)
             pil_list = []
             for frame in arr:
                 f = frame
@@ -1048,8 +1184,23 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
                     f = np.stack([f, f, f], axis=-1)
                 pil_list.append(Image.fromarray(f[..., :3] if f.shape[-1] >= 3 else f))
             video_frames = pil_list
+    except RuntimeError:
+        raise
     except Exception as _frames_exc:
         raise RuntimeError(f"Could not convert decoded frames for export: {_frames_exc}") from _frames_exc
+
+    # Pipelines that hand back PIL frames skip the array path above.
+    try:
+        import numpy as np
+
+        if isinstance(video_frames, list) and video_frames and hasattr(video_frames[0], "size"):
+            check_frames_look_real(
+                np.stack([np.asarray(f, dtype=np.float32) for f in video_frames[::4]])
+            )
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
 
     n_frames = len(video_frames) if hasattr(video_frames, "__len__") else 0
     _progress(cb, f"Exporting MP4 ({n_frames} frames)…", 0.97)
@@ -1068,6 +1219,12 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         except Exception:
             pass
     _release_gpu_cache()
+    if live is not None and live.timings:
+        print(
+            f"[studionels] live preview: {len(live.timings)} frames, "
+            f"avg {sum(live.timings) / len(live.timings):.2f}s each",
+            flush=True,
+        )
     _progress(cb, "Done", 1.0)
     return {
         "media_path": media,

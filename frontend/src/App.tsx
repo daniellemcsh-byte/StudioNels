@@ -1758,6 +1758,7 @@ function GenerationDock({
                   {job.mode.toUpperCase()} · {job.model_label} · {job.status}
                 </div>
                 <GenerationStageBar job={job} />
+                <JobMedia job={job} compact />
                 {job.error ? <div className="fit-warn tiny">{job.error.slice(0, 160)}</div> : null}
                 {(job.status === 'queued' || job.status === 'running') && (
                   <button
@@ -4539,7 +4540,8 @@ function GenerateTab({
                   showTipsLink={job.status === 'running' || job.status === 'queued'}
                   onOpenTips={() => setShowSpeedTips(true)}
                 />
-                {job.thumb_path && mediaUrl(job.thumb_path) && (
+                <JobMedia job={job} />
+                {job.status !== 'done' && !job.live_preview_path && job.thumb_path && mediaUrl(job.thumb_path) && (
                   <img src={mediaUrl(job.thumb_path)} alt="" className="job-thumb" />
                 )}
                 {job.preview && <div className="muted tiny">Preview output — not full model weights.</div>}
@@ -4559,6 +4561,49 @@ function isAudioPath(path: string | null | undefined) {
 
 function isVideoPath(path: string | null | undefined) {
   return !!path && /\.(mp4|webm|mov|mkv|avi)$/i.test(path)
+}
+
+/** Running: live preview frame. Done: the result itself, playable right here. */
+function JobMedia({ job, compact = false }: { job: EngineJob; compact?: boolean }) {
+  const cls = compact ? 'job-media compact' : 'job-media'
+  if (job.status === 'done' && job.media_path) {
+    const src = mediaUrl(job.media_path)
+    if (!src) return null
+    if (isVideoPath(job.media_path)) {
+      return (
+        <video
+          key={src}
+          className={cls}
+          src={src}
+          poster={job.thumb_path && !isVideoPath(job.thumb_path) ? mediaUrl(job.thumb_path) : undefined}
+          controls
+          autoPlay
+          muted
+          loop
+          playsInline
+          preload="metadata"
+        />
+      )
+    }
+    if (isAudioPath(job.media_path)) {
+      return <audio className="job-media-audio" src={src} controls preload="metadata" />
+    }
+    return <img className={cls} src={src} alt="Result" />
+  }
+  if ((job.status === 'running' || job.status === 'queued') && job.live_preview_path) {
+    const base = mediaUrl(job.live_preview_path)
+    if (!base) return null
+    const src = `${base}${base.includes('?') ? '&' : '?'}t=${job.live_preview_ts || 0}`
+    return (
+      <figure className={`${cls} live`}>
+        <img src={src} alt="Live preview" />
+        <figcaption>
+          Live preview{job.step && job.steps_total ? ` · step ${job.step}/${job.steps_total}` : ''}
+        </figcaption>
+      </figure>
+    )
+  }
+  return null
 }
 
 function TakeMediaPreview({ path, label }: { path: string | null | undefined; label?: string }) {

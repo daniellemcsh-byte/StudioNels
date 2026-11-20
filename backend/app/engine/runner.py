@@ -982,6 +982,9 @@ def _run_diffusers_isolated(
     started = time.time()
     last_child_touch = started
     last_parent_pulse = 0.0
+    # Live preview JPEG the engine rewrites each denoise step (see pipelines._LivePreview).
+    live_file = Path(str(out_path) + ".live.jpg")
+    last_live = 0.0
     last_payload: dict[str, Any] = {}
     saw_step = False
     gen_started_at: float | None = None
@@ -1038,6 +1041,16 @@ def _run_diffusers_isolated(
                         cb(msg, frac)
                 except Exception:
                     pass
+
+            try:
+                if live_file.exists():
+                    mtime = live_file.stat().st_mtime
+                    if mtime != last_live:
+                        last_live = mtime
+                        job["live_preview_path"] = str(live_file)
+                        job["live_preview_ts"] = int(mtime * 1000)
+            except Exception:
+                pass
 
             if result_file.exists():
                 code = 0
@@ -1197,6 +1210,12 @@ def _run_diffusers_isolated(
         # This job is over for the API. If the warm engine never claimed its
         # request, delete it; otherwise the engine would run a dead job later
         # while newer jobs wait behind it and hit the stall watchdog.
+        job.pop("live_preview_path", None)
+        job.pop("live_preview_ts", None)
+        try:
+            live_file.unlink()
+        except Exception:
+            pass
         if req_path is not None and not result_file.exists():
             try:
                 cancel_file.write_text("1", encoding="utf-8")
