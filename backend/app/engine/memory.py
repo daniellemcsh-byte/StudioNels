@@ -200,6 +200,22 @@ def tune_memory_for_model(mem: dict[str, Any], model: dict[str, Any] | None) -> 
     return mem
 
 
+def _fits_directly(pipe: Any, vram_gb: Any, mem: dict[str, Any]) -> bool:
+    """Stable Diffusion-family pipeline that fits in under half the VRAM."""
+    if mem.get("mmgp_mode") == "safe" or not isinstance(vram_gb, (int, float)):
+        return False
+    if not type(pipe).__name__.startswith("StableDiffusion"):
+        return False
+    try:
+        total = 0
+        for module in (getattr(pipe, "components", {}) or {}).values():
+            if hasattr(module, "parameters"):
+                total += sum(p.numel() * p.element_size() for p in module.parameters())
+        return total / 1024**3 < float(vram_gb) * 0.5
+    except Exception:
+        return False
+
+
 def apply_memory_to_pipeline(pipe: Any, device: str, mem: dict[str, Any]) -> str:
     """Place a Diffusers pipeline according to the memory profile. Returns placement used.
 
@@ -225,6 +241,31 @@ def apply_memory_to_pipeline(pipe: Any, device: str, mem: dict[str, Any]) -> str
         except Exception:
             pass
         used = "cpu"
+    elif _fits_directly(pipe, vram_gb, mem):
+        # Small image pipelines (SDXL/SD) go straight to the GPU. Under mmgp the
+        # SDXL VAE's fp32 upcast collided with mmgp's fp16 weights ("Input type
+        # (c10::Half) and bias type (float)"). A VAE kept in fp32 needs no upcast.
+        import torch
+
+        vae = getattr(pipe, "vae", None)
+        if vae is not None and getattr(getattr(vae, "config", None), "force_upcast", False):
+            vae.to(dtype=torch.float32)
+            # SDXL only casts latents to the VAE dtype on Apple MPS; elsewhere fp16
+            # latents hit the fp32 VAE. Cast on the way in.
+            if not getattr(vae, "_studionels_cast_in", False):
+                original_decode = vae.decode
+
+                def _decode(z, *args, **kwargs):
+                    return original_decode(z.to(dtype=vae.dtype), *args, **kwargs)
+
+                vae.decode = _decode
+                vae._studionels_cast_in = True
+        pipe.to(device)
+        used = "gpu-direct"
+        try:
+            pipe._studionels_placement = used  # type: ignore[attr-defined]
+        except Exception:
+            pass
     else:
         # Native mmgp path (fast) — load on CPU then profile
         mmgp_info = None

@@ -235,6 +235,23 @@ def _ensure_worker() -> None:
         t.start()
 
 
+def _installed_ltx2_model() -> dict[str, Any] | None:
+    """A downloaded LTX-2 family model (for AI upscaling), active one first."""
+    try:
+        from .models_manager import list_models_with_status
+
+        rows = [
+            r for r in list_models_with_status()
+            if r.get("installed") and "LTX2" in str(r.get("pipeline") or "")
+        ]
+    except Exception:
+        return None
+    if not rows:
+        return None
+    rows.sort(key=lambda r: (not r.get("active"), -float(r.get("min_vram_gb") or 0)))
+    return get_model(rows[0]["id"])
+
+
 def installed_default_for_mode(mode: str) -> dict[str, Any] | None:
     """Best already-downloaded model for a mode, else None.
 
@@ -277,6 +294,14 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         model = default_model_for_mode(mode, float(preset.get("target_vram_gb") or 8))
     if not model:
         raise ValueError(f"No model available for mode {mode}")
+    # Upsample Video on High/Max: real AI upscale through LTX-2 + latent upsampler
+    # (Lanczos only stretches pixels, which looked like "nothing happened").
+    if mode == "upsample_video" and str(payload.get("quality") or "").lower() in ("high", "max"):
+        ltx = _installed_ltx2_model()
+        upsampler = models_dir() / "ltx-2.3-latent-upsampler" / "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+        if ltx and upsampler.is_file():
+            model = ltx
+            payload = {**payload, "model_id": ltx["id"], "ai_upscale": True}
 
     # Validate inputs
     mode_meta = next((m for m in GENERATION_MODES if m["id"] == mode), None)
@@ -317,8 +342,13 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         if payload.get("guidance") is not None
         else (model.get("default_guidance") if model.get("default_guidance") is not None else 5)
     )
-    steps = max(1, int(base_steps * float(qmeta["steps_scale"])))
-    guidance = float(base_guidance * float(qmeta["guidance_scale"]))
+    # Quality scales the model's defaults. Numbers the user typed are used as-is.
+    steps = base_steps if payload.get("steps") else max(1, int(base_steps * float(qmeta["steps_scale"])))
+    guidance = (
+        base_guidance
+        if payload.get("guidance") is not None
+        else float(base_guidance * float(qmeta["guidance_scale"]))
+    )
     # Distilled schedules are a fixed length — scaling steps down crashes the sampler.
     if model.get("distilled") and not payload.get("steps"):
         steps = int(model.get("default_steps") or 8)
@@ -435,6 +465,9 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         "continue_from_previous": bool(payload.get("continue_from_previous")),
         "continue_from_take_id": payload.get("continue_from_take_id"),
         "chain_shot_ids": list(payload.get("chain_shot_ids") or []),
+        # Storyboard keyframe still: lands on shot.keyframe_path, not as a take
+        "keyframe_for_shot": payload.get("keyframe_for_shot"),
+        "ai_upscale": bool(payload.get("ai_upscale")),
         # Full form snapshot so Stop can restore the workflow without losing input
         "workflow": dict(payload),
         "media_path": None,
@@ -1009,6 +1042,7 @@ def _run_diffusers_isolated(
     # Live preview JPEG the engine rewrites each denoise step (see pipelines._LivePreview).
     live_file = Path(str(out_path) + ".live.jpg")
     last_live = 0.0
+    post_decode_since: float | None = None
     last_payload: dict[str, Any] = {}
     saw_step = False
     gen_started_at: float | None = None
@@ -1145,10 +1179,19 @@ def _run_diffusers_isolated(
                     f"{_STALL_SEC // 60} minutes. Use a shorter clip and Draft quality, then Generate again."
                 )
 
-            # Stuck after last denoise step (VAE decode / export)
+            # Stuck after last denoise step (VAE decode / export). Timed from when
+            # that phase starts: measuring the whole job killed two-stage (High)
+            # runs, whose stage 1 "step 8/8" is followed by minutes of real work.
             post_decode = False
-            if saw_step and last_frac >= 0.88:
-                low = last_msg.lower()
+            low = last_msg.lower()
+            import re as _re2
+
+            two_stage_busy = (
+                "stage 1 of 2" in low
+                or "upscaling latents" in low
+                or ("refining at 2" in low and not _re2.search(r"step\s+3\s*/\s*3", low))
+            )
+            if saw_step and last_frac >= 0.88 and not two_stage_busy:
                 if any(
                     s in low
                     for s in ("decod", "denoise done", "assembling", "exporting")
@@ -1160,7 +1203,11 @@ def _run_diffusers_isolated(
                     m_done = _re.search(r"step\s+(\d+)\s*/\s*(\d+)", last_msg, _re.I)
                     if m_done and int(m_done.group(1)) >= int(m_done.group(2)):
                         post_decode = True
-            if post_decode and elapsed >= _POST_STEP_MAX_SEC:
+            if post_decode:
+                post_decode_since = post_decode_since or now
+            else:
+                post_decode_since = None
+            if post_decode and now - post_decode_since >= _POST_STEP_MAX_SEC:
                 _stop_worker(kill=True)
                 raise RuntimeError(
                     f"Stuck after denoise for {_POST_STEP_MAX_SEC // 60}+ min (VAE decode/export). "
@@ -1661,6 +1708,13 @@ def _attach_to_project(job: dict[str, Any]) -> None:
         return
 
     if not job.get("media_path"):
+        return
+
+    if job.get("keyframe_for_shot"):
+        shot = next((s for s in project.shots if s.id == job["keyframe_for_shot"]), None)
+        if shot is not None:
+            shot.keyframe_path = job.get("thumb_path") or job["media_path"]
+            save_project(project)
         return
 
     tag = f"job:{job['id']}"

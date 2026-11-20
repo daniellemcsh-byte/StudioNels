@@ -18,3 +18,5 @@ imageio>=2.36.0
 imageio-ffmpeg>=0.5.1
 einops>=0.8.0
 mmgp>=3.6.0
+# LTX-2 image-to-video re-compresses the start frame (H.264 CRF) like its training data
+av>=14.0.0

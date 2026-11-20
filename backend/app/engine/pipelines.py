@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 
+import contextlib
 import math
 import struct
 import threading
@@ -571,21 +572,36 @@ def _write_preview_wav(path: Path, duration_sec: float, seed: int) -> str:
 
 
 def _apply_lora(pipe, job: dict[str, Any], cb: ProgressCb | None) -> None:
-    lora = job.get("lora_path")
-    if not lora:
-        return
+    """Load / switch / remove the job's LoRA on a (possibly warm, reused) pipe.
+
+    The warm cache is not keyed on LoRA, so a LoRA used once stayed on every
+    later job, and a second LoRA stacked onto the first. Track what is loaded
+    and unload it when the job wants something else (or nothing).
+    """
+    lora = job.get("lora_path") or None
     scale = float(job.get("lora_scale") if job.get("lora_scale") is not None else 0.8)
     scale = max(0.0, min(2.0, scale))
     if scale <= 0.001:
-        _progress(cb, "LoRA strength 0 — skipped", 0.12)
+        lora = None
+    loaded = getattr(pipe, "_studionels_lora", None)
+    if loaded and loaded != lora:
+        try:
+            pipe.unload_lora_weights()
+            _progress(cb, "Previous LoRA removed", 0.11)
+        except Exception as exc:  # noqa: BLE001
+            _progress(cb, f"Could not remove previous LoRA ({exc}) — restart StudioNels to clear it", 0.11)
+        pipe._studionels_lora = None
+    if not lora:
         return
     _progress(cb, f"Loading LoRA (strength {scale:.2f})…", 0.12)
     try:
-        pipe.load_lora_weights(lora)
+        if getattr(pipe, "_studionels_lora", None) != lora:
+            pipe.load_lora_weights(lora, adapter_name="studionels")
+            pipe._studionels_lora = lora
         applied = False
         if hasattr(pipe, "set_adapters"):
             try:
-                pipe.set_adapters(["default"], adapter_weights=[scale])
+                pipe.set_adapters(["studionels"], adapter_weights=[scale])
                 applied = True
             except Exception:
                 pass
@@ -680,7 +696,26 @@ def mux_audio_onto_video(
 def _apply_text_encoder(pipe, job: dict[str, Any], device: str, dtype, cb: ProgressCb | None) -> None:
     choice = (job.get("text_encoder") or "auto").strip()
     preset = get_text_encoder_preset(choice)
+    # The warm engine keeps pipes between jobs, so a swapped encoder would stick.
+    # Put the model's own encoder back before doing anything else.
+    originals = getattr(pipe, "_studionels_te_orig", None) or {}
+    want_key = f"{preset.get('hf_id')}|{preset.get('slot')}" if preset and preset.get("hf_id") else None
+    if originals and getattr(pipe, "_studionels_te_key", None) != want_key:
+        for s, (enc, tok_slot, tok) in originals.items():
+            setattr(pipe, s, enc)
+            if tok_slot and tok is not None:
+                setattr(pipe, tok_slot, tok)
+        pipe._studionels_te_orig = {}
+        pipe._studionels_te_key = None
+        _progress(cb, "Text encoder → model default", 0.08)
     if not preset or not preset.get("hf_id"):
+        return
+    if getattr(pipe, "_studionels_te_key", None) == want_key:
+        return
+    # CLIP / T5 presets only fit Stable Diffusion-style pipelines. LTX (Gemma),
+    # Wan (UMT5) and FLUX expect their own encoder shapes and break otherwise.
+    if not type(pipe).__name__.startswith("StableDiffusion"):
+        _progress(cb, f"Text encoder '{preset.get('label')}' doesn't fit this model — using its own.", 0.08)
         return
     hf_id = str(preset["hf_id"])
     slot = str(preset.get("slot") or "text_encoder")
@@ -709,20 +744,21 @@ def _apply_text_encoder(pipe, job: dict[str, Any], device: str, dtype, cb: Progr
             tokenizer = None
 
         moved = encoder.to(device if not str(device).startswith("cuda") or not job.get("cpu_offload") else "cpu")
-        if hasattr(pipe, slot):
-            setattr(pipe, slot, moved)
-        elif hasattr(pipe, "text_encoder"):
-            pipe.text_encoder = moved
-        else:
+        if not hasattr(pipe, slot):
+            slot = "text_encoder"
+        if not hasattr(pipe, slot):
             _progress(cb, "Pipeline has no text_encoder slot — left as model default.", 0.1)
             return
-
-        # Match tokenizer slot when present
         tok_slot = "tokenizer_2" if slot.endswith("_2") else "tokenizer"
-        if tokenizer is not None and hasattr(pipe, tok_slot):
+        if not hasattr(pipe, tok_slot):
+            tok_slot = ""
+        pipe._studionels_te_orig = {
+            slot: (getattr(pipe, slot), tok_slot, getattr(pipe, tok_slot) if tok_slot else None)
+        }
+        setattr(pipe, slot, moved)
+        if tokenizer is not None and tok_slot:
             setattr(pipe, tok_slot, tokenizer)
-        elif tokenizer is not None and hasattr(pipe, "tokenizer"):
-            pipe.tokenizer = tokenizer
+        pipe._studionels_te_key = want_key
         _progress(cb, f"Text encoder → {preset.get('label') or hf_id}", 0.11)
     except Exception as exc:  # noqa: BLE001
         _progress(cb, f"Text encoder swap skipped: {exc}", 0.11)
@@ -775,6 +811,20 @@ def _upsample_video_file(src: str, out_path: Path, scale: int, fps: int, cb: Pro
         img = Image.new("RGB", (768 * scale // 2, 432 * scale // 2), (10, 14, 22))
         media = _save_image(img, out_path.with_suffix(".png"))
         return {"media_path": media, "thumb_path": media, "frames": 1}
+
+
+def _accepts(pipe: Any, arg: str, *, strict: bool = False) -> bool:
+    """Does pipe(...) take this keyword? strict=True ignores **kwargs: SDXL's
+    text-to-image call has **kwargs and silently drops an `image` passed to it."""
+    try:
+        import inspect
+
+        params = inspect.signature(pipe.__call__).parameters
+        if arg in params:
+            return True
+        return not strict and any(p.kind == p.VAR_KEYWORD for p in params.values())
+    except Exception:
+        return False
 
 
 def _audio_family(model: dict[str, Any]) -> str:
@@ -864,6 +914,180 @@ def _run_audio_family(
     return _write_audio_array(audio, out_path, sr)
 
 
+_LTX_UPSAMPLER: dict[str, Any] = {}
+
+
+def _ltx_latent_upsampler(device: str):
+    """LTX-2.3 2x spatial latent upsampler (models/ltx-2.3-latent-upsampler), or None.
+
+    Lightricks ships it as one file; it loads into diffusers' LTX2LatentUpsamplerModel
+    with the LTX-2 config and use_rational_resampler=False (plain conv + pixel shuffle).
+    """
+    if "model" in _LTX_UPSAMPLER:
+        return _LTX_UPSAMPLER["model"]
+    folder = models_dir() / "ltx-2.3-latent-upsampler"
+    weights = folder / "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+    cfg_path = folder / "config.json"
+    if not (weights.is_file() and cfg_path.is_file()):
+        return None
+    import json as _json
+
+    import torch
+    from safetensors.torch import load_file
+
+    try:
+        from diffusers.models.latent_upscaler import LTX2LatentUpsamplerModel
+    except ImportError:
+        return None
+    cfg = _json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["use_rational_resampler"] = False
+    model = LTX2LatentUpsamplerModel.from_config(cfg)
+    model.load_state_dict(load_file(str(weights)), strict=True)
+    model = model.to(device=device, dtype=torch.bfloat16).eval()
+    _LTX_UPSAMPLER["model"] = model
+    return model
+
+
+def _adain(x: Any, ref: Any) -> Any:
+    """Match per-channel mean/std of the upsampled latents to the originals."""
+    dims = (2, 3, 4)
+    mx, sx = x.mean(dim=dims, keepdim=True), x.std(dim=dims, keepdim=True) + 1e-6
+    mr, sr = ref.mean(dim=dims, keepdim=True), ref.std(dim=dims, keepdim=True)
+    return (x - mx) / sx * sr + mr
+
+
+def _ltx_two_stage(
+    pipe: Any,
+    attempt: dict[str, Any],
+    cb: ProgressCb | None,
+    *,
+    steps: int,
+    live: Any,
+    width: int,
+    height: int,
+    device: str,
+) -> Any:
+    """LTX's own recipe for sharper, steadier faces: generate, upsample the
+    latents 2x, then refine 3 steps at 2x resolution before decoding."""
+    import torch
+
+    from diffusers.pipelines.ltx2.utils import STAGE_2_DISTILLED_SIGMA_VALUES
+
+    upsampler = _ltx_latent_upsampler(device)
+    if upsampler is None:
+        raise RuntimeError("latent upsampler not installed")
+    first = {**attempt, "output_type": "latent", "return_dict": False}
+    out = _call_pipe_with_progress(pipe, first, cb, steps=steps, label="Generating video · stage 1 of 2", live=live)
+    video_lat, audio_lat = out[0], (out[1] if len(out) > 1 else None)
+    _progress(cb, "Upscaling latents 2× (LTX-2.3 spatial upsampler)…", 0.84)
+    with torch.no_grad():
+        up = upsampler(video_lat.to(device=device, dtype=torch.bfloat16))
+        up = _adain(up.float(), video_lat.float())
+    sigmas = list(STAGE_2_DISTILLED_SIGMA_VALUES)
+    second = {
+        **attempt,
+        "latents": up,
+        "width": width * 2,
+        "height": height * 2,
+        "sigmas": sigmas,
+        "num_inference_steps": len(sigmas),
+        "noise_scale": float(sigmas[0]),
+        "guidance_scale": 1.0,
+    }
+    if audio_lat is not None:
+        second["audio_latents"] = audio_lat
+    with _ltx_tiled_decode(pipe):
+        return _call_pipe_with_progress(pipe, second, cb, steps=len(sigmas), label="Refining at 2× · stage 2 of 2")
+
+
+def _ltx_video_upscale(
+    pipe: Any,
+    src: str,
+    cb: ProgressCb | None,
+    *,
+    device: str,
+    prompt: str,
+    negative: str,
+    fps: int,
+    generator: Any,
+) -> Any:
+    """AI video upscale: encode the clip with LTX's VAE, upsample the latents 2x
+    and refine 3 steps at 2x. Adds real detail (Lanczos only stretches pixels)."""
+    import torch
+    from diffusers.utils import load_video
+
+    upsampler = _ltx_latent_upsampler(device)
+    if upsampler is None:
+        raise RuntimeError("The LTX-2.3 latent upsampler is not installed (models/ltx-2.3-latent-upsampler).")
+    _progress(cb, "AI upscale · reading the clip…", 0.06)
+    frames = load_video(src)
+    if len(frames) < 9:
+        raise RuntimeError("The clip is too short to upscale (needs at least 9 frames).")
+    n = ((len(frames) - 1) // 8) * 8 + 1
+    frames = frames[: min(n, 241)]
+    n = ((len(frames) - 1) // 8) * 8 + 1
+    frames = frames[:n]
+    w0, h0 = frames[0].size
+    shrink = min(1.0, 960 / max(w0, h0))  # stage-2 output is 2x this
+    w, h = max(256, int(w0 * shrink) // 32 * 32), max(256, int(h0 * shrink) // 32 * 32)
+    vae = pipe.vae
+    if hasattr(vae, "use_framewise_encoding"):
+        vae.use_framewise_encoding = True
+    video = pipe.video_processor.preprocess_video(frames, height=h, width=w)
+    vae_dtype = next(vae.parameters()).dtype
+    _progress(cb, f"AI upscale · encoding {n} frames at {w}×{h}…", 0.12)
+    with torch.no_grad():
+        raw = vae.encode(video.to(device=device, dtype=vae_dtype)).latent_dist.mode()
+        _progress(cb, "AI upscale · upsampling latents 2×…", 0.2)
+        up = upsampler(raw.to(dtype=torch.bfloat16))
+        up = _adain(up.float(), raw.float())
+    # Gentler than generation's stage 2 (starts at 0.91, which repaints faces
+    # and props). Upscaling should keep who and what is in the clip and only
+    # add detail, so start from far less noise.
+    sigmas = [0.5, 0.33, 0.16]
+    kwargs: dict[str, Any] = {
+        "prompt": prompt or "high detail, sharp focus, natural skin and fabric texture, coherent faces",
+        "latents": up,
+        "width": w * 2,
+        "height": h * 2,
+        "num_frames": n,
+        "frame_rate": float(fps or 24),
+        "sigmas": sigmas,
+        "num_inference_steps": len(sigmas),
+        "noise_scale": float(sigmas[0]),
+        "guidance_scale": 1.0,
+        "generator": generator,
+    }
+    if negative:
+        kwargs["negative_prompt"] = negative
+    with _ltx_tiled_decode(pipe):
+        return _call_pipe_with_progress(pipe, kwargs, cb, steps=len(sigmas), label="AI upscale · refining at 2×")
+
+
+@contextlib.contextmanager
+def _ltx_tiled_decode(pipe: Any):
+    """At 2x (1536x896) the framewise LTX decode alone took ~9 min on the R9700.
+    Spatial tiles keep each conv small. Only for the 2x passes; base-size decode
+    is already fast framewise."""
+    vae = getattr(pipe, "vae", None)
+    was = bool(getattr(vae, "use_tiling", False))
+    on = False
+    if vae is not None and not was and callable(getattr(vae, "enable_tiling", None)):
+        try:
+            vae.enable_tiling()
+            on = True
+        except Exception:
+            on = False
+    try:
+        yield
+    finally:
+        if on:
+            try:
+                vae.disable_tiling()
+            except Exception:
+                pass
+
+
 def _model_safe_dtype(model: dict[str, Any] | None, device: str, dtype: Any, dtype_name: str, mem: dict[str, Any]):
     """LTX-2 overflows in float16 (NaN -> all-black frames). Its weights are
     bfloat16 and the R9700 runs bfloat16 natively, so never run it in fp16."""
@@ -891,7 +1115,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             raise ValueError("upsample_image needs image_path")
         return _upsample_image_file(src, out_path, scale, cb)
 
-    if mode == "upsample_video":
+    if mode == "upsample_video" and not job.get("ai_upscale"):
         src = job.get("video_path") or job.get("image_path")
         if not src:
             raise ValueError("upsample_video needs video_path")
@@ -1125,7 +1349,9 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     conditioning = image_in or ref_in
 
     lora_kw = None
-    if job.get("_lora_scale") is not None:
+    # Only pipelines that take cross_attention_kwargs get the LoRA scale there;
+    # LTX-2 does not, and passing it made every LoRA video job fail.
+    if job.get("_lora_scale") is not None and _accepts(pipe, "cross_attention_kwargs", strict=True):
         lora_kw = {"scale": float(job["_lora_scale"])}
 
     if kind == "image":
@@ -1143,17 +1369,32 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         if lora_kw is not None:
             kwargs["cross_attention_kwargs"] = lora_kw
         if mode in ("ref2i",) and conditioning is not None:
+            img_pipe = pipe
+            if not _accepts(pipe, "image", strict=True):
+                # Text-to-image pipes (SDXL, SD) take no image: build the
+                # image-to-image twin from the same loaded parts (no reload).
+                try:
+                    from diffusers import AutoPipelineForImage2Image
+
+                    img_pipe = AutoPipelineForImage2Image.from_pipe(pipe)
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        f"{model.get('label') or 'This model'} has no image-to-image version ({exc})."
+                    ) from exc
             try:
+                ref_kwargs: dict[str, Any] = {
+                    "prompt": prompt,
+                    "image": conditioning.resize((width, height)),
+                    "strength": float(job.get("strength") or 0.65),
+                    "num_inference_steps": steps,
+                    "guidance_scale": max(guidance, 1.0),
+                    "generator": generator,
+                }
+                if negative:
+                    ref_kwargs["negative_prompt"] = negative
                 result = _call_pipe_with_progress(
-                    pipe,
-                    {
-                        "prompt": prompt,
-                        "image": conditioning.resize((width, height)),
-                        "strength": float(job.get("strength") or 0.65),
-                        "num_inference_steps": steps,
-                        "guidance_scale": max(guidance, 1.0),
-                        "generator": generator,
-                    },
+                    img_pipe,
+                    ref_kwargs,
                     cb,
                     steps=steps,
                     label="Generating image",
@@ -1193,6 +1434,16 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
 
             kwargs["sigmas"] = DISTILLED_SIGMA_VALUES
             kwargs["guidance_scale"] = 1.0
+            # The distilled schedule fixes the step count; keep the progress bar honest.
+            if steps != len(DISTILLED_SIGMA_VALUES):
+                _progress(
+                    cb,
+                    f"{model.get('label') or 'This model'} is distilled: it always runs "
+                    f"{len(DISTILLED_SIGMA_VALUES)} steps (your {steps} is ignored)",
+                    0.19,
+                )
+            steps = len(DISTILLED_SIGMA_VALUES)
+            kwargs["num_inference_steps"] = steps
         except ImportError:
             pass
 
@@ -1269,7 +1520,41 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         except Exception:
             live = None
     used_attempt: dict[str, Any] | None = None
-    for attempt in attempts:
+    # High / Max on LTX-2: two-stage generate → 2x latent upsample → refine.
+    two_stage = (
+        "LTX2" in pipe_cls_name
+        and str(job.get("quality") or "").lower() in ("high", "max")
+        and os.environ.get("STUDIONELS_TWO_STAGE", "1").lower() not in ("0", "off", "false")
+        and width * 2 <= 1920
+        and height * 2 <= 1920
+    )
+    if job.get("ai_upscale") and mode == "upsample_video":
+        src = job.get("video_path") or job.get("image_path")
+        if not src:
+            raise ValueError("upsample_video needs video_path")
+        result = _ltx_video_upscale(
+            call_pipe,
+            src,
+            cb,
+            device=device,
+            prompt=prompt,
+            negative=negative,
+            fps=int(job.get("fps") or 24),
+            generator=generator,
+        )
+        used_attempt = {"ai_upscale": True}
+    if two_stage and attempts and result is None:
+        try:
+            result = _ltx_two_stage(
+                call_pipe, attempts[0], cb, steps=steps, live=live, width=width, height=height, device=device
+            )
+            used_attempt = attempts[0]
+            width, height = width * 2, height * 2
+        except Exception as exc:  # noqa: BLE001
+            result = None
+            print(f"[studionels] two-stage upscale skipped: {exc}", flush=True)
+            _progress(cb, f"2× upscale unavailable ({str(exc)[:80]}) — generating at normal size", 0.2)
+    for attempt in attempts if result is None else []:
         try:
             result = _call_pipe_with_progress(
                 call_pipe,

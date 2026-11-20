@@ -577,6 +577,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ memory, props }),
     }),
+  makeKeyframe: (id: string, shotId: string) =>
+    req<{ job_id: string; model: string; seed: number; width: number; height: number }>(
+      `/api/projects/${id}/shots/${shotId}/keyframe`,
+      { method: 'POST', body: '{}' },
+    ),
   learnMemory: (id: string) =>
     req<{ suggestions: Array<{ kind: string; value: string; reason: string }> }>(
       `/api/projects/${id}/memory/learn`,

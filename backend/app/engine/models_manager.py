@@ -71,6 +71,66 @@ def _hf_cache_has(repo_id: str | None) -> bool:
     return False
 
 
+def _slim_files(repo_id: str) -> list[str] | None:
+    """Files worth downloading from a Diffusers pipeline repo, or None for "all".
+
+    Repos like stabilityai/stable-diffusion-xl-base-1.0 also carry root single-file
+    checkpoints, ONNX/OpenVINO/Flax exports and fp32 + fp16 copies of every weight
+    (~70 GB) when the pipeline needs ~7 GB.
+    """
+    try:
+        from huggingface_hub import HfApi
+
+        files = HfApi().list_repo_files(repo_id)
+    except Exception:
+        return None
+    if "model_index.json" not in files:
+        return None
+    keep = []
+    for f in files:
+        low = f.lower()
+        if "/" not in f and low.endswith((".safetensors", ".ckpt", ".bin", ".pt", ".pth")):
+            continue  # single-file checkpoint duplicating the folders
+        if any(x in low for x in ("onnx", "openvino", "flax_model", ".msgpack", ".h5", "tf_model")):
+            continue
+        keep.append(f)
+    kept = set(keep)
+    out = []
+    for f in keep:
+        if ".fp16." not in f:
+            for ext in (".safetensors", ".bin"):
+                if f.endswith(ext) and f[: -len(ext)] + ".fp16" + ext in kept:
+                    break  # an fp16 copy exists; skip the fp32 one
+            else:
+                if f.endswith(".bin") and f[:-4] + ".safetensors" in kept:
+                    continue
+                out.append(f)
+            continue
+        out.append(f)
+    return out
+
+
+def _slim_snapshot(repo_id: str, folder: Path) -> str:
+    """snapshot_download limited to what the pipeline loads; fp16 files renamed
+    to plain names so from_pretrained finds them without variant=."""
+    from huggingface_hub import snapshot_download
+
+    allow = _slim_files(repo_id)
+    path = snapshot_download(
+        repo_id=repo_id,
+        local_dir=str(folder),
+        local_dir_use_symlinks=False,
+        resume_download=True,
+        allow_patterns=allow,
+    )
+    if allow is not None:
+        for f in Path(folder).rglob("*.fp16.*"):
+            plain = f.with_name(f.name.replace(".fp16.", "."))
+            if not plain.exists():
+                f.rename(plain)
+    return path
+
+
 _STATUS_CACHE: dict[str, Any] = {"at": 0.0, "key": None, "rows": None}
 
 
@@ -298,12 +358,7 @@ def download_model(model_id: str, *, force: bool = False) -> dict[str, Any]:
             beat = threading.Thread(target=heartbeat, name=f"dl-beat-{model_id}", daemon=True)
             beat.start()
             try:
-                path = snapshot_download(
-                    repo_id=model["hf_id"],
-                    local_dir=str(dest),
-                    local_dir_use_symlinks=False,
-                    resume_download=True,
-                )
+                path = _slim_snapshot(model["hf_id"], dest)
             finally:
                 stop_beat.set()
 
@@ -472,12 +527,7 @@ def download_hf_asset(
             beat = threading.Thread(target=heartbeat, name=f"dl-beat-{key}", daemon=True)
             beat.start()
             try:
-                path = snapshot_download(
-                    repo_id=hf_id,
-                    local_dir=str(folder),
-                    local_dir_use_symlinks=False,
-                    resume_download=True,
-                )
+                path = _slim_snapshot(hf_id, folder)
             finally:
                 stop_beat.set()
 

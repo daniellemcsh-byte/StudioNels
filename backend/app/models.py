@@ -108,6 +108,8 @@ class Shot(BaseModel):
     prop_ids: list[str] = Field(default_factory=list)
     state_after: str = ""  # what is true when this shot ends (wet coat, cracked jar…)
     prompt_locked: bool = False  # True = generate with `prompt` exactly as written
+    # Still the shot's video starts from (Image → Video); anchors faces per shot
+    keyframe_path: str | None = None
 
 
 class Take(BaseModel):
@@ -458,6 +460,7 @@ class UpdateShotRequest(BaseModel):
     prop_ids: list[str] | None = None
     state_after: str | None = None
     prompt_locked: bool | None = None
+    keyframe_path: str | None = None
 
 
 class MemoryUpdateRequest(BaseModel):

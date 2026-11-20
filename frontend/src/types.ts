@@ -339,6 +339,7 @@ export interface Shot {
   prop_ids?: string[]
   state_after?: string
   prompt_locked?: boolean
+  keyframe_path?: string | null
 }
 
 export interface Take {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Project-level generate helpers — always uses the built-in engine (no ComfyUI)."""
 
+from pathlib import Path
 from typing import Any
 
 from .continue_video import continuation_source
@@ -113,7 +114,13 @@ async def generate_takes(
 
         gen_mode = mode
         image_path = None
-        if cont and use_chain:
+        keyframe = shot.keyframe_path if shot.keyframe_path and Path(shot.keyframe_path).exists() else None
+        if keyframe and kind == "video":
+            # The shot's keyframe anchors the face for the whole clip
+            gen_mode = "i2v"
+            image_path = keyframe
+            cont = None
+        elif cont and use_chain:
             gen_mode = "i2v"
             image_path = cont["image_path"]
         elif not gen_mode:

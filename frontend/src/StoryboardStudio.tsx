@@ -102,7 +102,57 @@ export default function StoryboardStudio({
   const [newProp, setNewProp] = useState({ name: '', description: '', owner_id: '' })
   const [suggestions, setSuggestions] = useState<Array<{ kind: string; value: string; reason: string }>>([])
   const [showIssues, setShowIssues] = useState(true)
+  // shot id -> keyframe job id, while the still is being made
+  const [keyframeJobs, setKeyframeJobs] = useState<Record<string, string>>({})
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  // Poll keyframe jobs; reload the project when one finishes so the still appears.
+  useEffect(() => {
+    const pending = Object.entries(keyframeJobs)
+    if (pending.length === 0) return
+    const t = window.setInterval(async () => {
+      let changed = false
+      const next = { ...keyframeJobs }
+      for (const [shotId, jobId] of pending) {
+        try {
+          const j = await api.engineJob(jobId)
+          if (j.status !== 'queued' && j.status !== 'running') {
+            delete next[shotId]
+            changed = true
+            if (j.status !== 'done') notify(`Keyframe failed: ${String(j.error || j.message).slice(0, 160)}`)
+          }
+        } catch {
+          delete next[shotId]
+          changed = true
+        }
+      }
+      if (changed) {
+        setKeyframeJobs(next)
+        try {
+          setProject(await api.getProject(project.id))
+        } catch {
+          /* next refresh will catch up */
+        }
+      }
+    }, 2500)
+    return () => window.clearInterval(t)
+  }, [keyframeJobs, project.id, setProject, notify])
+
+  const makeKeyframe = async (shot: Shot) => {
+    try {
+      const r = await api.makeKeyframe(project.id, shot.id)
+      setKeyframeJobs((k) => ({ ...k, [shot.id]: r.job_id }))
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    }
+  }
+
+  const uploadKeyframe = (shot: Shot, file: File) =>
+    run(async () => {
+      const up = await api.engineUpload(file, 'image')
+      setProject(await api.patchShot(project.id, shot.id, { keyframe_path: up.path }))
+      notify('Keyframe set — this shot will start from your image.')
+    })
 
   const renderModelId = memory.render_model_id || ''
 
@@ -294,6 +344,19 @@ export default function StoryboardStudio({
           <button className="btn acid" type="button" disabled={busy} onClick={() => openEdit(null)}>
             + Card
           </button>
+          {project.shots.length > 0 && (
+            <button
+              className="btn ghost"
+              type="button"
+              disabled={busy}
+              title="Make a still for every shot that has none; each shot's video then starts from it"
+              onClick={() => {
+                for (const s of project.shots) if (!s.keyframe_path && !keyframeJobs[s.id]) void makeKeyframe(s)
+              }}
+            >
+              Make keyframes
+            </button>
+          )}
           {project.shots.length > 0 && (
             <button className="btn" type="button" disabled={busy} onClick={() => onGenerate()}>
               Generate missing shots
@@ -659,7 +722,9 @@ export default function StoryboardStudio({
             <div className="sb-board">
               {project.shots.map((shot) => {
                 const take = takeMap.get(shot.id)
-                const src = mediaUrl(take?.thumb_path || take?.media_path)
+                const keyframeSrc = shot.keyframe_path ? mediaUrl(shot.keyframe_path) : undefined
+                const src = mediaUrl(take?.thumb_path || take?.media_path) || keyframeSrc
+                const makingKeyframe = !!keyframeJobs[shot.id]
                 const c = compiled[shot.id]
                 const issues = (issuesByShot.get(shot.id) || []).filter((i) => i.code !== 'carry_state')
                 const worst = issues.find((i) => i.level === 'error') || issues.find((i) => i.level === 'warn') || issues[0]
@@ -675,6 +740,8 @@ export default function StoryboardStudio({
                       <span className="sb-thumb-meta">
                         {shot.camera} · {shot.duration_sec}s
                       </span>
+                      {makingKeyframe && <span className="sb-thumb-badge working">Making keyframe…</span>}
+                      {!makingKeyframe && shot.keyframe_path && <span className="sb-thumb-badge">Starts from keyframe</span>}
                     </div>
                     <div className="sb-card-body">
                       <strong>
@@ -766,6 +833,41 @@ export default function StoryboardStudio({
                         <button className="btn acid tiny" type="button" disabled={busy} onClick={() => onGenerate([shot.id])}>
                           Generate
                         </button>
+                        <button
+                          className="btn ghost tiny"
+                          type="button"
+                          disabled={busy || makingKeyframe}
+                          title="Make a still with the image model; the video starts from it so the face holds"
+                          onClick={() => void makeKeyframe(shot)}
+                        >
+                          {shot.keyframe_path ? 'New keyframe' : 'Keyframe'}
+                        </button>
+                        <label className="btn ghost tiny sb-upload" title="Use your own image as this shot's keyframe">
+                          Upload
+                          <input
+                            type="file"
+                            accept="image/*,.png,.jpg,.jpeg,.webp"
+                            hidden
+                            onChange={(e) => {
+                              const f = e.target.files?.[0]
+                              if (f) void uploadKeyframe(shot, f)
+                              e.target.value = ''
+                            }}
+                          />
+                        </label>
+                        {shot.keyframe_path && (
+                          <button
+                            className="btn ghost tiny"
+                            type="button"
+                            disabled={busy}
+                            title="Stop starting this shot from its keyframe"
+                            onClick={() =>
+                              void run(async () => setProject(await api.patchShot(project.id, shot.id, { keyframe_path: null })))
+                            }
+                          >
+                            × keyframe
+                          </button>
+                        )}
                         <button
                           className="btn ghost tiny"
                           type="button"

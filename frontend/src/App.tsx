@@ -3408,6 +3408,7 @@ function GenerateTab({
 
   const modeMeta = engine?.modes.find((m) => m.id === mode)
   const models = engine?.models.filter((m) => m.modes.includes(mode)) || []
+  const selectedModel = models.find((m) => m.id === modelId)
   const style = VISUAL_STYLES.find((s) => s.id === project.visual_style)
 
   const upload = async (file: File, kind: 'image' | 'reference' | 'video') => {
@@ -3498,7 +3499,7 @@ function GenerateTab({
         steps: steps > 0 ? steps : undefined,
         guidance: guidance >= 0 ? guidance : undefined,
         strength:
-          mode === 'i2v' || mode === 'ref2v' || useContinue ? strength : undefined,
+          mode === 'ref2i' ? strength : undefined,
         text_encoder: textEncoder || 'auto',
         audio_path: audioPath || undefined,
         lora_path: loraPath || undefined,
@@ -3780,6 +3781,12 @@ function GenerateTab({
                 onChange={(e) => setNegative(e.target.value)}
                 placeholder="What to avoid: blur, flicker, extra limbs…"
               />
+              {selectedModel?.distilled && (
+                <div className="muted tiny" style={{ marginTop: 4 }}>
+                  {selectedModel.label} runs without guidance, so the negative prompt has no effect — describe what
+                  you want instead.
+                </div>
+              )}
             </details>
           </div>
 
@@ -3792,7 +3799,11 @@ function GenerateTab({
             </div>
           )}
           {models.length === 0 && mode.startsWith('upsample') && (
-            <div className="muted tiny">Uses the built-in 2× upscaler — nothing to download.</div>
+            <div className="muted tiny">
+              {mode === 'upsample_video'
+                ? 'Draft / Balanced: instant 2× resize (no new detail). High / Max: AI upscale with LTX-2.3 — adds real detail, takes a few minutes.'
+                : 'Instant 2× resize — sharper edges, no new detail.'}
+            </div>
           )}
           <div className="field" hidden={models.length === 0}>
             <label>Model</label>
@@ -3963,6 +3974,12 @@ function GenerateTab({
           </div>
           <div className="field">
             <label>Quality</label>
+            {selectedModel?.distilled && /ltx/i.test(selectedModel.id) && (
+              <div className="muted tiny" style={{ marginBottom: 6 }}>
+                {selectedModel.label} always runs its fixed 8 steps, so Draft and Balanced take the same time. High and
+                Max add a 2× upscale pass (1536-wide, sharper faces, about 4× slower).
+              </div>
+            )}
             <div className="seg" role="radiogroup" aria-label="Quality">
               {(['draft', 'balanced', 'high', 'max'] as const).map((q) => (
                 <button
@@ -4151,9 +4168,11 @@ function GenerateTab({
                       title="-1 = model default"
                     />
                   </div>
-                  {(mode === 'i2v' || mode === 'ref2v' || continuePrev) && (
+                  {mode === 'ref2i' && (
                     <div className="field">
-                      <label>Denoise strength {strength.toFixed(2)}</label>
+                      <label title="Low keeps the reference; high follows the prompt more">
+                        Change from reference {strength.toFixed(2)}
+                      </label>
                       <input
                         type="range"
                         min={0.2}

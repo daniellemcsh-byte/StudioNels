@@ -947,6 +947,49 @@ def storyboard_check(project_id: str, model_id: str | None = None):
     return {**check_storyboard(project, model), "model_id": (model or {}).get("id")}
 
 
+@app.post("/api/projects/{project_id}/shots/{shot_id}/keyframe")
+def make_shot_keyframe(project_id: str, shot_id: str):
+    """Still for a shot (image model, prompt compiled from film memory). The
+    shot's video then starts from it, which holds the face steady."""
+    import zlib
+
+    from .engine.runner import enqueue_job, installed_default_for_mode
+    from .prompt_compiler import compile_shot, shot_cast
+
+    project = load_project(project_id)
+    shot = next((s for s in project.shots if s.id == shot_id), None)
+    if shot is None:
+        raise HTTPException(404, "Shot not found")
+    model = installed_default_for_mode("t2i")
+    if not model:
+        raise HTTPException(400, "No image model is downloaded yet — get SDXL (or another) in Models first.")
+    compiled = compile_shot(project, shot, model, "t2i")
+    cast = shot_cast(project, shot)
+    # Same character -> same seed in every keyframe, so the face stays the same person
+    seed_key = cast[0].id if cast else project.id
+    seed = zlib.crc32(seed_key.encode("utf-8")) & 0x7FFFFFFF
+    # Film aspect at about 1 megapixel (SDXL's native size), multiples of 64
+    w, h = int(project.width or 768), int(project.height or 448)
+    scale = (1024 * 1024 / max(1, w * h)) ** 0.5
+    w, h = max(512, int(w * scale) // 64 * 64), max(512, int(h * scale) // 64 * 64)
+    job = enqueue_job(
+        {
+            "mode": "t2i",
+            "model_id": model["id"],
+            "prompt": compiled["prompt"],
+            "negative_prompt": compiled["negative"],
+            "width": w,
+            "height": h,
+            "seed": seed,
+            "quality": "high",
+            "project_id": project.id,
+            "keyframe_for_shot": shot.id,
+            "inject_continuity": False,
+        }
+    )
+    return {"job_id": job["id"], "model": model.get("label"), "seed": seed, "width": w, "height": h}
+
+
 @app.put("/api/projects/{project_id}/memory", response_model=Project)
 def put_memory(project_id: str, body: MemoryUpdateRequest):
     project = load_project(project_id)

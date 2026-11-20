@@ -2493,6 +2493,27 @@ details.fold.media-slots .media-slot > label {
   color: var(--ink-soft);
 }
 
+.sb-thumb-badge {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid rgba(57, 255, 199, 0.4);
+  color: var(--neon);
+}
+
+.sb-thumb-badge.working {
+  border-color: rgba(255, 61, 206, 0.6);
+  color: #ffc4ef;
+}
+
+.sb-upload {
+  cursor: pointer;
+}
+
 .sb-card-body {
   display: grid;
   gap: 8px;
