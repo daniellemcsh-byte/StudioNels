@@ -188,6 +188,43 @@ def get_job(job_id: str) -> dict[str, Any] | None:
     return store_get(job_id)
 
 
+_BOOT_TS = time.time()
+
+
+def recover_interrupted_jobs() -> int:
+    """Jobs left "queued"/"running" by a previous API process can never finish.
+
+    The queue lives in memory, so after a restart (or a PC shutdown mid-job)
+    those rows sat at e.g. 18% "still loading" forever, with the elapsed timer
+    counting hours. Mark them interrupted; their prompt/settings stay restorable.
+    Only rows last updated before this process started are touched.
+    """
+    from datetime import datetime
+
+    fixed = 0
+    for job in store_list(500):
+        if job.get("status") not in ("queued", "running"):
+            continue
+        if job.get("id") in _QUEUE or job.get("id") == _CURRENT_JOB_ID:
+            continue
+        try:
+            updated = datetime.fromisoformat(str(job.get("updated_at") or job.get("created_at"))).timestamp()
+        except Exception:
+            updated = 0.0
+        if updated >= _BOOT_TS:
+            continue
+        job["status"] = "failed"
+        job["error"] = "Interrupted: StudioNels or the PC restarted while this job was running."
+        job["message"] = (
+            "Interrupted by a restart — your prompt and settings are saved. "
+            "Generate again (or Restore workflow) to run it."
+        )
+        job["updated_at"] = utc_now()
+        upsert_job(job)
+        fixed += 1
+    return fixed
+
+
 def _ensure_worker() -> None:
     global _WORKER_STARTED
     with _CV:
@@ -409,10 +446,14 @@ def cancel_job(job_id: str) -> dict[str, Any]:
                 _CURRENT_PROC.terminate()
             except Exception:
                 pass
-            try:
-                _CURRENT_PROC.kill()
-            except Exception:
-                pass
+            # The warm engine stops the job itself at its next step (cancel
+            # flag). Killing it would throw away the loaded model, and the next
+            # Generate would pay the full multi-minute load again.
+            if not getattr(_CURRENT_PROC, "warm_engine", False):
+                try:
+                    _CURRENT_PROC.kill()
+                except Exception:
+                    pass
     status = job.get("status")
     if status in ("queued", "running"):
         job["cancel_requested"] = True
@@ -874,6 +915,7 @@ def _run_diffusers_isolated(
     env.setdefault("MIOPEN_FIND_MODE", "FAST")
 
     proc: subprocess.Popen | None = None
+    req_path: Path | None = None
     # Worker stderr goes to a file, never a pipe. Nothing reads a pipe until the
     # worker exits, so the transformers/tqdm load bars filled the Windows pipe
     # buffer and froze the load thread forever ("stuck at 18%", 0% CPU).
@@ -894,6 +936,8 @@ def _run_diffusers_isolated(
 
         class _DaemonHandle:
             """Stop cancels the job; stall kill restarts the daemon."""
+
+            warm_engine = True
 
             def terminate(self) -> None:
                 try:
@@ -1148,6 +1192,18 @@ def _run_diffusers_isolated(
         if err_log is not None:
             try:
                 err_log.close()
+            except Exception:
+                pass
+        # This job is over for the API. If the warm engine never claimed its
+        # request, delete it; otherwise the engine would run a dead job later
+        # while newer jobs wait behind it and hit the stall watchdog.
+        if req_path is not None and not result_file.exists():
+            try:
+                cancel_file.write_text("1", encoding="utf-8")
+            except Exception:
+                pass
+            try:
+                req_path.unlink()
             except Exception:
                 pass
 

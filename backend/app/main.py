@@ -100,8 +100,12 @@ def _startup_engine_worker() -> None:
         # Start the hidden engine process so torch is already imported.
         # Do not preload weights — the GPU stays idle until Generate.
         try:
-            from .engine.runner import _ensure_warm_daemon, _ensure_worker
+            from .engine.runner import _ensure_warm_daemon, _ensure_worker, recover_interrupted_jobs
 
+            try:
+                recover_interrupted_jobs()
+            except Exception:
+                pass
             _ensure_worker()
             _ensure_warm_daemon()
         except Exception:

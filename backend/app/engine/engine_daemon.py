@@ -242,8 +242,11 @@ def _handle_request(req_path: Path) -> None:
         if cancel_path.exists():
             raise RuntimeError("Stopped by user")
 
-    cb("Warm engine picked up job — importing pipeline (first AMD import can take 1–2 min)…", 0.04)
     try:
+        # Inside the try: a job stopped before the engine reached it raises
+        # here. Outside, that killed the engine without deleting the request,
+        # and every restarted engine died on the same file (nothing generated).
+        cb("Warm engine picked up job — importing pipeline (first AMD import can take 1–2 min)…", 0.04)
         from .mmgp_accel import apply_runtime_env, mmgp_available
         from .pipelines import run_diffusers_job
         from .pipe_cache import status as cache_status
@@ -305,6 +308,7 @@ def _handle_request(req_path: Path) -> None:
 def main() -> int:
     import faulthandler
 
+    boot_ts = time.time()
     d = _daemon_dir()
     pid_path = d / "daemon.pid"
     # Write pid + heartbeat BEFORE importing torch — parent must not wait blindly
@@ -332,6 +336,15 @@ def main() -> int:
     )
 
     req_dir = d / "requests"
+    # The API always starts the engine before writing a request, so anything
+    # older than this engine was left by a previous run and nobody waits for it.
+    for stale in req_dir.glob("*.json"):
+        try:
+            if stale.stat().st_mtime < boot_ts:
+                stale.unlink()
+                print(f"dropped stale request {stale.name}", flush=True)
+        except Exception:
+            pass
     try:
         while True:
             _heartbeat({"status": "idle"})
@@ -340,7 +353,15 @@ def main() -> int:
                 time.sleep(0.25)
                 continue
             _heartbeat({"status": "busy", "request": reqs[0].name})
-            _handle_request(reqs[0])
+            try:
+                _handle_request(reqs[0])
+            except Exception:  # noqa: BLE001
+                # Never let one bad request stop the engine; drop it and go on.
+                print(f"request {reqs[0].name} failed:\n{traceback.format_exc()}", flush=True)
+                try:
+                    reqs[0].unlink()
+                except Exception:
+                    pass
     except KeyboardInterrupt:
         return 0
     finally:
