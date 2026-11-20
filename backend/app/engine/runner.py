@@ -296,10 +296,17 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"No model available for mode {mode}")
     # Upsample Video on High/Max: real AI upscale through LTX-2 + latent upsampler
     # (Lanczos only stretches pixels, which looked like "nothing happened").
-    if mode == "upsample_video" and str(payload.get("quality") or "").lower() in ("high", "max"):
+    if (
+        mode == "upsample_video"
+        and model.get("pipeline") != "rife"  # Smooth motion is its own tool, not a resize
+        and str(payload.get("quality") or "").lower() in ("high", "max")
+    ):
         ltx = _installed_ltx2_model()
-        upsampler = models_dir() / "ltx-2.3-latent-upsampler" / "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
-        if ltx and upsampler.is_file():
+        upsampler_ok = (models_dir() / "ltx-2.3-latent-upsampler" / "ltx-2.3-spatial-upscaler-x2-1.1.safetensors").is_file() or (
+            ltx is not None
+            and (models_dir() / str(ltx.get("hf_id") or "").replace("/", "__") / "latent_upsampler" / "config.json").is_file()
+        )
+        if ltx and upsampler_ok:
             model = ltx
             payload = {**payload, "model_id": ltx["id"], "ai_upscale": True}
 
@@ -467,6 +474,7 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
         "chain_shot_ids": list(payload.get("chain_shot_ids") or []),
         # Storyboard keyframe still: lands on shot.keyframe_path, not as a take
         "keyframe_for_shot": payload.get("keyframe_for_shot"),
+        "ltx_fast_guidance": payload.get("ltx_fast_guidance"),
         "ai_upscale": bool(payload.get("ai_upscale")),
         # Full form snapshot so Stop can restore the workflow without losing input
         "workflow": dict(payload),

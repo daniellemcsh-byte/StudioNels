@@ -6188,8 +6188,27 @@ function AudioTab({
   const [shotId, setShotId] = useState('')
   const [busy, setBusy] = useState(false)
   const [jobs, setJobs] = useState<EngineJob[]>([])
+  const [voiceDesc, setVoiceDesc] = useState('young woman, quiet and determined')
+  const [installed, setInstalled] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    api
+      .engineModels()
+      .then((pack) => setInstalled(new Set(pack.models.filter((m) => m.installed).map((m) => m.id))))
+      .catch(() => undefined)
+  }, [])
 
   const kindMeta = AUDIO_KINDS.find((k) => k.id === kind)!
+  // Best installed model for each kind (the old fixed picks sent sound effects to
+  // AudioGen, which the engine cannot run).
+  const pickModel = (): string => {
+    const first = (...ids: string[]) => ids.find((id) => installed.has(id)) || ids[ids.length - 1]
+    if (kind === 'voice') return 'voxcpm2'
+    if (kind === 'sfx' || kind === 'ambience') return first('stable-audio-3-sfx', 'stable-audio-open')
+    if (kind === 'song') return first('ace-step-1.5', 'stable-audio-song')
+    return first('ace-step-1.5', 'stable-audio-open')
+  }
+  const usesAce = pickModel() === 'ace-step-1.5'
   const accent = VOICE_ACCENTS.find((a) => a.id === accentId) || VOICE_ACCENTS[0]
 
   const prevDone = useRef(0)
@@ -6214,16 +6233,20 @@ function AudioTab({
   }, [project.id, setProject])
 
   const buildPrompt = () => {
+    // VoxCPM2 reads the voice from brackets in front of the line
+    if (kind === 'voice') return `(${voiceDesc.trim() || 'natural voice'})${prompt.trim()}`
     const parts = [kindMeta.prompt_prefix, prompt.trim()]
     parts.push(`${mood} mood`)
     if (kind === 'song') {
       parts.push(accent.prompt_hint)
-      if (lyrics.trim()) parts.push(`lyrics idea: ${lyrics.trim()}`)
+      // ACE-Step sings real lyrics given after a "Lyrics:" line
+      if (lyrics.trim() && !usesAce) parts.push(`lyrics idea: ${lyrics.trim()}`)
     }
     if (kind === 'score') {
       parts.push(`for a ${project.visual_style || 'cinematic'} ${project.mode.replace('_', ' ')}`)
     }
-    return parts.filter(Boolean).join(', ')
+    const text = parts.filter(Boolean).join(', ')
+    return kind === 'song' && usesAce && lyrics.trim() ? `${text}\nLyrics:\n${lyrics.trim()}` : text
   }
 
   const run = async () => {
@@ -6233,12 +6256,7 @@ function AudioTab({
     }
     setBusy(true)
     try {
-      const modelId =
-        kind === 'sfx' || kind === 'ambience'
-          ? 'audiogen-medium'
-          : kind === 'song'
-            ? 'stable-audio-song'
-            : 'stable-audio-open'
+      const modelId = pickModel()
       const job = await api.engineGenerate({
         mode: 't2a',
         model_id: modelId,
@@ -6286,42 +6304,59 @@ function AudioTab({
             ))}
           </div>
 
+          {kind === 'voice' && (
+            <div className="field" style={{ marginTop: 14 }}>
+              <label>Voice</label>
+              <input
+                value={voiceDesc}
+                onChange={(e) => setVoiceDesc(e.target.value)}
+                placeholder="old man, gravelly, tired — or: young woman, warm, slightly amused"
+              />
+            </div>
+          )}
+
           <div className="field" style={{ marginTop: 14 }}>
-            <label>Description</label>
+            <label>{kind === 'voice' ? 'Line to say' : 'Description'}</label>
             <textarea
               rows={4}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder={
-                kind === 'song'
-                  ? 'A late-night pop song about glass jars of memories…'
-                  : 'Describe the music or sound…'
+                kind === 'voice'
+                  ? 'We close at nine. Come back tomorrow.'
+                  : kind === 'song'
+                    ? 'A late-night pop song about glass jars of memories…'
+                    : 'Describe the music or sound…'
               }
             />
           </div>
 
           <div className="controls-grid">
-            <div className="field">
-              <label>Mood</label>
-              <select value={mood} onChange={(e) => setMood(e.target.value)}>
-                {MUSIC_MOODS.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="field">
-              <label>Length (sec)</label>
-              <input
-                type="number"
-                min={2}
-                max={120}
-                step={1}
-                value={durationSec}
-                onChange={(e) => setDurationSec(Number(e.target.value))}
-              />
-            </div>
+            {kind !== 'voice' && (
+              <div className="field">
+                <label>Mood</label>
+                <select value={mood} onChange={(e) => setMood(e.target.value)}>
+                  {MUSIC_MOODS.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {kind !== 'voice' && (
+              <div className="field">
+                <label>Length (sec)</label>
+                <input
+                  type="number"
+                  min={usesAce ? 10 : 2}
+                  max={usesAce ? 240 : 30}
+                  step={1}
+                  value={durationSec}
+                  onChange={(e) => setDurationSec(Number(e.target.value))}
+                />
+              </div>
+            )}
             <div className="field">
               <label>Seed</label>
               <div className="inline-actions" style={{ gap: 6 }}>
@@ -6360,7 +6395,7 @@ function AudioTab({
                 ))}
               </div>
               <div className="field" style={{ marginTop: 12 }}>
-                <label>Lyrics idea (optional)</label>
+                <label>{usesAce ? 'Lyrics (sung as written — use [verse] / [chorus])' : 'Lyrics idea (optional)'}</label>
                 <textarea
                   rows={3}
                   value={lyrics}

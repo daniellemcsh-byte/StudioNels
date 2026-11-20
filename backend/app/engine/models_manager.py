@@ -71,6 +71,47 @@ def _hf_cache_has(repo_id: str | None) -> bool:
     return False
 
 
+def _one_weight_copy_per_folder(files: list[str]) -> list[str]:
+    """Some repos ship the same weights twice per folder: a single file plus a
+    sharded set, or two shard sets (LTX-2.5: -of-00004 and -of-00008). Keep one:
+    the single file if present (and drop the shard index so it is the one that
+    loads), otherwise the set with the fewest shards."""
+    import re
+
+    shard = re.compile(r"^(.*)-\d{5}-of-(\d{5})(\.safetensors)$")
+    by_dir: dict[str, list[str]] = {}
+    for f in files:
+        by_dir.setdefault(f.rsplit("/", 1)[0] if "/" in f else "", []).append(f)
+    out: list[str] = []
+    for folder, names in by_dir.items():
+        sets: dict[str, list[str]] = {}
+        singles = set()
+        for f in names:
+            m = shard.match(f.rsplit("/", 1)[-1])
+            if m:
+                sets.setdefault(m.group(2), []).append(f)
+            elif f.endswith(".safetensors"):
+                singles.add(f.rsplit("/", 1)[-1])
+        has_single_twin = any(
+            s.replace(".safetensors", "") == (shard.match(f.rsplit("/", 1)[-1]).group(1) if shard.match(f.rsplit("/", 1)[-1]) else "")
+            for s in singles
+            for group in sets.values()
+            for f in group
+        )
+        keep_set = None if has_single_twin else (min(sets, key=int) if sets else None)
+        for f in names:
+            base = f.rsplit("/", 1)[-1]
+            m = shard.match(base)
+            if m:
+                if m.group(2) == keep_set:
+                    out.append(f)
+                continue
+            if has_single_twin and base.endswith(".safetensors.index.json"):
+                continue
+            out.append(f)
+    return out
+
+
 def _slim_files(repo_id: str) -> list[str] | None:
     """Files worth downloading from a Diffusers pipeline repo, or None for "all".
 
@@ -94,6 +135,12 @@ def _slim_files(repo_id: str) -> list[str] | None:
         if any(x in low for x in ("onnx", "openvino", "flax_model", ".msgpack", ".h5", "tf_model")):
             continue
         keep.append(f)
+    # Optional extras StudioNels never loads: LTX-2.5's full/SFT DiT (38 GB), its
+    # 10 GB prompt enhancer (we write prompts ourselves) and the diffusion decoder
+    # (needs a CUDA-only NATTEN kernel).
+    skip_dirs = ("transformer_full/", "prompt_enhancer/", "diffusion_decoder/")
+    keep = [f for f in keep if not f.startswith(skip_dirs)]
+    keep = _one_weight_copy_per_folder(keep)
     kept = set(keep)
     out = []
     for f in keep:
@@ -110,12 +157,43 @@ def _slim_files(repo_id: str) -> list[str] | None:
     return out
 
 
-def _slim_snapshot(repo_id: str, folder: Path) -> str:
+def apply_download_swap(folder: Path, swap: dict[str, str]) -> None:
+    """Put an alternative component where the pipeline loads from, e.g. LTX-2.5's
+    transformer_full/ into transformer/. Anything already there is removed first
+    (it is the variant the user chose not to use)."""
+    import shutil
+
+    for src_name, dst_name in (swap or {}).items():
+        src, dst = Path(folder) / src_name, Path(folder) / dst_name
+        if not src.is_dir() or not any(src.glob("*.safetensors")):
+            continue
+        if dst.exists():
+            shutil.rmtree(dst)
+        src.rename(dst)
+        # Its saved 8-bit copy is for the old weights
+        for cached in (Path(folder) / "_studionels_int8").glob(f"*/{dst_name}"):
+            shutil.rmtree(cached, ignore_errors=True)
+
+
+def _slim_snapshot(repo_id: str, folder: Path, swap: dict[str, str] | None = None) -> str:
     """snapshot_download limited to what the pipeline loads; fp16 files renamed
     to plain names so from_pretrained finds them without variant=."""
     from huggingface_hub import snapshot_download
 
     allow = _slim_files(repo_id)
+    if allow is not None and swap:
+        # Fetch the chosen variant (e.g. transformer_full/) instead of the default one
+        try:
+            from huggingface_hub import HfApi
+
+            every = HfApi().list_repo_files(repo_id)
+        except Exception:
+            every = []
+        wanted = tuple(f"{s}/" for s in swap)
+        replaced = tuple(f"{d}/" for d in swap.values())
+        allow = [f for f in allow if not f.startswith(replaced)] + _one_weight_copy_per_folder(
+            [f for f in every if f.startswith(wanted)]
+        )
     path = snapshot_download(
         repo_id=repo_id,
         local_dir=str(folder),
@@ -128,6 +206,8 @@ def _slim_snapshot(repo_id: str, folder: Path) -> str:
             plain = f.with_name(f.name.replace(".fp16.", "."))
             if not plain.exists():
                 f.rename(plain)
+    if swap:
+        apply_download_swap(Path(folder), swap)
     return path
 
 
@@ -168,7 +248,8 @@ def _list_models_with_status(active_model_id: str | None = None) -> list[dict[st
             or wan2gp_ready
         )
         if m.get("hf_id") is None:
-            installed = True
+            # Built-in tools; ones with weights (RIFE) only count when the file is there
+            installed = all((models_dir() / f).is_file() for f in (m.get("local_files") or []))
         # Stuck "downloading" with no live thread → expose as stalled so UI can clear it
         dl_status = dl.get("status") or ("installed" if installed else "not_downloaded")
         if dl_status == "downloading":
@@ -358,7 +439,7 @@ def download_model(model_id: str, *, force: bool = False) -> dict[str, Any]:
             beat = threading.Thread(target=heartbeat, name=f"dl-beat-{model_id}", daemon=True)
             beat.start()
             try:
-                path = _slim_snapshot(model["hf_id"], dest)
+                path = _slim_snapshot(model["hf_id"], dest, model.get("download_swap"))
             finally:
                 stop_beat.set()
 

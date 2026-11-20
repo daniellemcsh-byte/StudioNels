@@ -20,3 +20,22 @@ einops>=0.8.0
 mmgp>=3.6.0
 # LTX-2 image-to-video re-compresses the start frame (H.264 CRF) like its training data
 av>=14.0.0
+
+# ACE-Step 1.5 (songs/score) runtime — its code is cloned into vendor/ by install.js
+loguru>=0.7.3
+soundfile>=0.13.1
+diskcache>=5.6
+xxhash>=3.0
+scipy>=1.10.1
+numba>=0.63.1
+PyWavelets>=1.9.0
+toml>=0.10
+frozendict>=2.4
+# VoxCPM2 (dialogue voices) runtime. kaldifst 1.9.0 has a Windows wheel; 1.9.1 needs a C++ build.
+inflect>=7.0
+librosa>=0.10
+argbind>=0.3.9
+kaldifst==1.9.0
+wetext>=0.2.1
+# Torch-dependent extras are in requirements-nodeps.txt (installed with --no-deps so
+# they cannot replace the ROCm PyTorch build).

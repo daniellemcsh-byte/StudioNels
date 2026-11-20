@@ -972,22 +972,35 @@ def make_shot_keyframe(project_id: str, shot_id: str):
     w, h = int(project.width or 768), int(project.height or 448)
     scale = (1024 * 1024 / max(1, w * h)) ** 0.5
     w, h = max(512, int(w * scale) // 64 * 64), max(512, int(h * scale) // 64 * 64)
-    job = enqueue_job(
-        {
-            "mode": "t2i",
-            "model_id": model["id"],
-            "prompt": compiled["prompt"],
-            "negative_prompt": compiled["negative"],
-            "width": w,
-            "height": h,
-            "seed": seed,
-            "quality": "high",
-            "project_id": project.id,
-            "keyframe_for_shot": shot.id,
-            "inject_continuity": False,
-        }
-    )
-    return {"job_id": job["id"], "model": model.get("label"), "seed": seed, "width": w, "height": h}
+    payload = {
+        "mode": "t2i",
+        "model_id": model["id"],
+        "prompt": compiled["prompt"],
+        "negative_prompt": compiled["negative"],
+        "width": w,
+        "height": h,
+        "seed": seed,
+        "quality": "high",
+        "project_id": project.id,
+        "keyframe_for_shot": shot.id,
+        "inject_continuity": False,
+    }
+    # FLUX.2 edits from a reference: give it the character's photo so every
+    # keyframe shows the same face, not just a similar description.
+    from .identity_lock import primary_identity_ref
+
+    ref = primary_identity_ref(project, [c.id for c in cast]) if cast else None
+    if ref and "ref2i" in (model.get("modes") or []) and "Flux2" in str(model.get("pipeline") or ""):
+        payload.update({"mode": "ref2i", "reference_path": ref})
+    job = enqueue_job(payload)
+    return {
+        "job_id": job["id"],
+        "model": model.get("label"),
+        "seed": seed,
+        "width": w,
+        "height": h,
+        "uses_reference": bool(payload.get("reference_path")),
+    }
 
 
 @app.put("/api/projects/{project_id}/memory", response_model=Project)

@@ -693,6 +693,19 @@ def mux_audio_onto_video(
     return str(dest)
 
 
+def _apply_scheduler_overrides(pipe, model: dict[str, Any]) -> None:
+    """Catalog scheduler tweaks, e.g. LTX-2.5 full needs the dynamic shifting the
+    repo's (distilled) scheduler config turns off. Idempotent on a warm pipe."""
+    overrides = model.get("scheduler_overrides") or {}
+    sched = getattr(pipe, "scheduler", None)
+    if not overrides or sched is None:
+        return
+    cfg = dict(sched.config)
+    if all(cfg.get(k) == v for k, v in overrides.items()):
+        return
+    pipe.scheduler = type(sched).from_config({**cfg, **overrides})
+
+
 def _apply_text_encoder(pipe, job: dict[str, Any], device: str, dtype, cb: ProgressCb | None) -> None:
     choice = (job.get("text_encoder") or "auto").strip()
     preset = get_text_encoder_preset(choice)
@@ -813,6 +826,114 @@ def _upsample_video_file(src: str, out_path: Path, scale: int, fps: int, cb: Pro
         return {"media_path": media, "thumb_path": media, "frames": 1}
 
 
+def _video_fps(src: str, fallback: float = 24.0) -> float:
+    """The clip's real frame rate (upsampling used to assume 16 fps)."""
+    try:
+        import av
+
+        with av.open(src) as box:
+            rate = box.streams.video[0].average_rate
+            return float(rate) if rate else fallback
+    except Exception:
+        return fallback
+
+
+def _keep_source_audio(src: str, media: str, cb: ProgressCb | None) -> str:
+    """Put the source clip's sound back on a re-encoded video. Silent sources
+    (or no ffmpeg) leave the video as it is."""
+    try:
+        import av
+
+        with av.open(src) as box:
+            if not box.streams.audio:
+                return media
+        tmp = Path(media).with_name(Path(media).stem + "_a.mp4")
+        mux_audio_onto_video(media, src, tmp, cb)
+        Path(media).unlink(missing_ok=True)
+        tmp.rename(media)
+    except Exception as exc:  # noqa: BLE001
+        _progress(cb, f"Kept video without sound ({exc})", 0.97)
+    return media
+
+
+def _attach_generated_audio(media: str, audio: Any, pipe: Any, cb: ProgressCb | None) -> str:
+    """Write the model's own soundtrack (LTX-2 vocoder output) and mux it on."""
+    try:
+        import numpy as np
+        import soundfile as sf
+
+        arr = audio[0] if getattr(audio, "ndim", 0) == 3 else audio  # (channels, samples)
+        if hasattr(arr, "detach"):
+            arr = arr.detach().float().cpu().numpy()
+        arr = np.asarray(arr, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr[None, :]
+        if not np.isfinite(arr).all() or float(np.abs(arr).max()) < 1e-4:
+            _progress(cb, "The model's soundtrack came out silent — kept the video without it.", 0.985)
+            return media
+        # LTX's ambience comes out quiet (peaks around -20 dBFS): bring the peak to
+        # -3 dBFS, at most +18 dB so near-silence isn't blown up into hiss.
+        peak = float(np.abs(arr).max())
+        arr = arr * min(10 ** (18 / 20), 10 ** (-3 / 20) / peak)
+        voc = getattr(pipe, "vocoder", None)
+        rate = int(getattr(getattr(voc, "config", None), "output_sampling_rate", 0) or getattr(getattr(voc, "config", None), "sampling_rate", 0) or 24000)
+        wav = Path(media).with_suffix(".wav")
+        sf.write(str(wav), np.clip(arr.T, -1, 1), rate)
+        tmp = Path(media).with_name(Path(media).stem + "_a.mp4")
+        mux_audio_onto_video(media, str(wav), tmp, cb)
+        Path(media).unlink(missing_ok=True)
+        tmp.rename(media)
+        _progress(cb, f"Added the generated soundtrack ({rate // 1000} kHz)", 0.99)
+    except Exception as exc:  # noqa: BLE001
+        _progress(cb, f"Kept video without its soundtrack ({exc})", 0.985)
+    return media
+
+
+RIFE_WEIGHTS = "rife-4.26/rife4.26.pkl"
+
+
+def _rife_smooth_video(src: str, out_path: Path, multiplier: int, cb: ProgressCb | None) -> dict[str, Any]:
+    """RIFE 4.26: invent in-between frames so motion plays smoother (2x = 24 -> 48 fps).
+    Same length, same look; the clip just stops stuttering."""
+    import numpy as np
+    import torch
+    from PIL import Image
+
+    from .rife.inference import temporal_interpolation
+
+    weights = models_dir() / RIFE_WEIGHTS
+    if not weights.exists():
+        raise RuntimeError(f"RIFE weights missing: {weights}")
+    _progress(cb, "Smooth motion · reading the clip…", 0.05)
+    import imageio.v2 as imageio
+
+    fps = _video_fps(src)
+    frames = [np.asarray(Image.fromarray(f).convert("RGB")) for f in imageio.get_reader(src)]
+    if len(frames) < 2:
+        raise RuntimeError("The clip needs at least 2 frames.")
+    # (C, T, H, W) uint8, as WanGP's RIFE wrapper expects
+    clip = torch.from_numpy(np.stack(frames)).permute(3, 0, 1, 2).contiguous()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    def report(label: str, done: int = 0, total: int = 0) -> None:
+        if total:
+            _progress(cb, f"Smooth motion · frame {done}/{total}", 0.1 + 0.8 * done / total)
+
+    out = temporal_interpolation(str(weights), clip, multiplier, device=device, progress_callback=report)
+    if out is None:
+        raise RuntimeError("Smooth motion was cancelled.")
+    arr = out.permute(1, 2, 3, 0).cpu().numpy()
+    _progress(cb, "Smooth motion · writing video…", 0.92)
+    new_fps = int(round(fps * multiplier))
+    media = _export_video_frames([Image.fromarray(a) for a in arr], out_path, fps=new_fps)
+    media = _keep_source_audio(src, media, cb)
+    thumb = Path(media).with_suffix(".png")
+    if not thumb.exists():
+        Image.fromarray(arr[0]).save(thumb)
+    _progress(cb, f"Done · {len(frames)} → {len(arr)} frames at {new_fps} fps", 1.0)
+    return {"media_path": media, "thumb_path": str(thumb), "frames": len(arr), "fps": new_fps}
+
+
 def _accepts(pipe: Any, arg: str, *, strict: bool = False) -> bool:
     """Does pipe(...) take this keyword? strict=True ignores **kwargs: SDXL's
     text-to-image call has **kwargs and silently drops an `image` passed to it."""
@@ -827,11 +948,35 @@ def _accepts(pipe: Any, arg: str, *, strict: bool = False) -> bool:
         return False
 
 
+def _fit_kwargs(pipe: Any, kwargs: dict[str, Any], cb: ProgressCb | None = None) -> dict[str, Any]:
+    """Drop settings this pipeline has no slot for (FLUX.2 klein has no
+    negative_prompt or strength). Pipelines with **kwargs keep everything."""
+    try:
+        import inspect
+
+        params = inspect.signature(pipe.__call__).parameters
+    except Exception:
+        return kwargs
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    dropped = [k for k in kwargs if k not in params]
+    shown = [k for k in dropped if k in ("negative_prompt", "strength")]
+    if shown:
+        _progress(cb, f"This model ignores: {', '.join(shown).replace('_', ' ')}", 0.19)
+    return {k: v for k, v in kwargs.items() if k in params}
+
+
 def _audio_family(model: dict[str, Any]) -> str:
     """Which loader a Text → Audio model needs. Everything used to go through
     StableAudioPipeline, so MusicGen (Transformers) failed with a 404 on
     model_index.json."""
     key = f"{model.get('id') or ''} {model.get('hf_id') or ''} {model.get('pipeline') or ''}".lower()
+    if "ace-step" in key or "acestep" in key:
+        return "acestep"
+    if "voxcpm" in key:
+        return "voxcpm"
+    if "stable-audio-3" in key or "stable_audio_3" in key:
+        return "sa3"
     if "audiogen" in key:
         return "audiogen"
     if "musicgen" in key:
@@ -917,14 +1062,60 @@ def _run_audio_family(
 _LTX_UPSAMPLER: dict[str, Any] = {}
 
 
-def _ltx_latent_upsampler(device: str):
-    """LTX-2.3 2x spatial latent upsampler (models/ltx-2.3-latent-upsampler), or None.
+# Distilled LTX runs unguided. LTX2Pipeline's defaults are the full/SFT model's
+# (audio CFG 7, STG 1, modality 3): each adds transformer passes per step and
+# pulls the distilled model off its trained recipe. Lightricks' LTX-2.5 card
+# zeroes all of them for the distilled checkpoint.
+_LTX_DISTILLED_UNGUIDED: dict[str, float] = {
+    "guidance_scale": 1.0,
+    "audio_guidance_scale": 1.0,
+    "stg_scale": 0.0,
+    "audio_stg_scale": 0.0,
+    "modality_scale": 1.0,
+    "audio_modality_scale": 1.0,
+}
 
-    Lightricks ships it as one file; it loads into diffusers' LTX2LatentUpsamplerModel
-    with the LTX-2 config and use_rational_resampler=False (plain conv + pixel shuffle).
+
+# Full LTX at half the cost: keep classifier-free guidance (prompt vs negative),
+# drop STG and audio/video modality guidance, which each add a full model pass.
+_LTX_FAST_GUIDANCE: dict[str, float] = {
+    "stg_scale": 0.0,
+    "audio_stg_scale": 0.0,
+    "modality_scale": 1.0,
+    "audio_modality_scale": 1.0,
+}
+
+
+def _pipe_folder(pipe: Any) -> Path | None:
+    try:
+        p = Path(str(pipe.config._name_or_path))
+        return p if p.is_dir() else None
+    except Exception:
+        return None
+
+
+def _ltx_latent_upsampler(device: str, pipe: Any = None):
+    """The 2x spatial latent upsampler that matches the loaded LTX, or None.
+
+    LTX-2.5 ships its own in latent_upsampler/ (Diffusers format). LTX-2.3's is a
+    single file in models/ltx-2.3-latent-upsampler that loads into diffusers'
+    LTX2LatentUpsamplerModel with use_rational_resampler=False.
     """
-    if "model" in _LTX_UPSAMPLER:
+    import torch
+
+    own = (_pipe_folder(pipe) / "latent_upsampler") if pipe is not None and _pipe_folder(pipe) else None
+    if own is not None and (own / "config.json").is_file():
+        key = str(own)
+        if _LTX_UPSAMPLER.get("key") != key:
+            from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
+
+            _LTX_UPSAMPLER.clear()
+            model = LTX2LatentUpsamplerModel.from_pretrained(str(own), torch_dtype=torch.bfloat16)
+            _LTX_UPSAMPLER.update(key=key, model=model.to(device).eval())
         return _LTX_UPSAMPLER["model"]
+    if _LTX_UPSAMPLER.get("key") == "ltx-2.3":
+        return _LTX_UPSAMPLER["model"]
+    _LTX_UPSAMPLER.clear()
     folder = models_dir() / "ltx-2.3-latent-upsampler"
     weights = folder / "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
     cfg_path = folder / "config.json"
@@ -932,7 +1123,6 @@ def _ltx_latent_upsampler(device: str):
         return None
     import json as _json
 
-    import torch
     from safetensors.torch import load_file
 
     try:
@@ -944,7 +1134,7 @@ def _ltx_latent_upsampler(device: str):
     model = LTX2LatentUpsamplerModel.from_config(cfg)
     model.load_state_dict(load_file(str(weights)), strict=True)
     model = model.to(device=device, dtype=torch.bfloat16).eval()
-    _LTX_UPSAMPLER["model"] = model
+    _LTX_UPSAMPLER.update(key="ltx-2.3", model=model)
     return model
 
 
@@ -973,13 +1163,13 @@ def _ltx_two_stage(
 
     from diffusers.pipelines.ltx2.utils import STAGE_2_DISTILLED_SIGMA_VALUES
 
-    upsampler = _ltx_latent_upsampler(device)
+    upsampler = _ltx_latent_upsampler(device, pipe)
     if upsampler is None:
         raise RuntimeError("latent upsampler not installed")
     first = {**attempt, "output_type": "latent", "return_dict": False}
     out = _call_pipe_with_progress(pipe, first, cb, steps=steps, label="Generating video · stage 1 of 2", live=live)
     video_lat, audio_lat = out[0], (out[1] if len(out) > 1 else None)
-    _progress(cb, "Upscaling latents 2× (LTX-2.3 spatial upsampler)…", 0.84)
+    _progress(cb, "Upscaling latents 2× (LTX spatial upsampler)…", 0.84)
     with torch.no_grad():
         up = upsampler(video_lat.to(device=device, dtype=torch.bfloat16))
         up = _adain(up.float(), video_lat.float())
@@ -992,7 +1182,7 @@ def _ltx_two_stage(
         "sigmas": sigmas,
         "num_inference_steps": len(sigmas),
         "noise_scale": float(sigmas[0]),
-        "guidance_scale": 1.0,
+        **_LTX_DISTILLED_UNGUIDED,
     }
     if audio_lat is not None:
         second["audio_latents"] = audio_lat
@@ -1016,9 +1206,9 @@ def _ltx_video_upscale(
     import torch
     from diffusers.utils import load_video
 
-    upsampler = _ltx_latent_upsampler(device)
+    upsampler = _ltx_latent_upsampler(device, pipe)
     if upsampler is None:
-        raise RuntimeError("The LTX-2.3 latent upsampler is not installed (models/ltx-2.3-latent-upsampler).")
+        raise RuntimeError("No LTX latent upsampler found (LTX-2.5 ships one; LTX-2.3 needs models/ltx-2.3-latent-upsampler).")
     _progress(cb, "AI upscale · reading the clip…", 0.06)
     frames = load_video(src)
     if len(frames) < 9:
@@ -1055,7 +1245,7 @@ def _ltx_video_upscale(
         "sigmas": sigmas,
         "num_inference_steps": len(sigmas),
         "noise_scale": float(sigmas[0]),
-        "guidance_scale": 1.0,
+        **_LTX_DISTILLED_UNGUIDED,
         "generator": generator,
     }
     if negative:
@@ -1115,11 +1305,21 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             raise ValueError("upsample_image needs image_path")
         return _upsample_image_file(src, out_path, scale, cb)
 
+    if mode == "upsample_video" and model.get("pipeline") == "rife":
+        src = job.get("video_path")
+        if not src:
+            raise ValueError("Smooth motion needs a video")
+        return _rife_smooth_video(src, out_path, int(model.get("multiplier") or 2), cb)
+
     if mode == "upsample_video" and not job.get("ai_upscale"):
         src = job.get("video_path") or job.get("image_path")
         if not src:
             raise ValueError("upsample_video needs video_path")
-        return _upsample_video_file(src, out_path, scale, int(job.get("fps") or 16), cb)
+        fps = int(job.get("fps") or round(_video_fps(src)))
+        res = _upsample_video_file(src, out_path, scale, fps, cb)
+        if str(res.get("media_path") or "").endswith(".mp4"):
+            res["media_path"] = _keep_source_audio(src, res["media_path"], cb)
+        return res
 
     if model.get("pipeline") == "lanczos":
         # Safety: lanczos models without mode still upsample
@@ -1223,6 +1423,47 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
                 f"{model.get('label') or 'AudioGen'} only ships for Meta's audiocraft library, which "
                 "StudioNels does not run. Pick MusicGen, Stable Audio Open or AudioLDM 2 for Text → Audio."
             )
+        if family == "acestep":
+            from .acestep_runner import generate_song
+
+            _release_resident_model(cb)  # free the GPU for ACE-Step's own models
+            media = generate_song(
+                prompt,
+                out_path,
+                duration_sec=float(job.get("duration_sec") or model.get("default_duration_sec") or 30),
+                seed=job.get("seed"),
+                steps=int(job.get("steps") or 8),
+                cb=cb,
+            )
+            _progress(cb, "Done", 1.0)
+            return {"media_path": media, "thumb_path": None, "frames": 0}
+        if family == "sa3":
+            from .sfx_runner import make_sound
+
+            _release_resident_model(cb)
+            media = make_sound(
+                prompt,
+                out_path,
+                duration_sec=float(job.get("duration_sec") or model.get("default_duration_sec") or 7),
+                seed=job.get("seed"),
+                negative=negative,
+                cb=cb,
+            )
+            _progress(cb, "Done", 1.0)
+            return {"media_path": media, "thumb_path": None, "frames": 0}
+        if family == "voxcpm":
+            from .voice_runner import speak
+
+            _release_resident_model(cb)
+            media = speak(
+                prompt,
+                out_path,
+                reference=job.get("reference_path") or job.get("audio_path"),
+                seed=job.get("seed"),
+                cb=cb,
+            )
+            _progress(cb, "Done", 1.0)
+            return {"media_path": media, "thumb_path": None, "frames": 0}
         if family in ("musicgen", "audioldm2"):
             source, _is_local = _resolve_model_source(model)
             media = _run_audio_family(
@@ -1324,6 +1565,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         te_job["cpu_offload"] = True
     _apply_text_encoder(pipe, te_job, device, dtype, cb)
     _apply_lora(pipe, job, cb)
+    _apply_scheduler_overrides(pipe, model)
     place = (mem or {}).get("placement") or "unknown"
     # Wan VAE tiling hangs on AMD after the last denoise step — chunked decode instead.
     if kind == "video":
@@ -1382,19 +1624,29 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
                         f"{model.get('label') or 'This model'} has no image-to-image version ({exc})."
                     ) from exc
             try:
+                multi_ref = "Flux2" in type(img_pipe).__name__
+                if multi_ref:
+                    # FLUX.2 edits from references instead of re-noising one
+                    # picture: pass every reference (shot image + character).
+                    refs = [im for im in (image_in, ref_in) if im is not None]
+                    ref_image: Any = refs if len(refs) > 1 else refs[0]
+                else:
+                    ref_image = conditioning.resize((width, height))
                 ref_kwargs: dict[str, Any] = {
                     "prompt": prompt,
-                    "image": conditioning.resize((width, height)),
+                    "image": ref_image,
                     "strength": float(job.get("strength") or 0.65),
                     "num_inference_steps": steps,
                     "guidance_scale": max(guidance, 1.0),
                     "generator": generator,
                 }
+                if multi_ref:
+                    ref_kwargs["width"], ref_kwargs["height"] = width, height
                 if negative:
                     ref_kwargs["negative_prompt"] = negative
                 result = _call_pipe_with_progress(
                     img_pipe,
-                    ref_kwargs,
+                    _fit_kwargs(img_pipe, ref_kwargs, cb),
                     cb,
                     steps=steps,
                     label="Generating image",
@@ -1408,7 +1660,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
                 ) from exc
         else:
             result = _call_pipe_with_progress(
-                pipe, kwargs, cb, steps=steps, label="Generating image"
+                pipe, _fit_kwargs(pipe, kwargs, cb), cb, steps=steps, label="Generating image"
             )
         out = result.images[0]
         media = _save_image(out, out_path.with_suffix(".png"))
@@ -1433,7 +1685,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES
 
             kwargs["sigmas"] = DISTILLED_SIGMA_VALUES
-            kwargs["guidance_scale"] = 1.0
+            kwargs.update(_LTX_DISTILLED_UNGUIDED)
             # The distilled schedule fixes the step count; keep the progress bar honest.
             if steps != len(DISTILLED_SIGMA_VALUES):
                 _progress(
@@ -1444,6 +1696,25 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
                 )
             steps = len(DISTILLED_SIGMA_VALUES)
             kwargs["num_inference_steps"] = steps
+        except ImportError:
+            pass
+
+    # Catalog/job call settings, e.g. skip LTX's STG + modality passes (each is a
+    # whole extra model run per step) while keeping normal guidance.
+    if "LTX2" in pipe_cls_name and not model.get("distilled"):
+        extra = dict(model.get("call_kwargs") or {})
+        if job.get("ltx_fast_guidance") is not None:
+            extra = dict(_LTX_FAST_GUIDANCE) if job.get("ltx_fast_guidance") else {}
+        kwargs.update(extra)
+
+    # The full (guided) LTX-2 is trained with Lightricks' standard negative prompt;
+    # with an empty one it drifted off the prompt entirely (tested 2026-11-20).
+    if "LTX2" in pipe_cls_name and not model.get("distilled"):
+        try:
+            from diffusers.pipelines.ltx2.utils import DEFAULT_NEGATIVE_PROMPT
+
+            if DEFAULT_NEGATIVE_PROMPT not in (kwargs.get("negative_prompt") or ""):
+                kwargs["negative_prompt"] = ", ".join(x for x in (DEFAULT_NEGATIVE_PROMPT, kwargs.get("negative_prompt")) if x)
         except ImportError:
             pass
 
@@ -1523,6 +1794,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     # High / Max on LTX-2: two-stage generate → 2x latent upsample → refine.
     two_stage = (
         "LTX2" in pipe_cls_name
+        and model.get("distilled")  # stage 2's fixed 3 sigmas are the distilled recipe
         and str(job.get("quality") or "").lower() in ("high", "max")
         and os.environ.get("STUDIONELS_TWO_STAGE", "1").lower() not in ("0", "off", "false")
         and width * 2 <= 1920
@@ -1586,6 +1858,11 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
 
     _progress(cb, "Denoise finished — collecting frames…", 0.96)
 
+    # LTX-2 makes sound with the picture: LTX2PipelineOutput.audio, or the 2nd item
+    # of a (video, audio) tuple. It used to be thrown away here.
+    gen_audio = getattr(result, "audio", None)
+    if gen_audio is None and isinstance(result, (tuple, list)) and len(result) > 1 and not hasattr(result, "frames"):
+        gen_audio = result[1]
     # LTX-2 may return (video, audio) tuple / list — never truth-test arrays
     if (
         isinstance(result, (tuple, list))
@@ -1672,6 +1949,8 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             _save_image(video_frames[0], Path(thumb))
         except Exception:
             pass
+    if gen_audio is not None and str(media).endswith(".mp4"):
+        media = _attach_generated_audio(media, gen_audio, pipe, cb)
     _release_gpu_cache()
     if live is not None and live.timings:
         print(
@@ -1833,6 +2112,23 @@ def _load_timeout_sec(model: dict[str, Any]) -> int:
     return 8 * 60
 
 
+def _release_audio_models(cb: ProgressCb | None) -> None:
+    """ACE-Step (~9 GB) and VoxCPM2 (~5 GB) stay warm between audio jobs; a
+    video or image model needs that memory back."""
+    import sys
+
+    freed = False
+    for mod_name, store in (("acestep_runner", "_HANDLERS"), ("voice_runner", "_MODEL"), ("sfx_runner", "_MODEL")):
+        mod = sys.modules.get(f"{__package__}.{mod_name}")  # only if it was ever loaded
+        held = getattr(mod, store, None) if mod else None
+        if held:
+            held.clear()
+            freed = True
+    if freed:
+        _progress(cb, "Unloading music/voice models to make room…", 0.04)
+        _release_gpu_cache()
+
+
 def _release_resident_model(cb: ProgressCb | None) -> None:
     """Free the warm pipeline before a new checkpoint is read.
 
@@ -1915,6 +2211,14 @@ def _build_pipeline(
                 f"Local model folder looks empty: {source}. "
                 "Open Models → Download until status is Ready, then retry."
             )
+        # Optional parts we chose not to download (LTX-2.5's 10 GB prompt
+        # enhancer): pass None so from_pretrained doesn't look for them.
+        for name in getattr(pipe_cls, "_optional_components", None) or []:
+            part = local_path / name
+            # A model folder (config.json) whose weights are missing. Processors /
+            # tokenizers have no weights by design, so they are left alone.
+            if (part / "config.json").is_file() and not any(part.glob("*.safetensors")) and not any(part.glob("*.bin")):
+                load_kwargs[name] = None
 
     def _from_pretrained(src: str, **kwargs: Any):
         try:
@@ -1940,6 +2244,7 @@ def _build_pipeline(
 
     # Always materialize on CPU first so mmgp can own device placement.
     # Drop the previous resident model first — LTX-2.3 will not fit beside it.
+    _release_audio_models(cb)
     _release_resident_model(cb)
     from .safetensors_nommap import (
         explain_weight_load_error,

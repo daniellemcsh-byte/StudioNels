@@ -1,4 +1,4 @@
-export type AudioKind = 'music' | 'song' | 'sfx' | 'ambience' | 'score'
+export type AudioKind = 'music' | 'song' | 'sfx' | 'ambience' | 'score' | 'voice'
 
 export interface VoiceAccent {
   id: string
@@ -107,6 +107,12 @@ export const AUDIO_KINDS: AudioKindOption[] = [
     label: 'Film score',
     blurb: 'Cinematic underscore for your shots.',
     prompt_prefix: 'Cinematic film score cue',
+  },
+  {
+    id: 'voice',
+    label: 'Dialogue (voice)',
+    blurb: 'A character speaks a line — voice designed from a description.',
+    prompt_prefix: '',
   },
   {
     id: 'ambience',

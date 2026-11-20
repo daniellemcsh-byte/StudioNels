@@ -336,6 +336,8 @@ class EngineGenerateRequest(BaseModel):
     lora_path: str | None = None
     lora_scale: float | None = 0.8
     text_encoder: str | None = "auto"
+    # Full LTX-2.5: skip the STG + modality guidance passes (about 2x faster)
+    ltx_fast_guidance: bool | None = None
     audio_path: str | None = None
     project_id: str | None = None
     shot_id: str | None = None

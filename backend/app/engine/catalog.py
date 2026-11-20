@@ -473,21 +473,30 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "ltx2.5-diffusers",
-        "label": "LTX-2.5 Distilled",
+        "label": "LTX-2.5 (full quality)",
         "modes": ["t2v", "i2v", "ref2v"],
         "hf_id": "Lightricks/LTX-2.5-Diffusers",
         "pipeline": "LTX2Pipeline",
         "wan2gp_model_type": "ltx2_25_22B",
         "min_vram_gb": 12,
-        "default_steps": 8,
-        "default_guidance": 1.0,
+        "default_steps": 30,
+        "default_guidance": 3.0,
         "kind": "video",
         "default_frames": 49,
         "fps": 24,
         "supports_lora": True,
-        "tier": "mid",
-        "distilled": True,
-        "notes": "Needs Diffusers 0.38+ (Pinokio Update). Distilled Diffusers pack — Wan2GP when installed.",
+        "tier": "big",
+        # The full / SFT DiT (transformer_full/) instead of the 8-step distilled one.
+        # The downloader fetches transformer_full and puts it in transformer/, and the
+        # scheduler gets the shifting the repo's distilled scheduler turns off.
+        "download_swap": {"transformer_full": "transformer"},
+        "scheduler_overrides": {"use_dynamic_shifting": True, "shift_terminal": 0.1},
+        # Fast mode: keep prompt/negative guidance, skip STG + modality guidance
+        # (each a full extra model pass per step). ~2x faster, a little less photoreal.
+        "call_kwargs": {"stg_scale": 0.0, "audio_stg_scale": 0.0, "modality_scale": 1.0, "audio_modality_scale": 1.0},
+        "notes": "Lightricks' newest video + sound model (Aug 2026), full version in fast mode: 30 guided steps "
+        "(the negative prompt works), with the two extra guidance passes off for about 2× speed — roughly "
+        "2.5 min per 3 s clip on a 32 GB card. Gated on Hugging Face (click Agree). Free under $10M a year in revenue.",
     },
     {
         "id": "ltx2.3-22b-distilled-diffusers",
@@ -675,6 +684,22 @@ MODELS: list[dict[str, Any]] = [
     },
     # --- More image ---
     {
+        "id": "flux2-klein-4b",
+        "label": "FLUX.2 klein 4B",
+        "modes": ["t2i", "ref2i"],
+        "hf_id": "black-forest-labs/FLUX.2-klein-4B",
+        "pipeline": "Flux2KleinPipeline",
+        "min_vram_gb": 13,
+        "default_steps": 4,
+        "default_guidance": 1.0,
+        "kind": "image",
+        "supports_lora": True,
+        "tier": "mid",
+        "distilled": True,
+        "notes": "Best stills and keyframes. Edits from up to several reference images, so a character keeps "
+        "the same face across shots. 4 steps. Apache 2.0 — fine for commercial work.",
+    },
+    {
         "id": "sdxl-base",
         "label": "SDXL 1.0 Base",
         "modes": ["t2i", "ref2i"],
@@ -817,6 +842,57 @@ MODELS: list[dict[str, Any]] = [
     },
     # --- More audio ---
     {
+        "id": "ace-step-1.5",
+        "label": "ACE-Step 1.5 (songs & score)",
+        "modes": ["t2a"],
+        "hf_id": "ACE-Step/Ace-Step1.5",
+        "pipeline": "acestep",
+        "min_vram_gb": 10,
+        "default_steps": 8,
+        "default_guidance": 1.0,
+        "kind": "audio",
+        "default_duration_sec": 30,
+        "supports_lora": False,
+        "distilled": True,
+        "tags": ["music", "song", "score"],
+        "notes": "Full songs with vocals, or instrumental score. Describe the style; add lyrics after a "
+        "'Lyrics:' line or with [verse]/[chorus] tags. Up to 4 minutes. MIT — commercial use OK.",
+    },
+    {
+        "id": "stable-audio-3-sfx",
+        "label": "Stable Audio 3 SFX (sound effects)",
+        "modes": ["t2a"],
+        "hf_id": "stabilityai/stable-audio-3-small-sfx",
+        "pipeline": "stable_audio_3",
+        "min_vram_gb": 4,
+        "default_steps": 8,
+        "default_guidance": 1.0,
+        "kind": "audio",
+        "default_duration_sec": 7,
+        "supports_lora": False,
+        "distilled": True,
+        "tags": ["sfx", "ambience", "foley"],
+        "notes": "Sound effects and ambience from a description: footsteps on gravel, glass shattering, "
+        "rain on a tin roof. Stability Community licence: commercial use free under $1M a year.",
+    },
+    {
+        "id": "voxcpm2",
+        "label": "VoxCPM2 (dialogue voices)",
+        "modes": ["t2a"],
+        "hf_id": "openbmb/VoxCPM2",
+        "pipeline": "voxcpm",
+        "min_vram_gb": 6,
+        "default_steps": 10,
+        "default_guidance": 2.0,
+        "kind": "audio",
+        "default_duration_sec": 5,
+        "supports_lora": False,
+        "tags": ["voice", "dialogue", "speech"],
+        "notes": "Spoken lines. Put the voice in brackets first: (old man, gravelly, tired)We close at nine. "
+        "Add an audio clip as the reference to clone that voice (with the speaker's permission). "
+        "30 languages. Apache 2.0.",
+    },
+    {
         "id": "musicgen-small",
         "label": "MusicGen Small",
         "modes": ["t2a"],
@@ -934,6 +1010,23 @@ MODELS: list[dict[str, Any]] = [
         "scale": 2,
         "supports_lora": False,
         "notes": "Instant classic upscale — no neural net.",
+    },
+    {
+        "id": "rife-smooth-2x",
+        "label": "Smooth motion 2× (RIFE)",
+        "modes": ["upsample_video"],
+        "hf_id": None,
+        "local_files": ["rife-4.26/rife4.26.pkl"],
+        "pipeline": "rife",
+        "min_vram_gb": 2,
+        "default_steps": 1,
+        "default_guidance": 0,
+        "kind": "upsample",
+        "scale": 1,
+        "multiplier": 2,
+        "supports_lora": False,
+        "notes": "Adds in-between frames (24 → 48 fps) so motion stops stuttering. Same size and length. "
+        "RIFE 4.26, MIT licence.",
     },
     {
         "id": "realesrgan-x4",

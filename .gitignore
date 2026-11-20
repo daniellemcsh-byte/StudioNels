@@ -24,3 +24,5 @@ projects/**
 !projects/README.md
 cache/**
 !cache/README.md
+vendor/
+backend/.cache/
