@@ -585,16 +585,21 @@ const MODES: { id: Mode; label: string }[] = [
   { id: 'experiment', label: 'Experiment' },
 ]
 
-function formatWhen(iso: string) {
-  try {
-    return new Date(iso).toLocaleString('en-GB', {
-      timeZone: 'Europe/London',
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    })
-  } catch {
-    return iso
-  }
+
+function plural(n: number, word: string) {
+  return `${n} ${word}${n === 1 ? '' : 's'}`
+}
+
+/** "just now", "5 min ago", "3 h ago", "2 days ago", else a date. */
+function formatAgo(iso: string) {
+  const t = Date.parse(iso)
+  if (!Number.isFinite(t)) return ''
+  const s = Math.max(0, (Date.now() - t) / 1000)
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`
+  if (s < 86400 * 7) return `${Math.floor(s / 86400)} day${s < 86400 * 2 ? '' : 's'} ago`
+  return new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
 }
 
 function Brand() {
@@ -634,6 +639,15 @@ export default function App() {
   const [agentText, setAgentText] = useState('')
   const [agentAttachments, setAgentAttachments] = useState<AgentAttachment[]>([])
   const [replaceShots, setReplaceShots] = useState(true)
+  // Home: quick start + recent work.
+  const [quickPrompt, setQuickPrompt] = useState('')
+  const [quickMode, setQuickMode] = useState<'t2v' | 't2i'>('t2v')
+  const [quickTarget, setQuickTarget] = useState('')
+  const [showEmptyProjects, setShowEmptyProjects] = useState(false)
+  const [homeJobs, setHomeJobs] = useState<EngineJob[]>([])
+  const homeTakes = homeJobs.filter((j) => j.status === 'done' && !!j.media_path && !isAudioPath(j.media_path))
+  const latestTakeFor = (projectId: string) => homeTakes.find((j) => j.project_id === projectId)
+  const takeCountFor = (projectId: string) => homeJobs.filter((j) => j.project_id === projectId && j.status === 'done').length
 
   const notify = (msg: string) => {
     setToast(msg)
@@ -652,16 +666,18 @@ export default function App() {
   }
 
   const refreshHome = async () => {
-    const [h, p, s, list] = await Promise.all([
+    const [h, p, s, list, jobs] = await Promise.all([
       api.health(),
       api.presets(),
       api.getSettings(),
       api.listProjects(),
+      api.engineJobs().catch(() => [] as EngineJob[]),
     ])
     setHealth(h)
     setPresets(p)
     setSettings(s)
     setProjects(list)
+    setHomeJobs(jobs)
   }
 
   useEffect(() => {
@@ -673,11 +689,42 @@ export default function App() {
       .catch((e) => notify(String(e.message || e)))
   }, [])
 
-  const openProject = async (id: string) => {
+  /** Home quick start: open a project on Make with the typed prompt ready. */
+  const quickStart = async () => {
+    const text = quickPrompt.trim()
+    if (!text) return
+    setBusy(true)
+    try {
+      const targetId = quickTarget === '' ? projects[0]?.id : quickTarget
+      const p =
+        quickTarget === '__new__' || !targetId
+          ? await api.createProject({
+              title: text.length > 40 ? `${text.slice(0, 40).trim()}…` : text,
+              mode: 'short',
+              preset_id: settings?.preset_id,
+              frame_size_id: newFrameSize,
+            })
+          : await api.getProject(targetId)
+      setProject(p)
+      setInspirationSeed({ mode: quickMode, prompt: text, title: 'Quick start' })
+      goTab('generate')
+      setQuickPrompt('')
+    } catch (err) {
+      notify(String((err as Error).message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const openProject = async (id: string, toTab?: TabId) => {
     setBusy(true)
     try {
       const p = await api.getProject(id)
       setProject(p)
+      if (toTab) {
+        goTab(toTab)
+        return
+      }
       // Film night + Director are the home path once work exists
       if ((p.takes && p.takes.length > 0) || (p.timeline && p.timeline.length > 0)) {
         goTab('director')
@@ -975,39 +1022,125 @@ export default function App() {
           </div>
         </div>
 
-        <section className="hero">
-          <Brand />
-          <h1>Local film studio for AMD.</h1>
-          <p>
-            Make films on your Radeon — fully local. Your faces and projects stay on this machine.
-            Plan with the agent, lock characters, continue shots, cut in Director. Built for AMD
-            and low-VRAM friends.
-          </p>
-          <div className="cta-row">
-            <button className="btn acid" type="button" onClick={() => setShowNew(true)}>
-              Start a project
-            </button>
-            <button className="btn secondary" type="button" onClick={() => setHomeView('learning')}>
-              Learning guide
-            </button>
-            <button className="btn ghost" type="button" onClick={() => setHomeView('sources')}>
-              My GitHub / HF
-            </button>
-          </div>
+        <section className="home-hero">
+          <form
+            className="panel quick-start"
+            onSubmit={(e) => {
+              e.preventDefault()
+              void quickStart()
+            }}
+          >
+            <h1>What do you want to make?</h1>
+            <textarea
+              rows={3}
+              value={quickPrompt}
+              onChange={(e) => setQuickPrompt(e.target.value)}
+              placeholder="A rainy neon street at night, a courier in a silver jacket, slow tracking shot…"
+              aria-label="Describe your shot"
+            />
+            <div className="quick-row">
+              <div className="seg" role="radiogroup" aria-label="Video or image">
+                {(
+                  [
+                    ['t2v', 'Video'],
+                    ['t2i', 'Image'],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="radio"
+                    aria-checked={quickMode === id}
+                    className={quickMode === id ? 'active' : ''}
+                    onClick={() => setQuickMode(id)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <select
+                className="quick-target"
+                value={quickTarget}
+                onChange={(e) => setQuickTarget(e.target.value)}
+                aria-label="Project to use"
+              >
+                {projects.length > 0 && <option value="">Into latest: {projects[0].title}</option>}
+                <option value="__new__">Into a new project</option>
+                {projects.slice(1, 12).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.title} · {formatAgo(p.updated_at)}
+                  </option>
+                ))}
+              </select>
+              <button className="btn acid" type="submit" disabled={busy || !quickPrompt.trim()}>
+                Open in Make →
+              </button>
+            </div>
+            <div className="quick-links">
+              <button type="button" className="link-btn" onClick={() => setShowNew(true)}>
+                Start a planned project (Agent, story, shots)
+              </button>
+              <span aria-hidden>·</span>
+              <button type="button" className="link-btn" onClick={() => setHomeView('learning')}>
+                Learning guide
+              </button>
+              <span aria-hidden>·</span>
+              <button type="button" className="link-btn" onClick={() => setHomeView('sources')}>
+                My GitHub / HF
+              </button>
+            </div>
+          </form>
+
+          {projects.length > 0 &&
+            (() => {
+              const latest = projects[0]
+              const take = latestTakeFor(latest.id)
+              return (
+                <div className="panel continue-card">
+                  <div className="section-label">Continue</div>
+                  <div className="continue-media">
+                    {take && isVideoPath(take.media_path) ? (
+                      <video src={mediaUrl(take.media_path)} autoPlay muted loop playsInline />
+                    ) : take?.media_path && !isAudioPath(take.media_path) ? (
+                      <img src={mediaUrl(take.media_path)} alt="" />
+                    ) : (
+                      <span className="muted">No takes yet</span>
+                    )}
+                  </div>
+                  <strong className="continue-title">{latest.title}</strong>
+                  <span className="muted tiny">
+                    {plural(latest.shot_count, 'shot')} · {plural(takeCountFor(latest.id), 'take')} ·{' '}
+                    {formatAgo(latest.updated_at)}
+                  </span>
+                  <div className="cta-row">
+                    <button className="btn acid" type="button" disabled={busy} onClick={() => openProject(latest.id)}>
+                      Open
+                    </button>
+                    <button
+                      className="btn ghost"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => openProject(latest.id, 'generate')}
+                    >
+                      Make a shot
+                    </button>
+                  </div>
+                </div>
+              )
+            })()}
         </section>
 
         {health && (
-          <section className={`amd-coach ${health.will_preview ? 'preview' : 'ready'}`}>
+          <section className={`amd-coach slim ${health.will_preview ? 'preview' : 'ready'}`}>
             <div>
               <strong>{health.first_run_headline || health.device_name}</strong>
-              <p className="muted tiny" style={{ margin: '4px 0 0' }}>
-                {health.first_run_detail ||
-                  (health.will_preview
-                    ? 'Preview mode until ROCm PyTorch + Diffusers are ready.'
-                    : 'Engine ready for real frames.')}
-                {health.vram_gb != null ? ` · ${health.vram_gb} GB` : ''}
-                {health.rocm ? ' · ROCm' : ''}
-              </p>
+              <span className="muted tiny">
+                {' '}
+                {health.will_preview
+                  ? '· Preview mode until ROCm PyTorch + Diffusers are ready'
+                  : '· Engine ready'}
+                {health.rocm ? ' · ROCm' : ''} · Faces, refs and projects stay on this machine — no cloud.
+              </span>
             </div>
             {health.suggested_preset && health.suggested_preset !== settings?.preset_id && (
               <button
@@ -1035,35 +1168,92 @@ export default function App() {
           </section>
         )}
 
-        <section className="privacy-strip">
-          <strong>Stays on this machine</strong>
-          <span className="muted tiny">
-            Faces, refs, projects, and tokens live in your StudioNels folder — no StudioNels cloud.
-          </span>
-        </section>
-
-        <section className="home-projects" id="projects">
-          <div className="section-label">Your projects</div>
-          {projects.length === 0 ? (
-            <div className="empty">No projects yet. Start one — StudioNels saves into the projects/ folder.</div>
-          ) : (
-            <div className="project-grid">
-              {projects.map((p, i) => (
+        {homeTakes.length > 0 && (
+          <section className="home-projects">
+            <div className="section-label">Recent takes</div>
+            <div className="take-strip">
+              {homeTakes.slice(0, 10).map((j) => (
                 <button
-                  key={p.id}
-                  className="project-tile"
+                  key={j.id}
                   type="button"
-                  style={{ animationDelay: `${i * 0.05}s` }}
-                  onClick={() => openProject(p.id)}
+                  className="take-chip"
+                  title={j.prompt}
+                  disabled={busy || !j.project_id}
+                  onClick={() => j.project_id && openProject(j.project_id, 'generate')}
                 >
-                  <h3>{p.title}</h3>
-                  <p>
-                    {p.mode.replace('_', ' ')} · {p.shot_count} shots
-                  </p>
-                  <p className="tiny muted">Updated {formatWhen(p.updated_at)} (London)</p>
+                  {isVideoPath(j.media_path) ? (
+                    <video src={`${mediaUrl(j.media_path)}#t=0.5`} muted preload="metadata" playsInline />
+                  ) : (
+                    <img src={mediaUrl(j.thumb_path || j.media_path)} alt="" />
+                  )}
+                  <span className="take-chip-label">{j.prompt || j.mode.toUpperCase()}</span>
                 </button>
               ))}
             </div>
+          </section>
+        )}
+
+        <section className="home-projects" id="projects">
+          <div className="home-projects-head">
+            <div className="section-label">Your projects</div>
+            <button className="btn ghost tiny" type="button" onClick={() => setShowNew(true)}>
+              + New project
+            </button>
+          </div>
+          {projects.length === 0 ? (
+            <div className="empty">No projects yet. Type an idea above, or start a planned project.</div>
+          ) : (
+            (() => {
+              const used = projects.filter((p) => p.shot_count > 0 || takeCountFor(p.id) > 0)
+              const empty = projects.filter((p) => !(p.shot_count > 0 || takeCountFor(p.id) > 0))
+              const shown = showEmptyProjects ? [...used, ...empty] : used
+              return (
+                <>
+                  {shown.length > 0 && (
+                    <div className="project-grid">
+                      {shown.map((p) => {
+                        const take = latestTakeFor(p.id)
+                        return (
+                          <button
+                            key={p.id}
+                            className="project-tile with-thumb"
+                            type="button"
+                            disabled={busy}
+                            onClick={() => openProject(p.id)}
+                          >
+                            <div className="project-thumb">
+                              {take && isVideoPath(take.media_path) ? (
+                                <video src={`${mediaUrl(take.media_path)}#t=0.5`} muted preload="metadata" playsInline />
+                              ) : take?.media_path && !isAudioPath(take.media_path) ? (
+                                <img src={mediaUrl(take.thumb_path || take.media_path)} alt="" />
+                              ) : (
+                                <span aria-hidden>✦</span>
+                              )}
+                            </div>
+                            <h3>{p.title}</h3>
+                            <p className="tiny muted">
+                              {plural(p.shot_count, 'shot')} · {plural(takeCountFor(p.id), 'take')} ·{' '}
+                              {formatAgo(p.updated_at)}
+                            </p>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                  {empty.length > 0 && (
+                    <button
+                      className="link-btn show-empty"
+                      type="button"
+                      onClick={() => setShowEmptyProjects((v) => !v)}
+                    >
+                      {showEmptyProjects
+                        ? 'Hide empty projects'
+                        : `Show ${empty.length} empty project${empty.length === 1 ? '' : 's'}`}
+                    </button>
+                  )}
+                </>
+              )
+            })()
           )}
         </section>
 
@@ -1387,6 +1577,8 @@ export default function App() {
         )}
       </main>
       </div>
+      {/* The Make page has its own stage + Recent list; the dock would duplicate it. */}
+      {tab !== 'generate' && (
       <GenerationDock
         projectId={project.id}
         health={health}
@@ -1403,6 +1595,7 @@ export default function App() {
           goTab('generate')
         }}
       />
+      )}
       {toast && <div className="toast">{toast}</div>}
     </div>
   )
@@ -3448,7 +3641,12 @@ function GenerateTab({
     if (!engine) return
     const models = engine.models.filter((m) => m.modes.includes(mode))
     if (!models.find((m) => m.id === modelId)) {
-      setModelId(models[0]?.id || '')
+      // Prefer a model that is already on disk; models[0] is often not downloaded.
+      const pick =
+        models.find((m) => m.installed && (m.id === engine.active_model_id || m.active)) ||
+        models.find((m) => m.installed) ||
+        models[0]
+      setModelId(pick?.id || '')
     }
   }, [mode, engine])
 
@@ -3647,31 +3845,270 @@ function GenerateTab({
     }
   }
 
-  return (
-    <div>
-      <p className="hint">
-        Write a prompt, pick Video or Image, then Generate. A 1–3 second clip is the right first test.
-        {health?.gpu ? ` GPU stays idle until you press Generate · ${health.device_name}.` : ' Preview mode until the AMD engine is installed.'}
-      </p>
+  // Job shown on the stage: what the user clicked, else the live job, else the latest result.
+  const [stageId, setStageId] = useState<string | null>(null)
+  const liveJob =
+    jobs.find((j) => j.status === 'running') || jobs.find((j) => j.status === 'queued') || null
+  const stageJob =
+    (stageId ? jobs.find((j) => j.id === stageId) : undefined) ||
+    liveJob ||
+    jobs.find((j) => j.status === 'done') ||
+    jobs[0] ||
+    null
+  const modeGroups: Array<{ label: string; ids: string[] }> = [
+    { label: 'Video', ids: [] },
+    { label: 'Image', ids: [] },
+    { label: 'Audio', ids: [] },
+  ]
+  for (const m of engine?.modes || []) {
+    const group = m.id === 't2a' ? 2 : /v$|video/.test(m.id) ? 0 : 1
+    modeGroups[group].ids.push(m.id)
+  }
+  const isVideoMode = mode === 't2v' || mode === 'i2v' || mode === 'ref2v'
+  // Modes that cannot run without an input file show the slots open.
+  const inputsRequired =
+    !!modeMeta?.needs_image ||
+    !!modeMeta?.needs_reference ||
+    !!modeMeta?.needs_video ||
+    ['i2v', 'ref2i', 'ref2v', 'upsample_image', 'upsample_video'].includes(mode)
+  const downloadsActive = (engine?.models || []).filter(
+    (m) =>
+      m.download_status === 'downloading' ||
+      m.download_status === 'stalled' ||
+      m.download_status === 'failed' ||
+      m.download_status === 'cancelled',
+  )
 
-      <div className="gen-layout">
-        <div className="panel gen-panel">
-          <h3>Mode</h3>
-          <div className="mode-grid">
-            {(engine?.modes || []).map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                className={`mode-chip ${mode === m.id ? 'active' : ''}`}
-                onClick={() => setMode(m.id)}
-              >
-                <strong>{m.label}</strong>
-                <span>{m.blurb}</span>
-              </button>
-            ))}
+  return (
+    <div className="make-studio">
+      <section className="panel gen-panel composer" aria-label="Composer">
+        <div className="composer-scroll">
+          <div className="composer-block">
+            <div className="composer-label">Mode</div>
+            {modeGroups
+              .filter((g) => g.ids.length > 0)
+              .map((g) => (
+                <div className="mode-group" key={g.label}>
+                  <span className="mode-group-label">{g.label}</span>
+                  <div className="mode-chips">
+                    {g.ids.map((id) => {
+                      const m = (engine?.modes || []).find((x) => x.id === id)
+                      if (!m) return null
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          title={m.blurb}
+                          className={`mode-pill ${mode === m.id ? 'active' : ''}`}
+                          onClick={() => setMode(m.id)}
+                        >
+                          {m.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            <div className="muted tiny mode-blurb">
+              {(engine?.modes || []).find((x) => x.id === mode)?.blurb}
+            </div>
           </div>
 
-          <div className="field" style={{ marginTop: 14 }}>
+          {(showStartImage || showRefImage || showRefVideo) && (
+            <details
+              key={`inputs-${mode}`}
+              className="fold section media-slots"
+              open={inputsRequired || !!imagePath || !!refPath || !!videoPath}
+            >
+              <summary>
+                {inputsRequired ? 'Inputs' : 'Start photo / reference (optional)'}
+                {imagePath || refPath || videoPath ? ' · added' : ''}
+              </summary>
+              {showStartImage && (
+                <div className="field media-slot">
+                  <label>
+                    {mode === 'upsample_image'
+                      ? 'Image to upsample'
+                      : mode === 'i2v' || continuePrev
+                        ? 'Start photo / still (Image → Video)'
+                        : mode === 'ref2v'
+                          ? 'Optional start frame (photo)'
+                          : 'Input image'}
+                    {(mode === 'i2v' || mode === 'upsample_image') && (
+                      <span className="tiny"> · required</span>
+                    )}
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/*,.png,.jpg,.jpeg,.webp,.bmp"
+                    onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'image')}
+                  />
+                  {imageUrl && (
+                    <div className="slot-preview">
+                      <img className="upload-preview" src={imageUrl} alt="start" />
+                      <button
+                        type="button"
+                        className="btn ghost tiny"
+                        onClick={() => {
+                          setImagePath(null)
+                          setImageUrl(null)
+                        }}
+                      >
+                        Remove photo
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              {showRefImage && (
+                <div className="field media-slot">
+                  <label>
+                    {mode === 'ref2i' ? 'Reference photo (look / identity)' : 'Reference photo'}
+                    {(mode === 'ref2i' || mode === 'ref2v') && !videoPath && (
+                      <span className="tiny"> · required unless you add a ref video</span>
+                    )}
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/*,.png,.jpg,.jpeg,.webp,.bmp"
+                    onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'reference')}
+                  />
+                  {refUrl && (
+                    <div className="slot-preview">
+                      <img className="upload-preview" src={refUrl} alt="reference" />
+                      <button
+                        type="button"
+                        className="btn ghost tiny"
+                        onClick={() => {
+                          setRefPath(null)
+                          setRefUrl(null)
+                        }}
+                      >
+                        Remove reference
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              {showRefVideo && (
+                <div className="field media-slot">
+                  <label>
+                    {mode === 'upsample_video' ? 'Video / clip to upsample' : 'Reference video / clip'}
+                    {mode === 'upsample_video' && <span className="tiny"> · required</span>}
+                  </label>
+                  <input
+                    type="file"
+                    accept="video/*,.mp4,.webm,.mov,.mkv,.avi"
+                    onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'video')}
+                  />
+                  {videoPath && (
+                    <div className="slot-preview">
+                      {videoUrl && (
+                        <video className="upload-preview" src={videoUrl} controls muted playsInline />
+                      )}
+                      <div className="muted tiny">{videoLabel || videoPath}</div>
+                      <button
+                        type="button"
+                        className="btn ghost tiny"
+                        onClick={() => {
+                          setVideoPath(null)
+                          setVideoUrl(null)
+                          setVideoLabel('')
+                        }}
+                      >
+                        Remove video
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </details>
+          )}
+
+          <div className="composer-block">
+            <div className="composer-label-row">
+              <div className="composer-label">Prompt</div>
+              <div className="inline-actions" style={{ gap: 6 }}>
+                {promptBeforeEnhance && (
+                  <button
+                    type="button"
+                    className="btn ghost tiny"
+                    onClick={() => {
+                      setPrompt(promptBeforeEnhance.prompt)
+                      setNegative(promptBeforeEnhance.negative)
+                      setPromptBeforeEnhance(null)
+                      setEnhanceNote('Restored previous prompt.')
+                    }}
+                  >
+                    Undo enhance
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn acid tiny"
+                  disabled={enhancing || !prompt.trim()}
+                  title="Expand a short idea with the Agent LLM (Ollama when set, else offline rules)"
+                  onClick={async () => {
+                    setEnhancing(true)
+                    setEnhanceNote(null)
+                    try {
+                      setPromptBeforeEnhance({ prompt, negative })
+                      const r = await api.engineEnhancePrompt({
+                        prompt,
+                        negative_prompt: negative,
+                        mode,
+                        style: style?.label || project.visual_style || null,
+                      })
+                      setPrompt(r.prompt)
+                      if (r.negative_prompt) setNegative(r.negative_prompt)
+                      setEnhanceNote(`${r.notes}${r.source ? ` · via ${r.source}` : ''}`)
+                      notify('Prompt enhanced')
+                    } catch (err) {
+                      setPromptBeforeEnhance(null)
+                      notify(String((err as Error).message || err))
+                    } finally {
+                      setEnhancing(false)
+                    }
+                  }}
+                >
+                  {enhancing ? 'Enhancing…' : 'Enhance'}
+                </button>
+              </div>
+            </div>
+            <textarea
+              className="prompt-box"
+              rows={5}
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="Describe the shot: subject, action, setting, light, camera…"
+            />
+            <div className="muted tiny">
+              Style <strong>{style?.label || project.visual_style}</strong> · saves as {project.image_format} /{' '}
+              {project.video_format} / {project.audio_format}
+              {enhanceNote ? ` · ${enhanceNote}` : ''}
+            </div>
+            <details className="fold" open={!!negative}>
+              <summary>Negative prompt{negative ? ' · set' : ''}</summary>
+              <input
+                value={negative}
+                onChange={(e) => setNegative(e.target.value)}
+                placeholder="What to avoid: blur, flicker, extra limbs…"
+              />
+            </details>
+          </div>
+
+          <div className="composer-block">
+            <div className="composer-label">Model &amp; shot</div>
+          {models.length === 0 && !mode.startsWith('upsample') && (
+            <div className="fit-warn">
+              No model for {(engine?.modes || []).find((x) => x.id === mode)?.label || mode} is set up yet. Open{' '}
+              <strong>Make → Models</strong> to download one, then come back here.
+            </div>
+          )}
+          {models.length === 0 && mode.startsWith('upsample') && (
+            <div className="muted tiny">Uses the built-in 2× upscaler — nothing to download.</div>
+          )}
+          <div className="field" hidden={models.length === 0}>
             <label>Model</label>
             <select
               value={modelId}
@@ -3807,111 +4244,66 @@ function GenerateTab({
           </div>
 
           <div className="field">
-            <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
-              <label style={{ margin: 0 }}>Prompt</label>
-              <div className="inline-actions" style={{ gap: 6 }}>
-                {promptBeforeEnhance && (
-                  <button
-                    type="button"
-                    className="btn ghost tiny"
-                    onClick={() => {
-                      setPrompt(promptBeforeEnhance.prompt)
-                      setNegative(promptBeforeEnhance.negative)
-                      setPromptBeforeEnhance(null)
-                      setEnhanceNote('Restored previous prompt.')
-                    }}
-                  >
-                    Undo enhance
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="btn acid tiny"
-                  disabled={enhancing || !prompt.trim()}
-                  title="Expand prompt with Agent LLM (or offline fallback)"
-                  onClick={async () => {
-                    setEnhancing(true)
-                    setEnhanceNote(null)
-                    try {
-                      setPromptBeforeEnhance({ prompt, negative })
-                      const r = await api.engineEnhancePrompt({
-                        prompt,
-                        negative_prompt: negative,
-                        mode,
-                        style: style?.label || project.visual_style || null,
-                      })
-                      setPrompt(r.prompt)
-                      if (r.negative_prompt) setNegative(r.negative_prompt)
-                      setEnhanceNote(
-                        `${r.notes}${r.source ? ` · via ${r.source}` : ''}`,
-                      )
-                      notify('Prompt enhanced')
-                    } catch (err) {
-                      setPromptBeforeEnhance(null)
-                      notify(String((err as Error).message || err))
-                    } finally {
-                      setEnhancing(false)
-                    }
-                  }}
-                >
-                  {enhancing ? 'Enhancing…' : 'Enhance'}
-                </button>
-              </div>
-            </div>
-            <textarea
-              rows={4}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="Describe the image or shot…"
-            />
-          </div>
-          <div className="muted tiny" style={{ marginBottom: 10 }}>
-            Style from Time tab: <strong>{style?.label || project.visual_style}</strong> · Save as{' '}
-            {project.image_format} / {project.video_format} / {project.audio_format}
-            {enhanceNote ? (
-              <>
-                <br />
-                {enhanceNote}
-              </>
-            ) : (
-              <>
-                <br />
-                Enhance expands a short idea (uses Ollama/Agent when set, else offline rules).
-              </>
-            )}
+            <label>Frame size</label>
+            <select
+              value={FRAME_SIZES.find((f) => f.width === width && f.height === height)?.id || ''}
+              onChange={async (e) => {
+                const f = frameById(e.target.value)
+                setWidth(f.width)
+                setHeight(f.height)
+                try {
+                  const p = await api.setFrameSize(project.id, f.id)
+                  setProject(p)
+                } catch {
+                  /* local only if save fails */
+                }
+              }}
+            >
+              {!FRAME_SIZES.some((f) => f.width === width && f.height === height) && (
+                <option value="">
+                  Custom · {width}×{height}
+                </option>
+              )}
+              {(['landscape', 'square', 'portrait'] as const).map((ori) => (
+                <optgroup key={ori} label={ori}>
+                  {framesByOrientation(ori).map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.label} · {f.width}×{f.height}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
           </div>
           <div className="field">
-            <label>Negative (optional)</label>
-            <input value={negative} onChange={(e) => setNegative(e.target.value)} />
+            <label>Quality</label>
+            <div className="seg" role="radiogroup" aria-label="Quality">
+              {(['draft', 'balanced', 'high', 'max'] as const).map((q) => (
+                <button
+                  key={q}
+                  type="button"
+                  role="radio"
+                  aria-checked={quality === q}
+                  className={quality === q ? 'active' : ''}
+                  onClick={() => setQuality(q)}
+                >
+                  {q[0].toUpperCase() + q.slice(1)}
+                </button>
+              ))}
+            </div>
           </div>
-
-          <div className="controls-grid">
+          {isVideoMode ? (
             <div className="field">
-              <label>Width</label>
-              <input type="number" min={256} step={64} value={width} onChange={(e) => setWidth(Number(e.target.value))} />
-            </div>
-            <div className="field">
-              <label>Height</label>
-              <input type="number" min={256} step={64} value={height} onChange={(e) => setHeight(Number(e.target.value))} />
-            </div>
-            <div className="field">
-              <label>Quality</label>
-              <select value={quality} onChange={(e) => setQuality(e.target.value)}>
-                <option value="draft">Draft</option>
-                <option value="balanced">Balanced</option>
-                <option value="high">High</option>
-                <option value="max">Max</option>
-              </select>
-            </div>
-            {mode === 't2v' || mode === 'i2v' || mode === 'ref2v' ? (
-              <div className="field">
-                <label>Clip length</label>
-                <div className="inline-actions" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+              <label>Clip length</label>
+              <div className="seg-row">
+                <div className="seg" role="radiogroup" aria-label="Clip length">
                   {[1, 2, 3, 5].map((s) => (
                     <button
                       key={s}
                       type="button"
-                      className={`btn tiny ${durationSec === s ? 'acid' : 'ghost'}`}
+                      role="radio"
+                      aria-checked={durationSec === s}
+                      className={durationSec === s ? 'active' : ''}
                       onClick={() => {
                         setDurationSec(s)
                         setFrames(0)
@@ -3922,10 +4314,12 @@ function GenerateTab({
                   ))}
                 </div>
                 <input
+                  className="seg-input"
                   type="number"
                   min={1}
                   step={0.5}
                   value={durationSec}
+                  aria-label="Clip length in seconds"
                   onChange={(e) => {
                     const n = Number(e.target.value)
                     if (!Number.isFinite(n)) return
@@ -3934,23 +4328,60 @@ function GenerateTab({
                   }}
                 />
               </div>
-            ) : null}
+            </div>
+          ) : null}
           </div>
 
-          <div className="panel" style={{ marginTop: 14, padding: 12 }}>
-            <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-              <strong>More options</strong>
-              <button
-                className="btn ghost tiny"
-                type="button"
-                onClick={() => setShowAdvanced((v) => !v)}
-              >
-                {showAdvanced ? 'Hide' : 'Show'}
-              </button>
-            </div>
+          <div className={`gpu-fit fit-${estimate?.fit || 'unknown'} loud-coach`}>
+            <header>
+              <strong>{estimate?.coach_headline || 'Can my GPU do this?'}</strong>
+              <span>{estimating ? '…' : estimate?.eta_label || '—'}</span>
+            </header>
+            {estimate ? (
+              <>
+                <div className="muted tiny">
+                  {estimate.device_name}
+                  {estimate.vram_available_gb != null ? ` · ${estimate.vram_available_gb} GB free` : ''} · needs ~
+                  {estimate.vram_estimate_gb} GB · {estimate.width}×{estimate.height} · {estimate.frames} frames
+                  {project.aspect_ratio ? ` · ${project.aspect_ratio}` : ''}
+                </div>
+                {estimate.warnings.map((w: string) => (
+                  <div className="fit-warn" key={w}>
+                    {w}
+                  </div>
+                ))}
+                {estimate.advice.length > 0 && (
+                  <details className="fold">
+                    <summary>Tips ({estimate.advice.length})</summary>
+                    {estimate.advice.map((a: string) => (
+                      <div className="muted tiny" key={a}>
+                        {a}
+                      </div>
+                    ))}
+                  </details>
+                )}
+                {estimate.will_preview && (
+                  <div className="fit-warn">PREVIEW — placeholders until ROCm + Diffusers are ready.</div>
+                )}
+              </>
+            ) : (
+              <div className="muted tiny">Checking VRAM fit…</div>
+            )}
+          </div>
+
+          <details className="fold section" open={showAdvanced} onToggle={(e) => setShowAdvanced((e.target as HTMLDetailsElement).open)}>
+            <summary>Advanced</summary>
             {showAdvanced && (
               <>
                 <div className="controls-grid">
+                  <div className="field">
+                    <label>Width</label>
+                    <input type="number" min={256} step={64} value={width} onChange={(e) => setWidth(Number(e.target.value))} />
+                  </div>
+                  <div className="field">
+                    <label>Height</label>
+                    <input type="number" min={256} step={64} value={height} onChange={(e) => setHeight(Number(e.target.value))} />
+                  </div>
                   <div className="field">
                     <label>FPS</label>
                     <select value={fps} onChange={(e) => setFps(Number(e.target.value))}>
@@ -4105,11 +4536,11 @@ function GenerateTab({
                 </p>
               </>
             )}
-          </div>
+          </details>
 
           {restorable.length > 0 && (
-            <div className="panel" style={{ marginTop: 12, padding: 12 }}>
-              <strong>Restore stopped workflow</strong>
+            <details className="fold section">
+              <summary>Restore a stopped workflow ({Math.min(5, restorable.length)})</summary>
               <p className="muted tiny">
                 Stop keeps your prompt and settings. Pick a cancelled/failed job to load it back.
               </p>
@@ -4132,9 +4563,11 @@ function GenerateTab({
                   </div>
                 ))}
               </div>
-            </div>
+            </details>
           )}
 
+          <details className="fold section" open={!!loraPath}>
+            <summary>LoRA{loraPath ? ` · ${loras.find((l) => l.path === loraPath)?.name || 'on'}` : ''}</summary>
           <div className="lora-box">
             <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
               <strong>Optional LoRA</strong>
@@ -4202,294 +4635,159 @@ function GenerateTab({
               </div>
             </div>
           </div>
+          </details>
 
-          {(showStartImage || showRefImage || showRefVideo) && (
-            <div className="media-slots" style={{ display: 'grid', gap: 12, marginBottom: 12 }}>
-              {showStartImage && (
-                <div className="field media-slot">
-                  <label>
-                    {mode === 'upsample_image'
-                      ? 'Image to upsample'
-                      : mode === 'i2v' || continuePrev
-                        ? 'Start photo / still (Image → Video)'
-                        : mode === 'ref2v'
-                          ? 'Optional start frame (photo)'
-                          : 'Input image'}
-                    {(mode === 'i2v' || mode === 'upsample_image') && (
-                      <span className="tiny"> · required</span>
-                    )}
-                  </label>
-                  <input
-                    type="file"
-                    accept="image/*,.png,.jpg,.jpeg,.webp,.bmp"
-                    onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'image')}
-                  />
-                  <div className="muted tiny" style={{ marginTop: 4 }}>
-                    Add a photo or still frame to animate / upscale.
-                  </div>
-                  {imageUrl && (
-                    <div style={{ marginTop: 8 }}>
-                      <img className="upload-preview" src={imageUrl} alt="start" />
-                      <button
-                        type="button"
-                        className="btn ghost tiny"
-                        style={{ marginTop: 6 }}
-                        onClick={() => {
-                          setImagePath(null)
-                          setImageUrl(null)
-                        }}
-                      >
-                        Remove photo
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-              {showRefImage && (
-                <div className="field media-slot">
-                  <label>
-                    {mode === 'ref2i' ? 'Reference photo (look / identity)' : 'Reference photo'}
-                    {(mode === 'ref2i' || mode === 'ref2v') && !videoPath && (
-                      <span className="tiny"> · required unless you add a ref video</span>
-                    )}
-                  </label>
-                  <input
-                    type="file"
-                    accept="image/*,.png,.jpg,.jpeg,.webp,.bmp"
-                    onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'reference')}
-                  />
-                  <div className="muted tiny" style={{ marginTop: 4 }}>
-                    Character or scene reference still for consistency.
-                  </div>
-                  {refUrl && (
-                    <div style={{ marginTop: 8 }}>
-                      <img className="upload-preview" src={refUrl} alt="reference" />
-                      <button
-                        type="button"
-                        className="btn ghost tiny"
-                        style={{ marginTop: 6 }}
-                        onClick={() => {
-                          setRefPath(null)
-                          setRefUrl(null)
-                        }}
-                      >
-                        Remove reference
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-              {showRefVideo && (
-                <div className="field media-slot">
-                  <label>
-                    {mode === 'upsample_video'
-                      ? 'Video / clip to upsample'
-                      : 'Reference video / clip'}
-                    {mode === 'upsample_video' && <span className="tiny"> · required</span>}
-                  </label>
-                  <input
-                    type="file"
-                    accept="video/*,.mp4,.webm,.mov,.mkv,.avi"
-                    onChange={(e) => e.target.files?.[0] && upload(e.target.files[0], 'video')}
-                  />
-                  <div className="muted tiny" style={{ marginTop: 4 }}>
-                    {mode === 'upsample_video'
-                      ? 'Drop the clip you want enlarged or frame-boosted.'
-                      : 'Optional motion / identity clip for Reference → Video.'}
-                  </div>
-                  {videoPath && (
-                    <div style={{ marginTop: 8 }}>
-                      {videoUrl && (
-                        <video
-                          className="upload-preview"
-                          src={videoUrl}
-                          controls
-                          muted
-                          playsInline
-                          style={{ maxHeight: 180 }}
-                        />
-                      )}
-                      <div className="muted tiny">{videoLabel || videoPath}</div>
-                      <button
-                        type="button"
-                        className="btn ghost tiny"
-                        style={{ marginTop: 6 }}
-                        onClick={() => {
-                          setVideoPath(null)
-                          setVideoUrl(null)
-                          setVideoLabel('')
-                        }}
-                      >
-                        Remove video
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
+          <details className="fold section" open={!!shotId || continuePrev}>
+            <summary>
+              Shot &amp; continuity
+              {shotId ? ` · shot ${(project.shots.find((s) => s.id === shotId)?.index ?? 0) + 1}` : ''}
+              {continuePrev ? ' · continues previous' : ''}
+            </summary>
+            <div className="field">
+              <label>Attach to shot (optional)</label>
+              <select value={shotId} onChange={(e) => setShotId(e.target.value)}>
+                <option value="">— standalone —</option>
+                {project.shots.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.index + 1}. {s.title}
+                  </option>
+                ))}
+              </select>
             </div>
-          )}
-
-          <div className="field">
-            <label>Attach to shot (optional)</label>
-            <select value={shotId} onChange={(e) => setShotId(e.target.value)}>
-              <option value="">— standalone —</option>
-              {project.shots.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.index + 1}. {s.title}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <label className="muted" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 12 }}>
-            <input
-              type="checkbox"
-              checked={continuePrev}
-              onChange={(e) => setContinuePrev(e.target.checked)}
-            />
-            <span>
-              Continue from previous video’s last frame (i2v chain)
-              {continueInfo ? <span className="tiny"> — {continueInfo}</span> : null}
-            </span>
-          </label>
-
-          <div className={`gpu-fit fit-${estimate?.fit || 'unknown'} loud-coach`}>
-            <header>
-              <strong>{estimate?.coach_headline || 'Can my GPU do this?'}</strong>
-              <span>{estimating ? '…' : estimate?.eta_label || '—'}</span>
-            </header>
-            {estimate ? (
-              <>
-                <div className="muted tiny">
-                  {estimate.device_name}
-                  {estimate.vram_available_gb != null
-                    ? ` · ${estimate.vram_available_gb} GB free`
-                    : ''}{' '}
-                  · needs ~{estimate.vram_estimate_gb} GB · {estimate.width}×{estimate.height} ·{' '}
-                  {estimate.frames} frames
-                  {project.aspect_ratio ? ` · ${project.aspect_ratio}` : ''}
-                </div>
-                {estimate.warnings.map((w: string) => (
-                  <div className="fit-warn" key={w}>
-                    {w}
-                  </div>
-                ))}
-                {estimate.advice.map((a: string) => (
-                  <div className="muted tiny" key={a}>
-                    {a}
-                  </div>
-                ))}
-                {estimate.will_preview && (
-                  <div className="fit-warn">PREVIEW — placeholders until ROCm + Diffusers are ready.</div>
-                )}
-              </>
-            ) : (
-              <div className="muted tiny">Checking VRAM fit…</div>
-            )}
-          </div>
-
-          <div className="field" style={{ marginTop: 12 }}>
-            <label>Frame size (landscape / portrait / 1:1)</label>
-            <select
-              value={FRAME_SIZES.find((f) => f.width === width && f.height === height)?.id || ''}
-              onChange={async (e) => {
-                const f = frameById(e.target.value)
-                setWidth(f.width)
-                setHeight(f.height)
-                try {
-                  const p = await api.setFrameSize(project.id, f.id)
-                  setProject(p)
-                } catch {
-                  /* local only if save fails */
-                }
-              }}
-            >
-              {(['landscape', 'square', 'portrait'] as const).map((ori) => (
-                <optgroup key={ori} label={ori}>
-                  {framesByOrientation(ori).map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.label} · {f.width}×{f.height}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          </div>
-
-          <button
-            className="btn acid"
-            type="button"
-            disabled={busy || (estimate != null && !estimate.can_queue)}
-            onClick={run}
-          >
-            Generate {mode.toUpperCase()}
-            {estimate?.eta_label ? ` · ${estimate.eta_label}` : ''}
-          </button>
+            <label className="muted check-row">
+              <input type="checkbox" checked={continuePrev} onChange={(e) => setContinuePrev(e.target.checked)} />
+              <span>
+                Continue from previous video’s last frame (i2v chain)
+                {continueInfo ? <span className="tiny"> — {continueInfo}</span> : null}
+              </span>
+            </label>
+          </details>
         </div>
 
-        <div className="panel">
-          <div className="inline-actions" style={{ justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
-            <h3 style={{ margin: 0 }}>Queue</h3>
+        <div className="composer-foot">
+          <button
+            className="btn acid generate-btn"
+            type="button"
+            disabled={busy || (estimate != null && !estimate.can_queue)}
+            onClick={() => {
+              setStageId(null)
+              void run()
+            }}
+          >
+            Generate {(engine?.modes || []).find((x) => x.id === mode)?.label || mode.toUpperCase()}
+            {estimate?.eta_label ? <span className="generate-eta">{estimate.eta_label}</span> : null}
+          </button>
+        </div>
+      </section>
+
+      <section className="stage-col" aria-label="Stage">
+        <div className="panel stage-panel">
+          <div className="stage-head">
+            <h3>{stageJob ? describeJobActivity(stageJob).phase : 'Stage'}</h3>
             <div className="inline-actions" style={{ gap: 6 }}>
+              <button className="btn ghost tiny" type="button" onClick={() => setShowSpeedTips((v) => !v)}>
+                {showSpeedTips ? 'Hide tips' : 'Speed tips'}
+              </button>
+            </div>
+          </div>
+          <SpeedTipsPanel open={showSpeedTips} onClose={() => setShowSpeedTips(false)} onOpenLearning={onOpenSpeedGuide} />
+          <StageView
+            job={stageJob}
+            deviceNote={
+              health?.gpu
+                ? `GPU stays idle until you press Generate · ${health.device_name}`
+                : 'Preview mode until the AMD engine is installed.'
+            }
+          />
+          {stageJob && (stageJob.status === 'running' || stageJob.status === 'queued') && (
+            <div className="stage-progress">
+              <GenerationStageBar job={stageJob} showTipsLink onOpenTips={() => setShowSpeedTips(true)} />
               <button
                 className="btn ghost tiny"
                 type="button"
-                onClick={() => setShowSpeedTips((v) => !v)}
+                onClick={async () => {
+                  try {
+                    await api.engineCancelJob(stageJob.id)
+                    notify('Stopped — your prompt and settings are saved.')
+                    setJobs(await api.engineJobs())
+                  } catch (err) {
+                    notify(String((err as Error).message || err))
+                  }
+                }}
               >
-                {showSpeedTips ? 'Hide tips' : 'Speed tips'}
+                Stop
               </button>
-              {jobs.some((j) => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') && (
+            </div>
+          )}
+          {stageJob && (
+            <div className="stage-caption">
+              <span className="muted tiny">
+                {stageJob.mode.toUpperCase()} · {stageJob.model_label}
+                {stageJob.preview ? ' · preview output' : ''}
+              </span>
+              <span className="stage-prompt">{stageJob.prompt || '(no prompt)'}</span>
+              {stageJob.error && stageJob.status !== 'done' ? <div className="fit-warn tiny">{stageJob.error.slice(0, 300)}</div> : null}
+              {stageJob.status === 'done' && isVideoPath(stageJob.media_path) ? (
                 <button
-                  className="btn ghost tiny"
+                  className="btn acid tiny"
                   type="button"
+                  title="Add this clip to the end of the Director timeline"
                   onClick={async () => {
                     try {
-                      const r = await api.engineClearFinishedJobs()
-                      notify(`Removed ${r.removed} finished job(s) from queue`)
-                      setJobs(await api.engineJobs())
+                      const r = await api.addVideoToDirector(
+                        project.id,
+                        stageJob.media_path as string,
+                        (stageJob.prompt || 'Clip').slice(0, 40),
+                      )
+                      setProject(r.project)
+                      notify('Added to the Director timeline.')
                     } catch (err) {
                       notify(String((err as Error).message || err))
                     }
                   }}
                 >
-                  Clear finished
+                  Add to Director
                 </button>
-              )}
+              ) : null}
+              {stageJob.workflow && stageJob.status !== 'running' && stageJob.status !== 'queued' ? (
+                <button
+                  className="btn ghost tiny"
+                  type="button"
+                  onClick={() => stageJob.workflow && applyWorkflow(stageJob.workflow)}
+                  title="Load this take's prompt and settings into the composer"
+                >
+                  Reuse settings
+                </button>
+              ) : null}
             </div>
-          </div>
-          <div className="muted tiny" style={{ marginBottom: 10 }}>
-            Status bar shows Queue → Load → Setup → Generate → Finish. Remove clears the row only
-            (Sampling takes stay).
-          </div>
+          )}
           <EngineWarmLine />
-          <SpeedTipsPanel
-            open={showSpeedTips}
-            onClose={() => setShowSpeedTips(false)}
-            onOpenLearning={onOpenSpeedGuide}
-          />
-          {(() => {
-            const live = jobs.find((j) => j.status === 'queued' || j.status === 'running')
-            if (!live) return null
-            return (
-              <div className="gen-live-status">
-                <GenerationStageBar
-                  job={live}
-                  showTipsLink
-                  onOpenTips={() => setShowSpeedTips(true)}
-                />
-              </div>
-            )
-          })()}
-          <div className="job-list">
-            {(engine?.models || [])
-              .filter(
-                (m) =>
-                  m.download_status === 'downloading' ||
-                  m.download_status === 'stalled' ||
-                  m.download_status === 'failed' ||
-                  m.download_status === 'cancelled',
-              )
-              .map((m) => {
+        </div>
+
+        <div className="panel recent-panel">
+          <div className="stage-head">
+            <h3>Recent</h3>
+            {jobs.some((j) => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') && (
+              <button
+                className="btn ghost tiny"
+                type="button"
+                onClick={async () => {
+                  try {
+                    const r = await api.engineClearFinishedJobs()
+                    notify(`Removed ${r.removed} finished job(s) from the list (takes stay in Takes)`)
+                    setJobs(await api.engineJobs())
+                  } catch (err) {
+                    notify(String((err as Error).message || err))
+                  }
+                }}
+              >
+                Clear finished
+              </button>
+            )}
+          </div>
+          {downloadsActive.length > 0 && (
+            <div className="job-list" style={{ marginBottom: 10 }}>
+              {downloadsActive.map((m) => {
                 const act = describeDownloadActivity(m)
                 return (
                   <div className={`job-item activity-${act.tone}`} key={`dl-${m.id}`}>
@@ -4497,60 +4795,60 @@ function GenerateTab({
                   </div>
                 )
               })}
-            {jobs.length === 0 &&
-              !(engine?.models || []).some(
-                (m) =>
-                  m.download_status === 'downloading' ||
-                  m.download_status === 'stalled' ||
-                  m.download_status === 'failed' ||
-                  m.download_status === 'cancelled',
-              ) && <div className="empty">No jobs yet.</div>}
-            {jobs.map((job) => {
-              const act = describeJobActivity(job)
-              return (
-              <div className={`job-item activity-${act.tone}`} key={job.id}>
-                <header>
-                  <strong className={`job-phase tone-${act.tone}`}>{act.phase}</strong>
-                  <div className="job-item-actions">
-                    <span className={`badge ${job.status}`}>{job.status}</span>
+            </div>
+          )}
+          {jobs.length === 0 ? (
+            <div className="empty">Nothing yet — your takes collect here.</div>
+          ) : (
+            <div className="recent-grid">
+              {jobs.map((job) => {
+                const act = describeJobActivity(job)
+                const selected = stageJob?.id === job.id
+                return (
+                  <div
+                    key={job.id}
+                    role="button"
+                    tabIndex={0}
+                    className={`recent-card activity-${act.tone} ${selected ? 'active' : ''}`}
+                    onClick={() => setStageId(job.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        setStageId(job.id)
+                      }
+                    }}
+                    title={job.prompt}
+                  >
+                    <RecentThumb job={job} />
+                    <div className="recent-meta">
+                      <span className={`job-phase tone-${act.tone}`}>{act.phase}</span>
+                      <span className="muted tiny truncate">{job.prompt || '(no prompt)'}</span>
+                    </div>
                     <button
                       type="button"
-                      className="btn ghost tiny"
-                      title="Remove from queue"
-                      onClick={async () => {
+                      className="recent-x"
+                      title="Remove from list (the take stays in Takes)"
+                      aria-label="Remove from list"
+                      onClick={async (e) => {
+                        e.stopPropagation()
                         try {
                           await api.engineDismissJob(job.id)
+                          if (stageId === job.id) setStageId(null)
                           setJobs(await api.engineJobs())
                         } catch (err) {
                           notify(String((err as Error).message || err))
                         }
                       }}
                     >
-                      Remove
+                      ×
                     </button>
                   </div>
-                </header>
-                <div className="muted tiny">
-                  {job.mode.toUpperCase()} · {job.model_label}
-                  {job.preview ? ' · preview' : ''}
-                </div>
-                <div className="muted truncate">{job.prompt || '(no prompt)'}</div>
-                <GenerationStageBar
-                  job={job}
-                  showTipsLink={job.status === 'running' || job.status === 'queued'}
-                  onOpenTips={() => setShowSpeedTips(true)}
-                />
-                <JobMedia job={job} />
-                {job.status !== 'done' && !job.live_preview_path && job.thumb_path && mediaUrl(job.thumb_path) && (
-                  <img src={mediaUrl(job.thumb_path)} alt="" className="job-thumb" />
-                )}
-                {job.preview && <div className="muted tiny">Preview output — not full model weights.</div>}
-              </div>
-              )
-            })}
-          </div>
+                )
+              })}
+            </div>
+          )}
         </div>
-      </div>
+      </section>
     </div>
   )
 }
@@ -4561,6 +4859,110 @@ function isAudioPath(path: string | null | undefined) {
 
 function isVideoPath(path: string | null | undefined) {
   return !!path && /\.(mp4|webm|mov|mkv|avi)$/i.test(path)
+}
+
+/** The big viewer: live preview while running, the playable result when done. */
+function StageView({ job, deviceNote }: { job: EngineJob | null; deviceNote?: string }) {
+  if (!job) {
+    return (
+      <div className="stage-view stage-empty">
+        <strong>Your shot appears here</strong>
+        <span>Write a prompt and press Generate. A 1–3 second clip is the right first test.</span>
+        {deviceNote ? <span className="tiny">{deviceNote}</span> : null}
+      </div>
+    )
+  }
+  if (job.status === 'done' && job.media_path) {
+    const src = mediaUrl(job.media_path)
+    if (src && isVideoPath(job.media_path)) {
+      return (
+        <div className="stage-view">
+          <video key={src} src={src} controls autoPlay muted loop playsInline />
+        </div>
+      )
+    }
+    if (src && isAudioPath(job.media_path)) {
+      return (
+        <div className="stage-view stage-empty">
+          <strong>Audio ready</strong>
+          <audio src={src} controls preload="metadata" />
+        </div>
+      )
+    }
+    if (src) {
+      return (
+        <div className="stage-view">
+          <img src={src} alt="Result" />
+        </div>
+      )
+    }
+  }
+  if ((job.status === 'running' || job.status === 'queued') && job.live_preview_path) {
+    const base = mediaUrl(job.live_preview_path)
+    if (base) {
+      const src = `${base}${base.includes('?') ? '&' : '?'}t=${job.live_preview_ts || 0}`
+      return (
+        <div className="stage-view live">
+          <img src={src} alt="Live preview" />
+          <span className="stage-badge">
+            Live preview{job.step && job.steps_total ? ` · step ${job.step}/${job.steps_total}` : ''}
+          </span>
+        </div>
+      )
+    }
+  }
+  if (job.status === 'running' || job.status === 'queued') {
+    const act = describeJobActivity(job)
+    return (
+      <div className="stage-view stage-empty working">
+        <span className="stage-pulse" aria-hidden />
+        <strong>{act.phase}</strong>
+        <span>The preview appears once the first steps finish.</span>
+      </div>
+    )
+  }
+  return (
+    <div className="stage-view stage-empty">
+      <strong>{job.status === 'cancelled' ? 'Stopped' : job.status === 'failed' ? 'This take failed' : 'No media'}</strong>
+      <span>{job.status === 'failed' ? 'See the reason below. Reuse settings to try again.' : 'Reuse settings to run it again.'}</span>
+    </div>
+  )
+}
+
+/** Small square for the Recent grid. */
+function RecentThumb({ job }: { job: EngineJob }) {
+  if (job.status === 'done' && job.media_path) {
+    const src = mediaUrl(job.media_path)
+    if (src && isVideoPath(job.media_path)) {
+      const poster = job.thumb_path && !isVideoPath(job.thumb_path) ? mediaUrl(job.thumb_path) : undefined
+      return (
+        <div className="recent-thumb">
+          <video src={`${src}#t=0.5`} poster={poster} muted preload="metadata" playsInline />
+          <span className="recent-play" aria-hidden>
+            ▶
+          </span>
+        </div>
+      )
+    }
+    if (src && !isAudioPath(job.media_path)) {
+      return (
+        <div className="recent-thumb">
+          <img src={src} alt="" />
+        </div>
+      )
+    }
+    return <div className="recent-thumb glyph">♪</div>
+  }
+  if (job.live_preview_path) {
+    const base = mediaUrl(job.live_preview_path)
+    return (
+      <div className="recent-thumb">
+        <img src={`${base}${base?.includes('?') ? '&' : '?'}t=${job.live_preview_ts || 0}`} alt="" />
+      </div>
+    )
+  }
+  const glyph = job.status === 'failed' ? '!' : job.status === 'cancelled' ? '■' : '…'
+  return <div className={`recent-thumb glyph status-${job.status}`}>{glyph}</div>
 }
 
 /** Running: live preview frame. Done: the result itself, playable right here. */
@@ -4709,11 +5111,38 @@ function SamplingTab({
                     <div className="muted tiny truncate">{take.prompt_used}</div>
                   ) : null}
                   <div className="inline-actions">
+                    {isVideoPath(take.media_path) && (
+                      <button
+                        className="btn acid tiny"
+                        type="button"
+                        disabled={busy}
+                        title="Add this clip to the end of the Director timeline"
+                        onClick={async () => {
+                          setBusy(true)
+                          try {
+                            const r = await api.addVideoToDirector(
+                              project.id,
+                              take.media_path as string,
+                              (take.prompt_used || take.label || 'Clip').slice(0, 40),
+                            )
+                            setProject(r.project)
+                            notify('Added to the Director timeline.')
+                          } catch (err) {
+                            notify(String((err as Error).message || err))
+                          } finally {
+                            setBusy(false)
+                          }
+                        }}
+                      >
+                        Add to Director
+                      </button>
+                    )}
                     <button
                       className="btn ghost tiny"
                       type="button"
                       disabled={busy}
                       onClick={async () => {
+                        if (!window.confirm(`Delete “${take.label}” and its file? This cannot be undone.`)) return
                         setBusy(true)
                         try {
                           const p = await api.deleteTake(project.id, take.id, true)

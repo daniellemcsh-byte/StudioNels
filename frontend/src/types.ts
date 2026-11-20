@@ -101,6 +101,7 @@ export interface EngineJob {
   cancel_requested?: boolean
   text_encoder?: string
   audio_path?: string | null
+  project_id?: string | null
   /** JPEG the engine rewrites each denoise step while the job runs. */
   live_preview_path?: string | null
   live_preview_ts?: number

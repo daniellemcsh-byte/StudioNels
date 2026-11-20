@@ -319,6 +319,14 @@ export default function DirectorStudio({
   }
 
   const buildFromPins = async () => {
+    // Saving an empty list here used to wipe an existing video track (e.g.
+    // uploaded clips) and still report success.
+    if (!project.shots.some((s) => s.pinned_take_id)) {
+      notify(
+        'Nothing is pinned yet. Pin a take per shot in Takes, or use “Add to Director” on a finished video — your current track was left as it is.',
+      )
+      return
+    }
     const built = project.shots
       .filter((s) => s.pinned_take_id)
       .map((s, order) =>

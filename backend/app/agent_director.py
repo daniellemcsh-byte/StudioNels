@@ -318,11 +318,90 @@ def apply_actions(project: Project, actions: list[dict[str, Any]]) -> tuple[Proj
                         visual_notes=str(raw.get("visual_notes") or ""),
                     )
                 )
+        elif t == "edit_shot":
+            try:
+                idx = int(raw.get("index"))
+            except Exception:
+                continue
+            if not 0 <= idx < len(project.shots):
+                continue
+            shot = project.shots[idx]
+            camera = str(raw.get("camera") or "").strip()
+            if camera:
+                old = (shot.camera or "").strip()
+                if old and old in (shot.prompt or ""):
+                    shot.prompt = shot.prompt.replace(old, camera, 1)
+                elif camera not in (shot.prompt or ""):
+                    shot.prompt = f"{camera} shot, {shot.prompt}".strip(", ")
+                shot.camera = camera
+            extra = str(raw.get("append") or "").strip(" ,.")
+            if extra and extra.lower() not in (shot.prompt or "").lower():
+                shot.prompt = f"{(shot.prompt or '').rstrip(' .')}, {extra}."
+                shot.action = f"{(shot.action or '').rstrip(' .')} — {extra}".strip(" —")
         elif t == "replace_shots":
             _apply_shots(project, list(raw.get("shots") or []), replace=True)
         elif t == "append_shots":
             _apply_shots(project, list(raw.get("shots") or []), replace=False)
     return project, ui
+
+
+_CAMERA_WORDS = [
+    (r"extreme close[\s-]?up", "extreme close-up"),
+    (r"close[\s-]?up|closeup|close on", "close-up"),
+    (r"\bwide\b|wider|establishing", "wide"),
+    (r"\bmedium\b", "medium"),
+    (r"tracking|follow(?:ing)? shot", "tracking"),
+    (r"aerial|drone|bird'?s[\s-]eye", "aerial"),
+    (r"low[\s-]angle", "low-angle"),
+    (r"overhead|top[\s-]down", "overhead"),
+    (r"hand[\s-]?held", "handheld"),
+    (r"push[\s-]?in|dolly in", "slow push-in"),
+]
+
+
+def _builtin_shot_edit(project: Project, text: str) -> dict[str, Any] | None:
+    """Turn 'make shot 2 a close-up and add more rain' into edit_shot actions."""
+    low = text.lower()
+    n_shots = len(project.shots)
+    if re.search(r"\b(every|all|each)\s+shots?\b", low):
+        targets = list(range(n_shots))
+    else:
+        m = re.search(r"\bshots?\s*#?\s*((?:\d{1,2})(?:\s*(?:,|and|&|\+)\s*\d{1,2})*)", low)
+        if not m:
+            return None
+        targets = sorted({int(n) - 1 for n in re.findall(r"\d{1,2}", m.group(1))})
+    if not any(v in low for v in ("make", "change", "turn", "set", "add", "more", "less", "use", "switch", "give")):
+        return None
+    bad = [t + 1 for t in targets if not 0 <= t < n_shots]
+    targets = [t for t in targets if 0 <= t < n_shots]
+    if not targets:
+        return {
+            "message": f"There {'is' if n_shots == 1 else 'are'} only {n_shots} shot{'s' if n_shots != 1 else ''} — "
+            f"shot {', '.join(map(str, bad))} doesn't exist yet.",
+            "actions": [],
+        }
+    camera = ""
+    for pattern, label in _CAMERA_WORDS:
+        if re.search(pattern, low):
+            camera = label
+            break
+    extra = ""
+    m_add = re.search(r"\b(?:add|with|include)\s+(.+?)(?:\s+(?:to|in|on)\s+(?:shot|shots|every|all|each)\b.*)?$", text, re.I)
+    if m_add:
+        extra = m_add.group(1)
+    elif re.search(r"\b(more|less)\s+\w+", low):
+        extra = re.search(r"\b(?:more|less)\s+[\w\s-]+", text, re.I).group(0)
+    extra = re.sub(r"^(?:some|a|an|the)\s+", "", extra.strip(" .,!"), flags=re.I)
+    if not camera and not extra:
+        return None
+    actions = [{"type": "edit_shot", "index": t, "camera": camera, "append": extra} for t in targets]
+    what = " and ".join(x for x in (f"{camera} framing" if camera else "", f"“{extra}”" if extra else "") if x)
+    which = "every shot" if len(targets) == n_shots and len(targets) > 1 else "shot " + ", ".join(str(t + 1) for t in targets)
+    actions.append({"type": "notify", "text": f"Updated {which}"})
+    return {
+        "message": f"Done — {which} now has {what}. The new prompt is on the Shots tab; regenerate it when you're ready.",
+        "actions": actions,
+    }
 
 
 def _builtin_chat(project: Project, message: str) -> dict[str, Any]:
@@ -442,6 +521,14 @@ def _builtin_chat(project: Project, message: str) -> dict[str, Any]:
             "actions": actions,
             "used_builtin": True,
         }
+
+    # Edit existing shots: "make shot 2 a close-up and add more rain",
+    # "shots 2 and 3 wider", "add fog to every shot". Used to fall through to a
+    # full replan with the same canned reply.
+    edit = _builtin_shot_edit(project, text) if project.shots else None
+    if edit:
+        actions.extend(edit["actions"])
+        return {"message": edit["message"], "actions": actions, "used_builtin": True}
 
     # Story planning — if message is meaty enough
     is_idea = len(text) > 24 or any(

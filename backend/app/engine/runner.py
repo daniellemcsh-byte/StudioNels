@@ -235,6 +235,28 @@ def _ensure_worker() -> None:
         t.start()
 
 
+def installed_default_for_mode(mode: str) -> dict[str, Any] | None:
+    """Best already-downloaded model for a mode, else None.
+
+    default_model_for_mode ranks by speed only, so Image → Video picked the
+    not-downloaded LTX-2 19B and failed "not Ready on disk" while LTX-2.3 (which
+    supports i2v) sat installed.
+    """
+    try:
+        from .models_manager import list_models_with_status
+
+        rows = list_models_with_status()
+    except Exception:
+        return None
+    runnable = {m["id"] for m in list_models_for_mode(mode)}
+    ready = [r for r in rows if r.get("installed") and r.get("id") in runnable]
+    if not ready:
+        return None
+    # The model the user last activated wins; then the biggest that is ready.
+    ready.sort(key=lambda r: (not r.get("active"), -float(r.get("min_vram_gb") or 0)))
+    return get_model(ready[0]["id"])
+
+
 def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     """Queue a built-in generation job."""
     _ensure_worker()
@@ -249,6 +271,8 @@ def enqueue_job(payload: dict[str, Any]) -> dict[str, Any]:
     mode = payload["mode"]
     model_id = payload.get("model_id")
     model = get_model(model_id) if model_id else None
+    if not model:
+        model = installed_default_for_mode(mode)
     if not model:
         model = default_model_for_mode(mode, float(preset.get("target_vram_gb") or 8))
     if not model:
@@ -1295,6 +1319,19 @@ def _worker_loop() -> None:
         _CURRENT_JOB_ID = job_id
         try:
             _run_one(job)
+        except Exception as exc:  # noqa: BLE001
+            # Checks before _run_one's own try (e.g. "model is not Ready on
+            # disk") used to escape here and kill this thread: every later job
+            # then sat at "Checking GPU… 2%" forever. Fail this job, keep going.
+            traceback.print_exc()
+            fresh = store_get(job_id) or job
+            if fresh.get("status") in ("queued", "running"):
+                cancelled = isinstance(exc, JobCancelled)
+                fresh["status"] = "cancelled" if cancelled else "failed"
+                fresh["error"] = None if cancelled else str(exc)
+                fresh["message"] = "Stopped — workflow saved." if cancelled else str(exc)
+                fresh["updated_at"] = utc_now()
+                upsert_job(fresh)
         finally:
             if _CURRENT_JOB_ID == job_id:
                 _CURRENT_JOB_ID = None
@@ -1386,12 +1423,17 @@ def _run_one(job: dict[str, Any]) -> None:
         )
     except Exception:
         status_row = None
-    if (
-        model_meta.get("hf_id")
-        and status_row is not None
+    local_ok = bool(model_meta.get("local_path")) and Path(str(model_meta.get("local_path"))).exists()
+    not_ready = (
+        status_row is None and not local_ok  # unknown to the status list: a silent HF fetch
+        if model_meta.get("hf_id")
+        else False
+    ) or (
+        status_row is not None
         and not status_row.get("installed")
         and str(status_row.get("download_status") or "") != "installed"
-    ):
+    )
+    if model_meta.get("hf_id") and not_ready:
         raise RuntimeError(
             f"{model_meta.get('label') or model_meta.get('id')} is not Ready on disk. "
             "Open Models → Download until the progress bar finishes (Ready), then Generate."

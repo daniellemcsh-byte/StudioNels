@@ -521,19 +521,33 @@ def _export_video_frames(frames, path: Path, fps: int = 16) -> str:
 
 
 def _write_audio_array(audio, path: Path, sample_rate: int) -> str:
-    """Write Stable Audio output (torch or numpy, several layouts) to wav."""
+    """Write generated audio (torch or numpy, several layouts) to a 16-bit wav.
+
+    Uses the stdlib wave module: soundfile is not in the venv, so every audio
+    job used to fail at "No module named 'soundfile'" after generating.
+    """
     import numpy as np
-    import soundfile as sf
 
     arr = audio.detach().float().cpu().numpy() if hasattr(audio, "detach") else np.asarray(audio)
+    arr = np.asarray(arr, dtype=np.float32)
     if arr.ndim == 3:
         arr = arr[0]
-    # (channels, samples) → (samples, channels) for soundfile
+    # (channels, samples) → (samples, channels)
     if arr.ndim == 2 and arr.shape[0] <= 8 and arr.shape[0] < arr.shape[1]:
         arr = arr.T
+    if arr.ndim == 1:
+        arr = arr[:, None]
+    peak = float(np.max(np.abs(arr))) if arr.size else 0.0
+    if peak > 1.0:  # some models return slightly hot samples
+        arr = arr / peak
+    pcm = (np.clip(np.nan_to_num(arr), -1.0, 1.0) * 32767.0).astype("<i2")
     out = path.with_suffix(".wav")
     out.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(str(out), arr, int(sample_rate or 44100))
+    with wave.open(str(out), "wb") as wf:
+        wf.setnchannels(int(pcm.shape[1]))
+        wf.setsampwidth(2)
+        wf.setframerate(int(sample_rate or 44100))
+        wf.writeframes(pcm.tobytes())
     return str(out)
 
 
@@ -763,6 +777,93 @@ def _upsample_video_file(src: str, out_path: Path, scale: int, fps: int, cb: Pro
         return {"media_path": media, "thumb_path": media, "frames": 1}
 
 
+def _audio_family(model: dict[str, Any]) -> str:
+    """Which loader a Text → Audio model needs. Everything used to go through
+    StableAudioPipeline, so MusicGen (Transformers) failed with a 404 on
+    model_index.json."""
+    key = f"{model.get('id') or ''} {model.get('hf_id') or ''} {model.get('pipeline') or ''}".lower()
+    if "audiogen" in key:
+        return "audiogen"
+    if "musicgen" in key:
+        return "musicgen"
+    if "audioldm2" in key or "audioldm-2" in key:
+        return "audioldm2"
+    return "stable_audio"
+
+
+def _run_audio_family(
+    family: str,
+    source: str,
+    *,
+    prompt: str,
+    negative: str,
+    steps: int,
+    duration_sec: float,
+    guidance: float | None,
+    seed: Any,
+    device: str,
+    out_path: Path,
+    cb: ProgressCb | None,
+) -> str:
+    import numpy as np
+    import torch
+
+    seconds = max(1.0, min(30.0, float(duration_sec or 5.0)))
+    if seed is not None:
+        try:
+            torch.manual_seed(int(seed))
+        except Exception:
+            pass
+    if family == "musicgen":
+        from transformers import AutoProcessor
+
+        try:
+            from transformers import MusicgenMelodyForConditionalGeneration, MusicgenForConditionalGeneration
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("MusicGen needs a newer transformers. Pinokio → Update, then retry.") from exc
+        cls = MusicgenMelodyForConditionalGeneration if "melody" in str(source).lower() else MusicgenForConditionalGeneration
+        processor = AutoProcessor.from_pretrained(source)
+        # float32: MusicGen is small, and half precision risks the same NaN/silence
+        # overflow as LTX-2 in fp16 on ROCm.
+        model = cls.from_pretrained(source, torch_dtype=torch.float32).to(device)
+        model.eval()
+        inputs = processor(text=[prompt or "ambient music"], padding=True, return_tensors="pt").to(device)
+        frame_rate = int(getattr(model.config.audio_encoder, "frame_rate", 50) or 50)
+        _progress(cb, f"Generating music · {seconds:.1f}s…", 0.3)
+        with torch.no_grad():
+            out = model.generate(
+                **inputs,
+                do_sample=True,
+                guidance_scale=float(guidance) if guidance and guidance > 0 else 3.0,
+                max_new_tokens=int(seconds * frame_rate) + 4,
+            )
+        audio = out[0, 0].float().cpu().numpy()
+        sr = int(model.config.audio_encoder.sampling_rate)
+        del model
+    else:  # audioldm2
+        from diffusers import AudioLDM2Pipeline
+
+        pipe = AudioLDM2Pipeline.from_pretrained(source, torch_dtype=torch.float32).to(device)
+        _progress(cb, f"Generating audio · {max(10, int(steps))} steps · {seconds:.1f}s…", 0.3)
+        kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "num_inference_steps": max(10, int(steps)),
+            "audio_length_in_s": seconds,
+        }
+        if negative:
+            kwargs["negative_prompt"] = negative
+        if guidance and guidance > 0:
+            kwargs["guidance_scale"] = guidance
+        audio = np.asarray(pipe(**kwargs).audios[0])
+        sr = 16000
+        del pipe
+    _release_gpu_cache()
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.size == 0 or not np.isfinite(audio).all() or float(np.max(np.abs(audio))) < 1e-4:
+        raise RuntimeError("The audio model returned silence or invalid samples, so nothing was saved. Try again.")
+    return _write_audio_array(audio, out_path, sr)
+
+
 def _model_safe_dtype(model: dict[str, Any] | None, device: str, dtype: Any, dtype_name: str, mem: dict[str, Any]):
     """LTX-2 overflows in float16 (NaN -> all-black frames). Its weights are
     bfloat16 and the R9700 runs bfloat16 natively, so never run it in fp16."""
@@ -892,6 +993,29 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
 
     if kind == "audio" or mode == "t2a":
         _progress(cb, "Loading audio model…", 0.05)
+        family = _audio_family(model)
+        if family == "audiogen":
+            raise RuntimeError(
+                f"{model.get('label') or 'AudioGen'} only ships for Meta's audiocraft library, which "
+                "StudioNels does not run. Pick MusicGen, Stable Audio Open or AudioLDM 2 for Text → Audio."
+            )
+        if family in ("musicgen", "audioldm2"):
+            source, _is_local = _resolve_model_source(model)
+            media = _run_audio_family(
+                family,
+                source,
+                prompt=prompt,
+                negative=negative,
+                steps=steps,
+                duration_sec=float(duration_sec),
+                guidance=guidance,
+                seed=job.get("seed"),
+                device=device,
+                out_path=out_path,
+                cb=cb,
+            )
+            _progress(cb, "Done", 1.0)
+            return {"media_path": media, "thumb_path": None, "frames": 0}
         try:
             from diffusers import StableAudioPipeline
             from .memory import apply_memory_to_pipeline
@@ -1034,10 +1158,13 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
                     steps=steps,
                     label="Generating image",
                 )
-            except TypeError:
-                result = _call_pipe_with_progress(
-                    pipe, kwargs, cb, steps=steps, label="Generating image"
-                )
+            except TypeError as exc:
+                # Used to retry without the reference and return a plain
+                # text-to-image result as if the photo had been used.
+                raise RuntimeError(
+                    f"{model.get('label') or 'This model'} can't take a reference photo ({exc}). "
+                    "Pick an image-to-image capable model for Reference → Image."
+                ) from exc
         else:
             result = _call_pipe_with_progress(
                 pipe, kwargs, cb, steps=steps, label="Generating image"
@@ -1099,24 +1226,60 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
     attempts.append({**kwargs, "num_frames": frames_n, "height": height, "width": width})
     attempts.append(kwargs)
 
+    # LTX2Pipeline has no `image` argument: every image attempt raised
+    # TypeError, the loop fell through to a text-only attempt, and Image/Reference
+    # → Video silently ignored the photo. Use the image-to-video pipeline built
+    # from the same loaded components (no reload).
+    call_pipe = pipe
+    needs_image = mode in ("i2v", "ref2v") and conditioning is not None
+    if needs_image and type(pipe).__name__ == "LTX2Pipeline":
+        try:
+            try:
+                from diffusers import LTX2ImageToVideoPipeline
+            except ImportError:
+                from diffusers.pipelines.ltx2.pipeline_ltx2_image2video import LTX2ImageToVideoPipeline
+            # Construct from the live components rather than from_pipe(): from_pipe
+            # calls .to(dtype) and int8 (quanto) weights refuse a dtype change.
+            import inspect as _inspect
+
+            wanted = list(_inspect.signature(LTX2ImageToVideoPipeline.__init__).parameters)[1:]
+            parts = {k: v for k, v in pipe.components.items() if k in wanted}
+            call_pipe = LTX2ImageToVideoPipeline(**parts)
+            for attr in ("_studionels_mmgp", "_studionels_placement", "_studionels_prequantized"):
+                if hasattr(pipe, attr):
+                    setattr(call_pipe, attr, getattr(pipe, attr))
+            # The start image is H.264-recompressed to match training data, which
+            # needs PyAV (not in the venv). crf=0 skips that step instead of failing.
+            try:
+                import av  # noqa: F401
+            except ImportError:
+                if "image_crf" in _inspect.signature(LTX2ImageToVideoPipeline.__call__).parameters:
+                    attempts = [{**a, "image_crf": 0} if "image" in a else a for a in attempts]
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"Could not switch LTX-2 to its image-to-video pipeline ({exc}). Pinokio → Update, then retry."
+            ) from exc
+
     live = None
-    if _LivePreview.supported(pipe):
+    if _LivePreview.supported(call_pipe):
         try:
             live_path = Path(str(out_path) + ".live.jpg")
             live_path.parent.mkdir(parents=True, exist_ok=True)
-            live = _LivePreview(pipe, live_path, frames=frames_n, height=height, width=width)
+            live = _LivePreview(call_pipe, live_path, frames=frames_n, height=height, width=width)
         except Exception:
             live = None
+    used_attempt: dict[str, Any] | None = None
     for attempt in attempts:
         try:
             result = _call_pipe_with_progress(
-                pipe,
+                call_pipe,
                 attempt,
                 cb,
                 steps=steps,
                 label="Generating video",
                 live=live,
             )
+            used_attempt = attempt
             break
         except TypeError as exc:
             tried_errors.append(str(exc))
@@ -1129,6 +1292,12 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             continue
     if result is None:
         raise RuntimeError("Pipeline call failed: " + " | ".join(tried_errors[:3]))
+    if needs_image and used_attempt is not None and "image" not in used_attempt:
+        raise RuntimeError(
+            f"{model.get('label') or 'This model'} could not use your "
+            f"{'start photo' if mode == 'i2v' else 'reference photo'} ({tried_errors[0] if tried_errors else 'no image input'}), "
+            "so the result was not saved. Pick a model that supports Image → Video."
+        )
 
     _progress(cb, "Denoise finished — collecting frames…", 0.96)
 

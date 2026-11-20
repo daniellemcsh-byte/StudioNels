@@ -46,15 +46,22 @@ def _hf_cache_has(repo_id: str | None) -> bool:
     try:
         from huggingface_hub import try_to_load_from_cache
 
-        # Presence of config or model index is enough signal
+        # A real config file AND weights next to it. try_to_load_from_cache
+        # returns a truthy "_CACHED_NO_EXIST" marker for files the hub said are
+        # missing, and a config alone is not a model: both used to count as
+        # installed, so Generate silently downloaded the weights instead.
         for name in (
             "model_index.json",
             "config.json",
             "configuration.json",
         ):
             cached = try_to_load_from_cache(repo_id, name)
-            if cached and cached != "___not_found___":
-                return True
+            if not isinstance(cached, str) or not Path(cached).is_file():
+                continue
+            snapshot = Path(cached).parent
+            for pattern in ("*.safetensors", "*.bin", "*.pt", "*.ckpt", "*.gguf"):
+                if any(p.is_file() and p.stat().st_size > 1024 for p in snapshot.rglob(pattern)):
+                    return True
     except Exception:
         pass
     # Also check StudioNels models mirror

@@ -88,7 +88,7 @@ def _decode_latents(vae, original, latents, progress, *, chunk):
     if progress:
         progress("Denoise finished — decoding frames (VAE, not another sample step)…", 0.91)
     is_5d = hasattr(latents, "dim") and callable(latents.dim) and latents.dim() == 5
-    if not is_5d or not _is_wan_vae(vae):
+    if not is_5d or not _is_wan_vae(vae) or getattr(vae, "use_tiling", False):
         return once(latents)
     # Diffusers Wan layout (B,C,T,H,W)
     if int(latents.shape[1]) <= 4 and int(latents.shape[2]) > 4:
@@ -119,7 +119,18 @@ def install_safe_video_decode(pipe, progress=None, *, chunk=4):
     vae = getattr(pipe, "vae", None)
     if vae is None:
         return
-    _disable_tiling(pipe, vae)
+    wan_tiled = False
+    if _is_wan_vae(vae) and callable(getattr(vae, "enable_tiling", None)):
+        # Wan 2.1 VAE, 33 frames at 832x480 on an R9700: 251 s in one pass,
+        # 17 s tiled (and 2.2 GB instead of 6.9 GB). The old "tiling hangs on
+        # AMD" note no longer reproduces; chunked decode stays as the fallback.
+        try:
+            vae.enable_tiling()
+            wan_tiled = True
+        except Exception:
+            wan_tiled = False
+    if not wan_tiled:
+        _disable_tiling(pipe, vae)
     # LTX(-2) VAEs: decode in overlapping 16-frame chunks. One big 3D conv over
     # all frames falls onto MIOpen's slow fallback on RDNA4: 73 frames at
     # 768x448 took 70 s in one pass and 6 s framewise (17 frames alone: 0.8 s).

@@ -85,77 +85,103 @@ async def _llm_plan(project: Project, message: str) -> dict[str, Any] | None:
     return await chat_json(settings, SYSTEM_PROMPT, user, max_tokens=max_tokens)
 
 
+_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+}
+
+
+def requested_shot_count(text: str) -> int | None:
+    """'a 3-shot short', 'five shots', '4 scenes' -> 3 / 5 / 4 (1..12)."""
+    m = re.search(r"\b(\d{1,2}|" + "|".join(_NUMBER_WORDS) + r")[\s-]*(?:shots?|scenes?)\b", text, re.I)
+    if not m:
+        return None
+    raw = m.group(1).lower()
+    n = int(raw) if raw.isdigit() else _NUMBER_WORDS[raw]
+    return max(1, min(12, n))
+
+
+def story_from_request(text: str) -> str:
+    """Strip the command around the idea: 'Plan a 3-shot short: X' -> 'X'."""
+    s = re.sub(r"\s+", " ", text).strip()
+    s = re.sub(
+        r"^(?:please\s+)?(?:can you\s+)?(?:plan|make|create|write|sketch|do|give me|i want)\s+(?:me\s+)?"
+        r"(?:an?\s+)?(?:(?:\d{1,2}|" + "|".join(_NUMBER_WORDS) + r")[\s-]*(?:shots?|scenes?)\s*)?"
+        r"(?:short(?:\s+film)?|film|video|ad|advert|music video|story|scene|sequence)?\s*(?:about|of|where|:|-|–|—)?\s*",
+        "",
+        s,
+        flags=re.I,
+    )
+    return s.strip(" .:-–—") or text.strip()
+
+
+def _pick_beats(beats: list, n: int | None) -> list:
+    """Keep the story shape (open ... close) at any requested length."""
+    if not n or n == len(beats):
+        return beats
+    if n < len(beats):
+        if n == 1:
+            return [beats[0]]
+        step = (len(beats) - 1) / (n - 1)
+        return [beats[round(i * step)] for i in range(n)]
+    extra = []
+    middle = beats[1:-1] or beats
+    for i in range(n - len(beats)):
+        title, action, camera, dur = middle[i % len(middle)]
+        extra.append((f"{title} {i // len(middle) + 2}", action, camera, dur))
+    return beats[:-1] + extra + beats[-1:]
+
+
 def _builtin_plan(project: Project, message: str) -> dict[str, Any]:
-    """Deterministic friendly planner — works offline with no LLM."""
+    """Deterministic friendly planner — works offline with no LLM.
+
+    Every shot carries the user's actual idea; with no characters/scenes yet
+    it used to fall back to "Lead in Opening location" and lose the story.
+    """
     text = message.strip()
+    story = story_from_request(text)
+    count = requested_shot_count(text)
     mode = project.mode
-    chars = project.characters or [
-        CharacterProfile(name="Lead", role="protagonist", look="memorable silhouette")
-    ]
-    scenes = project.scenes or [
-        SceneProfile(name="Opening location", location="unspecified", mood="curious")
-    ]
-    lead = chars[0].name
-    place = scenes[0].name
+    chars = project.characters
+    scenes = project.scenes
+    who = ", ".join(c.name for c in chars[:2]) if chars else "the main character"
+    style = getattr(project, "visual_style", "cinematic") or "cinematic"
+    style_hint = STYLE_HINTS.get(style, style)
 
     beats = [
-        (
-            "Cold open",
-            f"{lead} enters {place}. We sense the idea: {text[:120]}",
-            "wide",
-            3.0,
-        ),
-        (
-            "Character beat",
-            f"Close on {lead}. A detail that makes them human.",
-            "close-up",
-            2.5,
-        ),
-        (
-            "Story turn",
-            "Something changes — a choice, a clue, or a clash.",
-            "medium",
-            3.5,
-        ),
-        (
-            "Momentum",
-            "Tracking movement through the space; stakes rise.",
-            "tracking",
-            3.0,
-        ),
-        (
-            "Emotional peak",
-            f"{lead} faces the heart of the story.",
-            "close-up",
-            3.0,
-        ),
-        (
-            "Resolution beat",
-            "A quiet final image that lands the theme.",
-            "wide",
-            3.0,
-        ),
+        ("Cold open", "Establishing image that sets the world", "wide", 3.0),
+        ("Character beat", f"Close on {who} — a small human detail", "close-up", 2.5),
+        ("Story turn", "Something changes — a choice, a clue, or a clash", "medium", 3.5),
+        ("Momentum", "Movement through the space as the stakes rise", "tracking", 3.0),
+        ("Emotional peak", f"{who.capitalize()} at the heart of the moment", "close-up", 3.0),
+        ("Resolution beat", "A quiet final image that lands the theme", "wide", 3.0),
     ]
-
     if mode == "ad":
-        beats = beats[:4]
-        beats[0] = ("Hook", f"Bold visual hook for: {text[:100]}", "close-up", 2.0)
+        beats = [
+            ("Hook", "Bold visual hook in the first second", "close-up", 2.0),
+            ("Product in use", "The thing in action, clearly readable", "medium", 3.0),
+            ("Payoff", "The feeling it delivers", "tracking", 3.0),
+            ("Logo beat", "Clean hero image to end on", "wide", 2.0),
+        ]
     elif mode == "music_video":
         beats = [
-            ("Verse visual", f"Rhythmic opener in {place}.", "wide", 4.0),
-            ("Character refrain", f"{lead} as the song's face.", "medium", 3.0),
-            ("Chorus lift", "Bigger motion, stronger light.", "tracking", 4.0),
-            ("Bridge", "Intimate break from the pattern.", "close-up", 3.0),
-            ("Final chorus", "Payoff image locked to the beat.", "wide", 4.0),
+            ("Verse visual", "Rhythmic opener", "wide", 4.0),
+            ("Character refrain", f"{who.capitalize()} as the song's face", "medium", 3.0),
+            ("Chorus lift", "Bigger motion, stronger light", "tracking", 4.0),
+            ("Bridge", "Intimate break from the pattern", "close-up", 3.0),
+            ("Final chorus", "Payoff image locked to the beat", "wide", 4.0),
         ]
+    beats = _pick_beats(beats, count)
 
     shots = []
-    for title, action, camera, dur in beats:
-        scene = scenes[min(len(shots) % max(len(scenes), 1), len(scenes) - 1)]
+    for title, beat_action, camera, dur in beats:
+        scene = scenes[len(shots) % len(scenes)] if scenes else None
         char_names = [c.name for c in chars[:2]]
+        action = f"{beat_action}: {story}"
+        where = f" in {scene.name}" if scene else ""
         prompt = (
-            f"{mode.replace('_', ' ')} shot, {camera} shot of {', '.join(char_names)} "
-            f"in {scene.name}: {action}. Cinematic lighting, coherent faces, natural motion."
+            f"{camera} shot{where}. {story}. {beat_action}. "
+            f"{style_hint}, coherent faces, natural motion."
         )
         shots.append(
             {
@@ -165,7 +191,7 @@ def _builtin_plan(project: Project, message: str) -> dict[str, Any]:
                 "camera": camera,
                 "duration_sec": dur,
                 "character_names": char_names,
-                "scene_name": scene.name,
+                "scene_name": scene.name if scene else "",
                 "prompt": prompt,
                 "storyboard_note": f"{camera.title()} — {title.lower()}",
             }

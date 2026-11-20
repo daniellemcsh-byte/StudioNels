@@ -551,6 +551,15 @@ export const api = {
       message: string
     }>
   },
+  /** Put an already-generated video (path on disk) onto the Director timeline. */
+  addVideoToDirector: async (id: string, path: string, title?: string) => {
+    const fd = new FormData()
+    fd.append('path', path)
+    if (title) fd.append('title', title)
+    const res = await fetch(`/api/projects/${id}/director/import-video`, { method: 'POST', body: fd })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json() as Promise<{ ok: boolean; project: import('./types').Project; message: string }>
+  },
   frameSizes: () =>
     req<{ sizes: import('./frameSizes').FrameSize[] }>('/api/frame-sizes'),
   setFrameSize: (id: string, frame_size_id: string) =>
