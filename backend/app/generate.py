@@ -2,11 +2,28 @@ from __future__ import annotations
 
 """Project-level generate helpers — always uses the built-in engine (no ComfyUI)."""
 
+from typing import Any
+
 from .continue_video import continuation_source
 from .continuity import build_bible
-from .engine.runner import enqueue_job
+from .engine.catalog import get_model
+from .engine.runner import enqueue_job, installed_default_for_mode
 from .models import Project
+from .prompt_compiler import compile_shot
 from .storage import get_preset, save_project
+
+
+def _model_for(project: Project, mode: str, gen: dict[str, Any]) -> dict[str, Any] | None:
+    """Film render model if it supports `mode`, else a downloaded one, else the preset's."""
+    for mid in (project.memory.render_model_id,):
+        m = get_model(mid) if mid else None
+        if m and mode in (m.get("modes") or []):
+            return m
+    m = installed_default_for_mode(mode)
+    if m:
+        return m
+    mid = gen.get(f"default_{mode}")
+    return get_model(mid) if mid else None
 
 
 async def generate_takes(
@@ -102,21 +119,27 @@ async def generate_takes(
         elif not gen_mode:
             gen_mode = "t2v" if kind == "video" else "t2i"
 
-        prompt = shot.prompt or shot.action or shot.title
-        if cont and use_chain:
-            prompt = (
-                f"seamless continuation from previous shot, same camera world, "
-                f"continuous motion, {prompt}"
-            )
+        # Model: the film's render model when it can do this mode, else the
+        # best downloaded one (the preset default is often not downloaded).
+        model = _model_for(project, gen_mode, gen)
+        # Prompt written for that model from the film memory (identity locks,
+        # setting, props, carried-over state…). A locked prompt is used as is.
+        compiled = compile_shot(project, shot, model, gen_mode) if model else None
+        prompt = compiled["prompt"] if compiled else (shot.prompt or shot.action or shot.title)
+        negative = compiled["negative"] if compiled else shot.negative_prompt
+        if cont and use_chain and not (compiled and compiled["motion_only"]):
+            prompt = f"Seamless continuation from the previous shot, continuous motion. {prompt}"
+        if cont and negative and "jump cut" not in negative:
+            negative = f"cut, hard edit, flash, jump cut, {negative}"
 
         payload = {
             "mode": gen_mode,
-            "model_id": gen.get(f"default_{gen_mode}")
+            "model_id": (model or {}).get("id")
+            or gen.get(f"default_{gen_mode}")
             or gen.get("default_i2v")
             or gen.get("default_t2v"),
             "prompt": prompt,
-            "negative_prompt": shot.negative_prompt
-            or ("cut, hard edit, flash, jump cut" if cont else ""),
+            "negative_prompt": negative or ("cut, hard edit, flash, jump cut" if cont else ""),
             "project_id": project.id,
             "shot_id": shot.id,
             "cpu_offload": gen.get("cpu_offload", True),
@@ -125,7 +148,9 @@ async def generate_takes(
             "height": getattr(project, "height", None) or gen.get("default_height"),
             "fps": gen.get("fps"),
             "is_rehearsal": is_rehearsal,
-            "inject_continuity": inject_continuity,
+            # The compiled prompt already carries the locks; the old prefix
+            # ("CONTINUITY STYLE: … | RULE: …") would only eat the token budget.
+            "inject_continuity": inject_continuity and not compiled,
             "quality": "draft" if is_rehearsal else None,
             "continue_from_previous": bool(cont) or bool(chain_ids),
             "continue_from_take_id": cont["from_take_id"] if cont else None,

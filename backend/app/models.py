@@ -42,6 +42,8 @@ class CharacterProfile(BaseModel):
     # Offline identity fingerprint from reference still (palette / histogram)
     identity_fingerprint: list[float] | None = None
     tags: list[str] = Field(default_factory=list)
+    wardrobe: str = ""
+    age: str = ""
 
 
 class SceneProfile(BaseModel):
@@ -53,6 +55,32 @@ class SceneProfile(BaseModel):
     visual_notes: str = ""
     reference_path: str | None = None
     tags: list[str] = Field(default_factory=list)
+    lighting: str = ""
+    weather: str = ""
+
+
+class PropProfile(BaseModel):
+    """An object the film must keep consistent (the jar, the red bike…)."""
+
+    id: str = Field(default_factory=lambda: new_id("prop"))
+    name: str
+    description: str = ""
+    owner_id: str | None = None  # character who carries it, if any
+
+
+class FilmMemory(BaseModel):
+    """Everything the storyboard must remember across every shot."""
+
+    world: str = ""  # setting / premise of the world
+    era: str = ""
+    tone: str = ""
+    palette: str = ""
+    camera_language: str = ""  # e.g. "handheld, shallow depth of field, 35mm"
+    sound_world: str = ""  # ambience / score direction
+    motifs: str = ""  # recurring images / symbols
+    avoid: str = ""  # things that must never appear
+    facts: list[str] = Field(default_factory=list)  # pinned memory notes
+    render_model_id: str | None = None  # model the storyboard prompts are tuned for
 
 
 class Shot(BaseModel):
@@ -71,6 +99,15 @@ class Shot(BaseModel):
     pinned_take_id: str | None = None
     storyboard_note: str = ""
     director_notes: str = ""
+    # Storyboard continuity detail
+    time_of_day: str = ""
+    mood: str = ""
+    lens: str = ""
+    movement: str = ""
+    sound: str = ""
+    prop_ids: list[str] = Field(default_factory=list)
+    state_after: str = ""  # what is true when this shot ends (wet coat, cracked jar…)
+    prompt_locked: bool = False  # True = generate with `prompt` exactly as written
 
 
 class Take(BaseModel):
@@ -195,6 +232,8 @@ class Project(BaseModel):
     height: int = 448
     world_bible: str = ""
     continuity_rules: list[str] = Field(default_factory=list)
+    memory: FilmMemory = Field(default_factory=FilmMemory)
+    props: list[PropProfile] = Field(default_factory=list)
     auto_reject_below: float = 0.55
     # When true, multi-shot generate chains i2v from each prior take's last frame
     continue_from_previous: bool = True
@@ -385,6 +424,14 @@ class CreateShotRequest(BaseModel):
     negative_prompt: str = ""
     storyboard_note: str = ""
     director_notes: str = ""
+    time_of_day: str = ""
+    mood: str = ""
+    lens: str = ""
+    movement: str = ""
+    sound: str = ""
+    prop_ids: list[str] = Field(default_factory=list)
+    state_after: str = ""
+    prompt_locked: bool = False
     insert_at: int | None = None  # None = append
 
 
@@ -403,6 +450,19 @@ class UpdateShotRequest(BaseModel):
     status: str | None = None
     pinned_take_id: str | None = None
     index: int | None = None
+    time_of_day: str | None = None
+    mood: str | None = None
+    lens: str | None = None
+    movement: str | None = None
+    sound: str | None = None
+    prop_ids: list[str] | None = None
+    state_after: str | None = None
+    prompt_locked: bool | None = None
+
+
+class MemoryUpdateRequest(BaseModel):
+    memory: FilmMemory
+    props: list[PropProfile] | None = None
 
 
 class GenerateRequest(BaseModel):

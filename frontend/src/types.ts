@@ -241,6 +241,8 @@ export interface CharacterProfile {
   reference_path?: string | null
   identity_fingerprint?: number[] | null
   tags: string[]
+  wardrobe?: string
+  age?: string
 }
 
 export interface SceneProfile {
@@ -252,6 +254,65 @@ export interface SceneProfile {
   visual_notes: string
   reference_path?: string | null
   tags: string[]
+  lighting?: string
+  weather?: string
+}
+
+export interface PropProfile {
+  id: string
+  name: string
+  description: string
+  owner_id?: string | null
+}
+
+/** Everything the storyboard remembers across the whole film. */
+export interface FilmMemory {
+  world: string
+  era: string
+  tone: string
+  palette: string
+  camera_language: string
+  sound_world: string
+  motifs: string
+  avoid: string
+  facts: string[]
+  render_model_id?: string | null
+}
+
+export interface CompiledShot {
+  shot_id: string
+  family: string
+  label: string
+  format: string
+  prompt: string
+  negative: string
+  source: 'compiled' | 'locked'
+  tokens: number
+  words: number
+  budget: number
+  budget_unit: 'tokens' | 'words'
+  over_budget: boolean
+  warnings: string[]
+  tips: string[]
+  motion_only: boolean
+}
+
+export interface StoryboardIssue {
+  level: 'error' | 'warn' | 'info'
+  code: string
+  message: string
+  fix: string
+  shot_id: string | null
+  shot_number: number | null
+}
+
+export interface StoryboardCheck {
+  issues: StoryboardIssue[]
+  counts: { error: number; warn: number; info: number }
+  total_sec: number
+  target_sec: number
+  shot_count: number
+  model_id?: string | null
 }
 
 export interface Shot {
@@ -270,6 +331,14 @@ export interface Shot {
   pinned_take_id?: string | null
   storyboard_note: string
   director_notes: string
+  time_of_day?: string
+  mood?: string
+  lens?: string
+  movement?: string
+  sound?: string
+  prop_ids?: string[]
+  state_after?: string
+  prompt_locked?: boolean
 }
 
 export interface Take {
@@ -382,6 +451,8 @@ export interface Project {
   height?: number
   world_bible?: string
   continuity_rules?: string[]
+  memory?: FilmMemory
+  props?: PropProfile[]
   auto_reject_below?: number
   continue_from_previous?: boolean
   default_filter_id?: string

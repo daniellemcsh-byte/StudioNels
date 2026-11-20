@@ -225,6 +225,14 @@ export const api = {
       character_ids?: string[]
       scene_id?: string | null
       insert_at?: number | null
+      time_of_day?: string
+      mood?: string
+      lens?: string
+      movement?: string
+      sound?: string
+      prop_ids?: string[]
+      state_after?: string
+      prompt_locked?: boolean
     } = {},
   ) =>
     req<Project>(`/api/projects/${id}/shots`, {
@@ -551,6 +559,29 @@ export const api = {
       message: string
     }>
   },
+  /** Storyboard: per-shot prompts written for one model from the film memory. */
+  storyboardCompiled: (id: string, modelId?: string | null) =>
+    req<{
+      model_id: string | null
+      model_label: string | null
+      family: string
+      profile: { label: string; tips: string[] }
+      shots: import('./types').CompiledShot[]
+    }>(`/api/projects/${id}/storyboard/compiled${modelId ? `?model_id=${encodeURIComponent(modelId)}` : ''}`),
+  storyboardCheck: (id: string, modelId?: string | null) =>
+    req<import('./types').StoryboardCheck>(
+      `/api/projects/${id}/storyboard/check${modelId ? `?model_id=${encodeURIComponent(modelId)}` : ''}`,
+    ),
+  putMemory: (id: string, memory: import('./types').FilmMemory, props?: import('./types').PropProfile[]) =>
+    req<Project>(`/api/projects/${id}/memory`, {
+      method: 'PUT',
+      body: JSON.stringify({ memory, props }),
+    }),
+  learnMemory: (id: string) =>
+    req<{ suggestions: Array<{ kind: string; value: string; reason: string }> }>(
+      `/api/projects/${id}/memory/learn`,
+      { method: 'POST', body: '{}' },
+    ),
   /** Put an already-generated video (path on disk) onto the Director timeline. */
   addVideoToDirector: async (id: string, path: string, title?: string) => {
     const fd = new FormData()

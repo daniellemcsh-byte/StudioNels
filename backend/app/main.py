@@ -39,6 +39,7 @@ from .models import (
     Settings,
     TimelineClip,
     UpdateShotRequest,
+    MemoryUpdateRequest,
     new_id,
 )
 from .nle_export import export_nle_package
@@ -868,6 +869,14 @@ async def add_shot(project_id: str, body: CreateShotRequest):
         negative_prompt=body.negative_prompt or "",
         storyboard_note=body.storyboard_note or "",
         director_notes=body.director_notes or "",
+        time_of_day=body.time_of_day or "",
+        mood=body.mood or "",
+        lens=body.lens or "",
+        movement=body.movement or "",
+        sound=body.sound or "",
+        prop_ids=list(body.prop_ids or []),
+        state_after=body.state_after or "",
+        prompt_locked=bool(body.prompt_locked),
         status="draft",
     )
     insert_at = body.insert_at
@@ -898,6 +907,61 @@ async def patch_shot(project_id: str, shot_id: str, body: UpdateShotRequest):
                     s.index = i
             return save_project(project)
     raise HTTPException(404, "Shot not found")
+
+
+def _storyboard_model(project: Project, model_id: str | None) -> dict | None:
+    """Model the storyboard prompts are tuned for: explicit, then the film's
+    render model, then the best downloaded text-to-video model."""
+    from .engine.catalog import get_model
+    from .engine.runner import installed_default_for_mode
+
+    mid = model_id or project.memory.render_model_id
+    model = get_model(mid) if mid else None
+    return model or installed_default_for_mode("t2v")
+
+
+@app.get("/api/projects/{project_id}/storyboard/compiled")
+def storyboard_compiled(project_id: str, model_id: str | None = None, mode: str | None = None):
+    """Per-shot prompts written for one model, from the film memory."""
+    from .prompt_compiler import PROFILES, compile_shot, model_family
+
+    project = load_project(project_id)
+    model = _storyboard_model(project, model_id)
+    family = model_family(model)
+    return {
+        "model_id": (model or {}).get("id"),
+        "model_label": (model or {}).get("label"),
+        "family": family,
+        "profile": PROFILES[family],
+        "shots": [compile_shot(project, s, model, mode) for s in sorted(project.shots, key=lambda s: s.index)],
+    }
+
+
+@app.get("/api/projects/{project_id}/storyboard/check")
+def storyboard_check(project_id: str, model_id: str | None = None):
+    """Continuity supervisor: time jumps, vanishing props, missing looks…"""
+    from .storyboard_check import check_storyboard
+
+    project = load_project(project_id)
+    model = _storyboard_model(project, model_id)
+    return {**check_storyboard(project, model), "model_id": (model or {}).get("id")}
+
+
+@app.put("/api/projects/{project_id}/memory", response_model=Project)
+def put_memory(project_id: str, body: MemoryUpdateRequest):
+    project = load_project(project_id)
+    project.memory = body.memory
+    if body.props is not None:
+        project.props = body.props
+    return save_project(project)
+
+
+@app.post("/api/projects/{project_id}/memory/learn")
+def memory_learn(project_id: str):
+    """Suggested memory entries found in the board (user accepts each)."""
+    from .storyboard_check import learn_memory
+
+    return {"suggestions": learn_memory(load_project(project_id))}
 
 
 @app.delete("/api/projects/{project_id}/shots/{shot_id}", response_model=Project)
