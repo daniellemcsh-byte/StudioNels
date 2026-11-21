@@ -3157,6 +3157,20 @@ function EditableRefCard({
   )
 }
 
+// Models that change something other than the size (RIFE adds frames) are
+// tools you choose on purpose, never the default for Upsample.
+const NEVER_DEFAULT = new Set(['rife-smooth-2x'])
+
+function defaultModelFor(models: EngineModel[], activeId?: string | null): EngineModel | undefined {
+  const ok = models.filter((m) => !NEVER_DEFAULT.has(m.id))
+  return (
+    ok.find((m) => m.installed && (m.id === activeId || m.active)) ||
+    ok.find((m) => m.installed) ||
+    ok[0] ||
+    models[0]
+  )
+}
+
 function GenerateTab({
   project,
   setProject,
@@ -3290,10 +3304,7 @@ function GenerateTab({
     setLoras(e.loras || [])
     setLorasPath(e.loras_path || '')
     if (!modelId) {
-      const forMode = e.models.filter((m) => m.modes.includes(mode))
-      const active = forMode.find((m) => m.id === e.active_model_id || m.active)
-      const installed = forMode.find((m) => m.installed)
-      const pick = active || installed || forMode[0]
+      const pick = defaultModelFor(e.models.filter((m) => m.modes.includes(mode)), e.active_model_id)
       if (pick) setModelId(pick.id)
     }
   }
@@ -3327,12 +3338,7 @@ function GenerateTab({
     if (!engine) return
     const models = engine.models.filter((m) => m.modes.includes(mode))
     if (!models.find((m) => m.id === modelId)) {
-      // Prefer a model that is already on disk; models[0] is often not downloaded.
-      const pick =
-        models.find((m) => m.installed && (m.id === engine.active_model_id || m.active)) ||
-        models.find((m) => m.installed) ||
-        models[0]
-      setModelId(pick?.id || '')
+      setModelId(defaultModelFor(models, engine.active_model_id)?.id || '')
     }
   }, [mode, engine])
 
@@ -3409,6 +3415,9 @@ function GenerateTab({
   const modeMeta = engine?.modes.find((m) => m.id === mode)
   const models = engine?.models.filter((m) => m.modes.includes(mode)) || []
   const selectedModel = models.find((m) => m.id === modelId)
+  // What "Auto" resolves to: the model's steps scaled by Quality (as the engine does)
+  const QUALITY_STEP_SCALE: Record<string, number> = { draft: 0.4, balanced: 1, high: 1.4, max: 1.8 }
+  const autoSteps = Math.max(1, Math.floor((selectedModel?.default_steps || 0) * (QUALITY_STEP_SCALE[quality] ?? 1)))
   const style = VISUAL_STYLES.find((s) => s.id === project.visual_style)
 
   const upload = async (file: File, kind: 'image' | 'reference' | 'video') => {
@@ -3995,6 +4004,30 @@ function GenerateTab({
               ))}
             </div>
           </div>
+          {selectedModel?.default_steps ? (
+            <div className="field">
+              <label>
+                Steps · {steps > 0 ? steps : `Auto (${autoSteps})`}
+                {steps > 0 && (
+                  <button type="button" className="btn ghost tiny" style={{ marginLeft: 8 }} onClick={() => setSteps(0)}>
+                    Auto
+                  </button>
+                )}
+              </label>
+              <input
+                type="range"
+                min={Math.max(1, Math.round((selectedModel.default_steps || 8) / 4))}
+                max={Math.max(12, (selectedModel.default_steps || 8) * 2)}
+                step={1}
+                value={steps > 0 ? steps : autoSteps}
+                onChange={(e) => setSteps(Number(e.target.value))}
+                aria-label="Denoising steps"
+              />
+              <div className="muted tiny">
+                More steps: more detail and cleaner motion, but slower (time grows with steps). Auto follows Quality.
+              </div>
+            </div>
+          ) : null}
           {isVideoMode ? (
             <div className="field">
               <label>Clip length</label>

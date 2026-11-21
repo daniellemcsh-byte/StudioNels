@@ -657,6 +657,10 @@ def mux_audio_onto_video(
         "aac",
         "-b:a",
         "192k",
+        # Pad short audio with silence so -shortest ends at the video's end and
+        # never cuts frames (it used to trim the picture to the sound's length).
+        "-af",
+        "apad",
         "-shortest",
         str(dest),
     ]
@@ -682,6 +686,8 @@ def mux_audio_onto_video(
             "aac",
             "-b:a",
             "192k",
+            "-af",
+            "apad",
             "-shortest",
             str(dest),
         ]
@@ -1200,9 +1206,12 @@ def _ltx_video_upscale(
     negative: str,
     fps: int,
     generator: Any,
+    info: dict[str, Any] | None = None,
 ) -> Any:
     """AI video upscale: encode the clip with LTX's VAE, upsample the latents 2x
-    and refine 3 steps at 2x. Adds real detail (Lanczos only stretches pixels)."""
+    and refine 3 steps at 2x. Adds real detail (Lanczos only stretches pixels).
+    info["frames"] gets the source frame count so the caller can cut the
+    padding back off."""
     import torch
     from diffusers.utils import load_video
 
@@ -1211,12 +1220,16 @@ def _ltx_video_upscale(
         raise RuntimeError("No LTX latent upsampler found (LTX-2.5 ships one; LTX-2.3 needs models/ltx-2.3-latent-upsampler).")
     _progress(cb, "AI upscale · reading the clip…", 0.06)
     frames = load_video(src)
-    if len(frames) < 9:
-        raise RuntimeError("The clip is too short to upscale (needs at least 9 frames).")
-    n = ((len(frames) - 1) // 8) * 8 + 1
-    frames = frames[: min(n, 241)]
-    n = ((len(frames) - 1) // 8) * 8 + 1
-    frames = frames[:n]
+    if len(frames) < 2:
+        raise RuntimeError("The clip is too short to upscale.")
+    frames = frames[:241]
+    keep = len(frames)
+    # LTX needs 8k+1 frames. Pad by repeating the last frame (trimming used to
+    # drop up to 7 frames, which put the result out of sync with the original).
+    n = ((keep - 1 + 7) // 8) * 8 + 1
+    frames = frames + [frames[-1]] * (n - keep)
+    if info is not None:
+        info["frames"] = keep
     w0, h0 = frames[0].size
     shrink = min(1.0, 960 / max(w0, h0))  # stage-2 output is 2x this
     w, h = max(256, int(w0 * shrink) // 32 * 32), max(256, int(h0 * shrink) // 32 * 32)
@@ -1250,8 +1263,25 @@ def _ltx_video_upscale(
     }
     if negative:
         kwargs["negative_prompt"] = negative
-    with _ltx_tiled_decode(pipe):
+    with _ltx_tiled_decode(pipe), _exact_sigmas(pipe):
         return _call_pipe_with_progress(pipe, kwargs, cb, steps=len(sigmas), label="AI upscale · refining at 2×")
+
+
+@contextlib.contextmanager
+def _exact_sigmas(pipe: Any):
+    """Use hand-picked sigmas as given. LTX-2.5 full's scheduler shifts sigmas by
+    resolution (use_dynamic_shifting), which turned the gentle 0.5 -> 0.16 detail
+    pass into a heavy repaint: blown-out colours (tested 2026-11-20)."""
+    sched = getattr(pipe, "scheduler", None)
+    cfg = dict(getattr(sched, "config", {}) or {})
+    if sched is None or not (cfg.get("use_dynamic_shifting") or cfg.get("shift_terminal")):
+        yield
+        return
+    pipe.scheduler = type(sched).from_config({**cfg, "use_dynamic_shifting": False, "shift_terminal": None})
+    try:
+        yield
+    finally:
+        pipe.scheduler = sched
 
 
 @contextlib.contextmanager
@@ -1791,6 +1821,7 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         except Exception:
             live = None
     used_attempt: dict[str, Any] | None = None
+    upscale_info: dict[str, Any] = {}
     # High / Max on LTX-2: two-stage generate → 2x latent upsample → refine.
     two_stage = (
         "LTX2" in pipe_cls_name
@@ -1811,9 +1842,11 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             device=device,
             prompt=prompt,
             negative=negative,
-            fps=int(job.get("fps") or 24),
+            fps=int(round(_video_fps(src, float(job.get("fps") or 24)))),
             generator=generator,
+            info=upscale_info,
         )
+        fps = int(round(_video_fps(src, float(fps or 24))))
         used_attempt = {"ai_upscale": True}
     if two_stage and attempts and result is None:
         try:
@@ -1887,6 +1920,14 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
         raise RuntimeError("Pipeline returned no frames")
     if isinstance(video_frames, list) and len(video_frames) > 0 and isinstance(video_frames[0], list):
         video_frames = video_frames[0]
+    if upscale_info.get("frames"):
+        # An upscale keeps the clip's own sound (not LTX's new soundtrack) and
+        # exactly its frame count (the padding to 8k+1 is cut off again).
+        gen_audio = None
+        try:
+            video_frames = video_frames[: int(upscale_info["frames"])]
+        except Exception:
+            pass
 
     # Torch / numpy batches → PIL list for export
     try:
@@ -1951,6 +1992,8 @@ def run_diffusers_job(job: dict[str, Any], out_path: Path, cb: ProgressCb | None
             pass
     if gen_audio is not None and str(media).endswith(".mp4"):
         media = _attach_generated_audio(media, gen_audio, pipe, cb)
+    if upscale_info.get("frames") and str(media).endswith(".mp4"):
+        media = _keep_source_audio(str(job.get("video_path") or ""), media, cb)
     _release_gpu_cache()
     if live is not None and live.timings:
         print(

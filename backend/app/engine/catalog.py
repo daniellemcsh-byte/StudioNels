@@ -1013,7 +1013,8 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "rife-smooth-2x",
-        "label": "Smooth motion 2× (RIFE)",
+        "label": "Smooth motion 2× (RIFE) — more frames, same size",
+        "explicit_only": True,
         "modes": ["upsample_video"],
         "hf_id": None,
         "local_files": ["rife-4.26/rife4.26.pkl"],

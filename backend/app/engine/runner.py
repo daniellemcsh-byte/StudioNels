@@ -265,7 +265,9 @@ def installed_default_for_mode(mode: str) -> dict[str, Any] | None:
         rows = list_models_with_status()
     except Exception:
         return None
-    runnable = {m["id"] for m in list_models_for_mode(mode)}
+    # Tools that don't do what the mode's name says (RIFE adds frames, it doesn't
+    # upscale) are only used when picked by name.
+    runnable = {m["id"] for m in list_models_for_mode(mode) if not m.get("explicit_only")}
     ready = [r for r in rows if r.get("installed") and r.get("id") in runnable]
     if not ready:
         return None

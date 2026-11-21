@@ -53,6 +53,7 @@ export interface EngineModel {
   modes: GenMode[]
   hf_id: string | null
   min_vram_gb: number
+  default_steps?: number
   kind: string
   notes?: string
   installed?: boolean
